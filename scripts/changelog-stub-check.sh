@@ -55,6 +55,19 @@ while IFS= read -r f; do
   esac
 done <<< "$CHANGED"
 
+# Exemption: a release-prep PR assembles (deletes) the CHANGELOG.d
+# stubs into a versioned CHANGELOG section, and legitimately touches
+# release tooling (scripts/changelog-*.sh) in the same PR. Requiring it
+# to ALSO add a fresh stub is a gate gap — the change it describes is
+# already folded into the release entry. A PR that deletes any stub
+# file is a release-prep assemble and is exempt (#1833 follow-up).
+DELETED_STUBS=$(git diff --name-only --diff-filter=D "$BASE"...HEAD 2>/dev/null \
+  | grep -cE 'CHANGELOG\.d/.*\.(added|changed|fixed|removed)\.md' || true)
+if [[ "${DELETED_STUBS:-0}" -gt 0 ]]; then
+  echo "changelog-stub-check: release-prep PR (assembles $DELETED_STUBS stub(s)) — stub not required"
+  exit 0
+fi
+
 # Exemption: PR touches docs only AND no code.
 if [[ $HAS_CODE -eq 0 ]]; then
   echo "changelog-stub-check: doc-only PR — stub not required"

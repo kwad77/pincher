@@ -134,7 +134,7 @@ Aggregate session savings land around **70-90%** on large Go/JS projects, **40-7
 - **[CHANGELOG](CHANGELOG.md)** — release-by-release history. Milestone burndown: <https://github.com/kwad77/pincher/milestones>.
 - **[Migration guide](docs/migration/v0.4-to-v1.0.md)** — v0.4 → v1.0.
 
-Current release: **v0.90** (stable). In flight: **v0.91** — dogfood find/fix loop on the post-v0.90 codebase. v1.0 freezes tool schemas and ships schema attestation + a public launch.
+Current release: **v0.91** — first release candidate of the Phase 5 cadence: graph-correctness root-cause fixes (the #1772 resolve-atomicity family) plus dashboard, extractor, and CI-gate fixes. Latest stable: **v0.90**. v1.0 freezes tool schemas and ships schema attestation + a public launch.
 
 ---
 

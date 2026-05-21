@@ -108,6 +108,25 @@ if [[ ! -f "$CHANGELOG" ]]; then
   exit 1
 fi
 
+# #1833: if CHANGELOG has no [Unreleased] heading — the previous
+# release converted it to a versioned heading and left none — create
+# one above the first versioned section. Without it the awk insertion
+# below silently matches nothing, CHANGELOG is left unchanged, and the
+# stub files are still deleted: total loss of the release's changelog.
+if ! grep -q '^## \[Unreleased\]' "$CHANGELOG"; then
+  SEED="$(mktemp)"
+  awk '
+    !seeded && /^## \[/ {
+      print "## [Unreleased]"
+      print ""
+      seeded = 1
+    }
+    { print }
+  ' "$CHANGELOG" > "$SEED"
+  mv "$SEED" "$CHANGELOG"
+  echo "changelog-assemble: no [Unreleased] heading found — created one above the first versioned section" >&2
+fi
+
 # awk: print everything; when we hit the [Unreleased] header, print it
 # then drop in the assembled content immediately after the blank line
 # that follows.

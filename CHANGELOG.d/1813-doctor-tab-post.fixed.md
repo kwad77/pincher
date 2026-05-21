@@ -1,1 +1,0 @@
-The dashboard Doctor tab ([#1812](https://github.com/kwad77/pincher/pull/1812)) now loads — `loadDoctor()` was issuing a GET to `/v1/doctor`, but tool endpoints are POST-only, so the tab rendered "method not allowed" instead of the index-health report. It now POSTs an empty body like the other tool calls.
