@@ -550,3 +550,67 @@ github.com/acme/widgets/internal/work.dispatch(0xc0001a2000)
 		t.Errorf("top suspect missing stack_frame_exact_name_match evidence; got %v", ev)
 	}
 }
+
+// TestInvestigateFailure_ExactNameSurvivesTruncation_1831 — the #1751
+// exact-name score boost runs in the scoring step, but the candidate
+// pool is first truncated to maxSuspects*2 by raw BM25. On a struct
+// with many methods the receiver-type token (`Engine`) loose-matches
+// every method's signature; pre-#1831 enough of those loose matches
+// outscored the exact crash-frame symbol and evicted it from the pool
+// BEFORE scoring ran. The crash site then never appeared in
+// implicated_symbols at all.
+func TestInvestigateFailure_ExactNameSurvivesTruncation_1831(t *testing.T) {
+	t.Parallel()
+	srv, store, root := newTestServer(t)
+	srv.sessionRoot = root
+
+	// A struct with 55 sibling methods — every signature carries the
+	// receiver-type token `Engine`, so a search for that token returns
+	// a large loose-match pool that pressures the maxSuspects*2 cap.
+	var b strings.Builder
+	b.WriteString("package engine\n\ntype Engine struct{}\n\n")
+	for i := 0; i < 55; i++ {
+		fmt.Fprintf(&b, "func (e *Engine) phase%02d() int { return %d }\n", i, i)
+	}
+	// detonate is the crash site named in the panic frame below.
+	b.WriteString("func (e *Engine) detonate() error { return nil }\n")
+	writeGoFile(t, root, "internal/engine/engine.go", b.String())
+
+	idx := index.New(store)
+	res, err := idx.Index(context.Background(), root, false)
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	srv.sessionID = res.ProjectID
+
+	trace := `panic: runtime error: invalid memory address or nil pointer dereference
+goroutine 1 [running]:
+github.com/acme/app/internal/engine.(*Engine).detonate(0xc000010000)
+	internal/engine/engine.go:57 +0x1a4
+`
+	out, err := srv.handleInvestigateFailure(context.Background(), makeReq(map[string]any{
+		"error_text": trace,
+		"project":    res.ProjectID,
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	body := decode(t, out)
+	implicated, _ := body["implicated_symbols"].([]any)
+	found := false
+	for _, s := range implicated {
+		m, _ := s.(map[string]any)
+		if m["name"] == "detonate" {
+			found = true
+		}
+	}
+	if !found {
+		names := make([]string, 0, len(implicated))
+		for _, s := range implicated {
+			m, _ := s.(map[string]any)
+			names = append(names, fmt.Sprint(m["name"]))
+		}
+		t.Errorf("detonate (the exact crash-frame symbol) absent from implicated_symbols — "+
+			"truncated before scoring by sibling *Engine loose matches (#1831); got %v", names)
+	}
+}

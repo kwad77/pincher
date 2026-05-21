@@ -458,12 +458,34 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 	}
 	var ranked []scored
 	{
-		// Pre-sort by raw BM25 desc so we trace the top candidates first.
+		// Pre-sort so the most-implicated candidates survive the
+		// traceCap truncation below.
 		var byBM25 []*candidate
 		for _, c := range candidates {
 			byBM25 = append(byBM25, c)
 		}
+		// #1831: a candidate whose NAME is literally a stack frame token
+		// (the crash site itself) must outrank loose BM25 hits and never
+		// be truncated out. rawBM25 is a max across heterogeneous
+		// per-token queries — scores from a `resolveCalls` query and an
+		// `Indexer` query are not comparable — so a raw-BM25-only sort
+		// let ~50 loose `*Indexer` signature matches fill the cap and
+		// evict the exact crash-frame symbol BEFORE the Step-5
+		// exact-name score boost (#1751) ever ran. Rank exact-frame-name
+		// matches first.
+		isExactFrameMatch := func(c *candidate) bool {
+			for tok := range c.frameMatches {
+				if strings.EqualFold(tok, c.Name) {
+					return true
+				}
+			}
+			return false
+		}
 		sort.Slice(byBM25, func(i, j int) bool {
+			ei, ej := isExactFrameMatch(byBM25[i]), isExactFrameMatch(byBM25[j])
+			if ei != ej {
+				return ei // exact crash-frame matches first — never truncated out
+			}
 			if byBM25[i].rawBM25 != byBM25[j].rawBM25 {
 				return byBM25[i].rawBM25 > byBM25[j].rawBM25
 			}
