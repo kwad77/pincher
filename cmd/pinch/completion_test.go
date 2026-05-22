@@ -111,6 +111,17 @@ func TestCompletionCLI(t *testing.T) {
 			t.Errorf("stderr missing usage, got: %s", errb.String())
 		}
 	})
+	t.Run("help exits 0", func(t *testing.T) {
+		for _, arg := range []string{"-h", "--help", "help"} {
+			var out, errb bytes.Buffer
+			if code := completionCLI([]string{arg}, &out, &errb); code != 0 {
+				t.Errorf("completionCLI(%q) exit = %d, want 0", arg, code)
+			}
+			if !strings.Contains(errb.String(), "usage:") {
+				t.Errorf("completionCLI(%q) missing usage, got: %s", arg, errb.String())
+			}
+		}
+	})
 }
 
 // TestNearestSubcommand checks the typo `did you mean` hint.

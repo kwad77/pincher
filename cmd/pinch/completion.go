@@ -42,6 +42,13 @@ func completionCLI(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "    zsh:   eval \"$(pincher completion zsh)\"")
 		fmt.Fprintln(stderr, "    fish:  pincher completion fish | source")
 	}
+	if len(args) == 1 {
+		switch args[0] {
+		case "-h", "--help", "help":
+			usage()
+			return 0
+		}
+	}
 	if len(args) != 1 {
 		usage()
 		return 1
