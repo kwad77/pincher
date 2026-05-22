@@ -28,6 +28,14 @@ import (
 // recent_changes}. `_meta.empty_reason` (#1252 enum) stamped when no
 // seeds resolve.
 
+// hubSeedCallerThreshold (#1846): a task-driven seed candidate with more
+// than this many inbound CALLS edges is treated as a graph hub and
+// deferred behind non-hub candidates during seed selection. A hub's
+// caller neighborhood is task-independent, so seeding on one floods the
+// response with noise. A var (not const) so tests can lower it without
+// constructing a 150-caller fixture.
+var hubSeedCallerThreshold = 150
+
 func (s *Server) handleContextForTask(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
 
@@ -169,20 +177,47 @@ func (s *Server) handleContextForTask(ctx context.Context, req *mcp.CallToolRequ
 				}
 				return false
 			}
-			// #1776: two-pass seed selection — production code first,
-			// test symbols only fill the remaining slots. Test functions
-			// carry BM25-rich names (TestExecute_UnknownPropertyDedup…)
-			// that out-rank the terse implementation (Execute) for
-			// "how does X work" queries; seeding on them buries the real
-			// answer and floods `neighbors` with the test file's
-			// siblings. The second pass means a task that only matches
-			// tests ("fix failing TestFoo") still seeds.
-			for _, testPass := range []bool{false, true} {
+			// #1846: a candidate whose inbound-CALLS fan-out is
+			// pathologically high is a graph hub — a constructor, a
+			// logging helper, a base method. BM25 happily ranks such a
+			// symbol high (its name shares tokens with the task), but its
+			// caller list is task-independent noise no matter the query:
+			// seeding on `index.New` for "add a CLI subcommand" floods
+			// `callers` with 50 unrelated rows. Defer hub candidates
+			// behind non-hub ones of the same test class. They still
+			// seed as a last resort (the `hubPass` loop) so a corpus
+			// where every match is a hub doesn't fall through to the
+			// empty-seed path. Memoized so each candidate costs at most
+			// one EdgesTo query across all four passes.
+			hubStatus := make(map[string]bool, len(results))
+			isHubSeed := func(id string) bool {
+				if v, ok := hubStatus[id]; ok {
+					return v
+				}
+				callers, err := s.store.EdgesTo(id, []string{"CALLS"})
+				v := err == nil && len(callers) > hubSeedCallerThreshold
+				hubStatus[id] = v
+				return v
+			}
+			// #1776 + #1846: four-pass seed selection in preference
+			// order — (production, non-hub) → (production, hub) →
+			// (test, non-hub) → (test, hub). Production code first
+			// because test functions carry BM25-rich names
+			// (TestExecute_UnknownPropertyDedup…) that out-rank the
+			// terse implementation; non-hub first because a hub's
+			// neighborhood carries no task-specific signal.
+			type seedPass struct{ testSym, hubSym bool }
+			for _, p := range []seedPass{
+				{false, false}, {false, true}, {true, false}, {true, true},
+			} {
 				for _, r := range results {
 					if len(seeds) >= maxSeeds {
 						break
 					}
-					if !isCallableSeed(r.Symbol.Kind) || r.Symbol.IsTest != testPass {
+					if !isCallableSeed(r.Symbol.Kind) || r.Symbol.IsTest != p.testSym {
+						continue
+					}
+					if isHubSeed(r.Symbol.ID) != p.hubSym {
 						continue
 					}
 					seeds = append(seeds, seedRow{

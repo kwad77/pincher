@@ -152,6 +152,57 @@ func TestContextForTask_TaskDriven_PrefersProductionSeedOverTest_1776(t *testing
 	}
 }
 
+// TestContextForTask_TaskDriven_DefersHubSeed_1846 — a graph hub (a
+// symbol with a pathologically high inbound-CALLS fan-out) must not be
+// chosen as a task-driven seed when non-hub candidates match. Pre-fix,
+// BM25 happily seeded on a hub and flooded `callers` with task-
+// irrelevant rows. Uses a real 151-caller fixture so the production
+// hubSeedCallerThreshold (150) is exercised — no global mutation, safe
+// under t.Parallel().
+func TestContextForTask_TaskDriven_DefersHubSeed_1846(t *testing.T) {
+	t.Parallel()
+	srv, store, root := newTestServer(t)
+	srv.sessionRoot = root
+
+	// widgetParse is called 151 times → a hub (> threshold 150).
+	// widgetReport has zero callers → the clean, on-topic seed.
+	src := "package widget\n\n" +
+		"func widgetParse(s string) int { return len(s) }\n" +
+		"func widgetReport() string { return \"r\" }\n"
+	for i := 0; i < 151; i++ {
+		src += fmt.Sprintf("func useWidget%d() { widgetParse(\"x\") }\n", i)
+	}
+	writeGoFile(t, root, "widget.go", src)
+
+	idx := index.New(store)
+	res, err := idx.Index(context.Background(), root, false)
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	srv.sessionID = res.ProjectID
+
+	out, err := srv.handleContextForTask(context.Background(), makeReq(map[string]any{
+		"task":    "widget",
+		"project": res.ProjectID,
+	}))
+	if err != nil {
+		t.Fatalf("handleContextForTask: %v", err)
+	}
+	body := decode(t, out)
+	seeds, _ := body["seeds"].([]any)
+	if len(seeds) == 0 {
+		t.Fatalf("expected seeds for task=\"widget\"; got 0 — hub deferral must not empty the seed set")
+	}
+	// The hub must be deferred behind the 152 non-hub candidates; with
+	// only 3 seed slots it never gets picked.
+	for i, s := range seeds {
+		m, _ := s.(map[string]any)
+		if name, _ := m["name"].(string); name == "widgetParse" {
+			t.Errorf("seed[%d] is the 151-caller hub widgetParse — hubs must defer behind non-hub candidates", i)
+		}
+	}
+}
+
 // Positive: seed_id-driven composite skips search and goes straight to
 // callers + callees + neighbors. Validates the seed-anchor branch.
 func TestContextForTask_SeedIDDriven_SkipsSearch(t *testing.T) {
