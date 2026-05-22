@@ -79,6 +79,10 @@ func main() {
 		runSetupCLI(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "completion" {
+		runCompletionCLI(os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "project" {
 		runProjectCLI(os.Args[2:])
 		return
@@ -116,7 +120,11 @@ func main() {
 	// so the typo looked like it silently succeeded. Reject it loudly
 	// with the usage banner (which lists every valid subcommand).
 	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
-		fmt.Fprintf(os.Stderr, "pincher: unknown subcommand %q\n\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "pincher: unknown subcommand %q\n", os.Args[1])
+		if near := nearestSubcommand(os.Args[1]); near != "" {
+			fmt.Fprintf(os.Stderr, "Did you mean %q?\n", near)
+		}
+		fmt.Fprintln(os.Stderr, "")
 		printHelpBanner(os.Stderr)
 		os.Exit(1)
 	}
@@ -400,6 +408,7 @@ func printHelpBanner(out io.Writer) {
 	fmt.Fprintln(out, "  pincher project rm <name>      Remove an indexed project (alias: remove, delete)")
 	fmt.Fprintln(out, "  pincher project prune-stale    Drop projects indexed by an old schema and untouched for N days")
 	fmt.Fprintln(out, "  pincher verify                 Re-hash every indexed file and report drift vs stored hash (#1399)")
+	fmt.Fprintln(out, "  pincher completion <shell>     Print a bash/zsh/fish completion script")
 	fmt.Fprintln(out, "  pincher vacuum                 Reclaim disk space after project removal (rewrites the DB file)")
 	fmt.Fprintln(out, "  pincher --version              Print version and exit")
 	fmt.Fprintln(out, "")
