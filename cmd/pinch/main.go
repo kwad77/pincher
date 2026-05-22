@@ -144,7 +144,7 @@ func main() {
 	flag.Usage = func() {
 		out := flag.CommandLine.Output()
 		printHelpBanner(out)
-		flag.PrintDefaults()
+		printGroupedFlags(out, flag.CommandLine)
 	}
 	flag.Parse()
 
@@ -406,6 +406,37 @@ func printHelpBanner(out io.Writer) {
 	fmt.Fprintln(out, "Each subcommand accepts its own --help, e.g. `pincher doctor --help`.")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Flags (apply to the no-subcommand form — running as MCP server):")
+}
+
+// printGroupedFlags renders the no-subcommand flag list in two groups —
+// the handful most users touch, and the deployment/tuning knobs almost
+// nobody sets by hand — instead of one flat alphabetical dump (#1710
+// v0.92). Every flag is still listed; this declutters the presentation,
+// it removes nothing. Takes the FlagSet explicitly so it is testable.
+func printGroupedFlags(out io.Writer, fs *flag.FlagSet) {
+	common := map[string]bool{
+		"version": true, "http": true, "http-key": true,
+		"data-dir": true, "verbose": true,
+	}
+	var commonF, advancedF []*flag.Flag
+	fs.VisitAll(func(f *flag.Flag) {
+		if common[f.Name] {
+			commonF = append(commonF, f)
+		} else {
+			advancedF = append(advancedF, f)
+		}
+	})
+	emit := func(f *flag.Flag) {
+		fmt.Fprintf(out, "  -%s\n        %s\n", f.Name, f.Usage)
+	}
+	fmt.Fprintln(out, "  Common:")
+	for _, f := range commonF {
+		emit(f)
+	}
+	fmt.Fprintln(out, "  Deployment & tuning (rarely set by hand — each has a $PINCHER_* env equivalent):")
+	for _, f := range advancedF {
+		emit(f)
+	}
 }
 
 // parseFlagsInterspersed parses fs allowing flags to appear before AND

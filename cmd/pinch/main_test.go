@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -294,5 +295,35 @@ func TestIndexNextSteps(t *testing.T) {
 	s := indexNextSteps()
 	if !strings.Contains(s, "pincher setup") || !strings.Contains(s, "pincher web") {
 		t.Errorf("index footer should point at setup + web; got %q", s)
+	}
+}
+
+// printGroupedFlags splits the flag list into Common vs Deployment &
+// tuning, with the common flags first (#1710 v0.92).
+func TestPrintGroupedFlags(t *testing.T) {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	fs.String("http", "", "HTTP listen addr")
+	fs.Bool("version", false, "print version")
+	fs.String("basepath", "", "reverse-proxy prefix")
+	fs.Int("db-readers", 4, "reader pool size")
+
+	var b strings.Builder
+	printGroupedFlags(&b, fs)
+	out := b.String()
+
+	for _, want := range []string{"Common:", "Deployment & tuning", "-http", "-version", "-basepath", "-db-readers"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("grouped flag output missing %q; got:\n%s", want, out)
+		}
+	}
+	// Common flags must precede the advanced group.
+	if strings.Index(out, "Common:") > strings.Index(out, "Deployment & tuning") {
+		t.Error("the Common group should print before Deployment & tuning")
+	}
+	if strings.Index(out, "-http") > strings.Index(out, "Deployment & tuning") {
+		t.Error("-http is a common flag and should appear before the advanced group")
+	}
+	if strings.Index(out, "-basepath") < strings.Index(out, "Deployment & tuning") {
+		t.Error("-basepath is an advanced flag and should appear after the advanced header")
 	}
 }
