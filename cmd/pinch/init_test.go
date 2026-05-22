@@ -49,6 +49,32 @@ func TestResolveInitTargetChoice(t *testing.T) {
 	}
 }
 
+// TestInitCLI_Binary_AutoDetectsHostFromEnv — #1862. Bare `pincher
+// init` (no --target) auto-resolves the host: CLAUDECODE in the env
+// ⇒ claude. Exercises the runInitCLI auto-resolve wiring and
+// autoResolveInitTarget end to end through the instrumented binary.
+func TestInitCLI_Binary_AutoDetectsHostFromEnv(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI binary build in -short mode")
+	}
+	bin := buildPincherBinary(t)
+	workdir := t.TempDir()
+	cmd := exec.Command(bin, "init", "--dry-run") // no --target
+	cmd.Dir = workdir
+	// Force CLAUDECODE so resolution is deterministic regardless of the
+	// host the test itself runs under (CI has it unset, a dev box may
+	// have it set).
+	cmd.Env = append(pincherCoverEnv(), "CLAUDECODE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bare init with CLAUDECODE set should resolve to claude: %v\n%s", err, out)
+	}
+	got := string(out)
+	if !strings.Contains(got, "no --target given") || !strings.Contains(got, "claude") {
+		t.Errorf("expected a host-detection note naming claude; got:\n%s", got)
+	}
+}
+
 // TestPromptInitTarget covers the interactive picker shown when
 // `pincher init` can't auto-detect the host (#1862). Feeds canned
 // stdin so every menu branch is exercised without a TTY.

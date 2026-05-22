@@ -21,6 +21,30 @@ func setSessionRoot(t *testing.T, srv *Server, root string) {
 	srv.setRoot(root)
 }
 
+// TestHandleInit_NoTarget_ResolvesHostFromEnv — #1862. An init call
+// with no `target` must host-resolve, not silently fall through to a
+// claude default. With CLAUDECODE set the resolver picks claude and
+// the call proceeds (dry-run). t.Setenv → no t.Parallel.
+func TestHandleInit_NoTarget_ResolvesHostFromEnv(t *testing.T) {
+	t.Setenv("CLAUDECODE", "1")
+	srv, _, _ := newTestServer(t)
+	tmp := t.TempDir()
+	setSessionRoot(t, srv, tmp)
+
+	res, err := srv.handleInit(context.Background(), makeReq(map[string]any{
+		"project_path": tmp, // no "target" — exercise the auto-resolve path
+	}))
+	if err != nil {
+		t.Fatalf("handleInit: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("no-target init should host-resolve, not error:\n%s", textOf(t, res))
+	}
+	if !strings.Contains(textOf(t, res), "claude") {
+		t.Errorf("expected the CLAUDECODE host to resolve to the claude target; got:\n%s", textOf(t, res))
+	}
+}
+
 func TestHandleInit_DefaultIsDryRun(t *testing.T) {
 	t.Parallel()
 	srv, _, _ := newTestServer(t)
