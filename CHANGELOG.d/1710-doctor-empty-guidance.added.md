@@ -1,1 +1,0 @@
-`pincher doctor` on a fresh install now tells the user what to do next ([#1710](https://github.com/kwad77/pincher/issues/1710) v0.92). With zero indexed projects the report previously printed `Projects: 0` and stopped — silent about the one action that matters. It now prints `No projects indexed yet` and points to `pincher index <path>` and `pincher setup`.
