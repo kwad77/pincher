@@ -21,7 +21,7 @@ var pincherSubcommands = []string{
 	"index", "doctor", "rebuild-fts", "self-test", "stats", "bench",
 	"update", "web", "init", "setup", "project", "supervised",
 	"vacuum", "health-check", "hook-check", "hook-stats", "verify",
-	"completion",
+	"completion", "export-graph",
 }
 
 // runCompletionCLI implements `pincher completion [bash|zsh|fish]`.
