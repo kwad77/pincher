@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"encoding/xml"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kwad77/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/index"
 )
 
 // export-graph fixture: two symbols, one real edge, one dangling edge
@@ -116,6 +120,81 @@ func TestDotQuote(t *testing.T) {
 			t.Errorf("dotQuote(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
+}
+
+// TestExportGraphCLI_EndToEnd indexes a project into a temp data dir,
+// then drives exportGraphCLI through the real flag/open/resolve/write
+// path and checks the exit code + emitted output.
+func TestExportGraphCLI_EndToEnd(t *testing.T) {
+	dataDir := t.TempDir()
+	projDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projDir, "m.go"),
+		[]byte("package m\n\nfunc Helper() int { return 1 }\n\nfunc Use() int { return Helper() }\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	store, err := db.Open(dataDir)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	res, err := index.New(store).Index(context.Background(), projDir, false)
+	if err != nil {
+		store.Close()
+		t.Fatalf("index: %v", err)
+	}
+	project, _ := store.GetProject(res.ProjectID)
+	store.Close() // exportGraphCLI re-opens the same data dir
+
+	t.Run("json to stdout", func(t *testing.T) {
+		var out, errb strings.Builder
+		code := exportGraphCLI([]string{"--data-dir", dataDir, "--project", project.Name}, &out, &errb)
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
+		}
+		var g exportGraph
+		if err := json.Unmarshal([]byte(out.String()), &g); err != nil {
+			t.Fatalf("stdout is not valid JSON: %v", err)
+		}
+		if len(g.Symbols) == 0 {
+			t.Error("expected symbols in the export")
+		}
+	})
+
+	t.Run("graphml to file", func(t *testing.T) {
+		var out, errb strings.Builder
+		dest := filepath.Join(t.TempDir(), "g.graphml")
+		code := exportGraphCLI([]string{"--data-dir", dataDir, "--project", project.Name,
+			"--format", "graphml", "--out", dest}, &out, &errb)
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
+		}
+		blob, err := os.ReadFile(dest)
+		if err != nil {
+			t.Fatalf("read export file: %v", err)
+		}
+		if !strings.Contains(string(blob), "<graphml") {
+			t.Errorf("export file is not GraphML:\n%s", blob)
+		}
+		if !strings.Contains(errb.String(), "exported") {
+			t.Errorf("stderr should print a receipt; got %s", errb.String())
+		}
+	})
+
+	t.Run("unknown format exits 1", func(t *testing.T) {
+		var out, errb strings.Builder
+		if code := exportGraphCLI([]string{"--data-dir", dataDir, "--format", "yaml"}, &out, &errb); code != 1 {
+			t.Errorf("exit = %d, want 1", code)
+		}
+		if !strings.Contains(errb.String(), "unknown format") {
+			t.Errorf("stderr should name the bad format; got %s", errb.String())
+		}
+	})
+
+	t.Run("unknown project exits 1", func(t *testing.T) {
+		var out, errb strings.Builder
+		if code := exportGraphCLI([]string{"--data-dir", dataDir, "--project", "no-such-proj"}, &out, &errb); code != 1 {
+			t.Errorf("exit = %d, want 1", code)
+		}
+	})
 }
 
 func TestResolveExportProject(t *testing.T) {

@@ -59,74 +59,85 @@ type exportGraph struct {
 }
 
 func runExportGraphCLI(args []string) {
+	os.Exit(exportGraphCLI(args, os.Stdout, os.Stderr))
+}
+
+// exportGraphCLI is the testable core of runExportGraphCLI: it writes
+// to the supplied streams and returns the process exit code instead of
+// calling os.Exit, so every branch is unit-testable.
+func exportGraphCLI(args []string, stdout, stderr io.Writer) int {
 	log.SetOutput(io.Discard)
 
-	fs := flag.NewFlagSet("export-graph", flag.ExitOnError)
+	fs := flag.NewFlagSet("export-graph", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	format := fs.String("format", "json", "Output format: json | graphml | dot")
 	projectFlag := fs.String("project", "", "Project name or id (default: the current directory's project)")
 	outPath := fs.String("out", "", "Write to this file (default: stdout)")
 	dataDir := fs.String("data-dir", "", "Override data directory")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: pincher export-graph [--format=json|graphml|dot] [--project=NAME] [--out=FILE]")
-		fmt.Fprintln(os.Stderr, "  Dumps a project's symbol + edge graph for external graph tooling.")
-		fmt.Fprintln(os.Stderr, "    json     — full record, every field (default)")
-		fmt.Fprintln(os.Stderr, "    graphml  — GraphML XML (Gephi, Cytoscape, yEd)")
-		fmt.Fprintln(os.Stderr, "    dot      — Graphviz DOT")
+		fmt.Fprintln(stderr, "usage: pincher export-graph [--format=json|graphml|dot] [--project=NAME] [--out=FILE]")
+		fmt.Fprintln(stderr, "  Dumps a project's symbol + edge graph for external graph tooling.")
+		fmt.Fprintln(stderr, "    json     — full record, every field (default)")
+		fmt.Fprintln(stderr, "    graphml  — GraphML XML (Gephi, Cytoscape, yEd)")
+		fmt.Fprintln(stderr, "    dot      — Graphviz DOT")
 		fs.PrintDefaults()
 	}
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
 
 	formatVal := strings.ToLower(*format)
 	switch formatVal {
 	case "json", "graphml", "dot":
 	default:
-		fmt.Fprintf(os.Stderr, "pincher export-graph: unknown format %q (want json, graphml, or dot)\n", *format)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "pincher export-graph: unknown format %q (want json, graphml, or dot)\n", *format)
+		return 1
 	}
 
 	store, _, err := openProjectStore(*dataDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pincher export-graph: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "pincher export-graph: %v\n", err)
+		return 1
 	}
 	defer store.Close()
 
 	project, err := resolveExportProject(store, *projectFlag)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pincher export-graph: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "pincher export-graph: %v\n", err)
+		return 1
 	}
 
 	symbols, err := store.ListSymbolsForProject(project.ID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pincher export-graph: load symbols: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "pincher export-graph: load symbols: %v\n", err)
+		return 1
 	}
 	edges, err := store.ListEdgesForProject(project.ID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pincher export-graph: load edges: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "pincher export-graph: load edges: %v\n", err)
+		return 1
 	}
 
-	out := os.Stdout
+	out := stdout
 	if *outPath != "" {
 		f, err := os.Create(*outPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "pincher export-graph: create %s: %v\n", *outPath, err)
-			os.Exit(1)
+			fmt.Fprintf(stderr, "pincher export-graph: create %s: %v\n", *outPath, err)
+			return 1
 		}
 		defer f.Close()
 		out = f
 	}
 
 	if err := writeGraph(out, formatVal, project, symbols, edges); err != nil {
-		fmt.Fprintf(os.Stderr, "pincher export-graph: write: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "pincher export-graph: write: %v\n", err)
+		return 1
 	}
 	if *outPath != "" {
-		fmt.Fprintf(os.Stderr, "exported %d symbols + %d edges to %s (%s)\n",
+		fmt.Fprintf(stderr, "exported %d symbols + %d edges to %s (%s)\n",
 			len(symbols), len(edges), *outPath, formatVal)
 	}
+	return 0
 }
 
 // resolveExportProject picks the project to export. An empty flag means
