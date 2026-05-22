@@ -83,6 +83,10 @@ func main() {
 		runCompletionCLI(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "export-graph" {
+		runExportGraphCLI(os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "project" {
 		runProjectCLI(os.Args[2:])
 		return
@@ -409,6 +413,7 @@ func printHelpBanner(out io.Writer) {
 	fmt.Fprintln(out, "  pincher project prune-stale    Drop projects indexed by an old schema and untouched for N days")
 	fmt.Fprintln(out, "  pincher verify                 Re-hash every indexed file and report drift vs stored hash (#1399)")
 	fmt.Fprintln(out, "  pincher completion <shell>     Print a bash/zsh/fish completion script")
+	fmt.Fprintln(out, "  pincher export-graph           Dump the symbol+edge graph (json/graphml/dot)")
 	fmt.Fprintln(out, "  pincher vacuum                 Reclaim disk space after project removal (rewrites the DB file)")
 	fmt.Fprintln(out, "  pincher --version              Print version and exit")
 	fmt.Fprintln(out, "")

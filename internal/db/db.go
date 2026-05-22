@@ -3477,6 +3477,12 @@ func (s *Store) GetSymbolsForFile(projectID, filePath string) ([]Symbol, error) 
 	return s.querySymbols(symSelectFrom+` WHERE project_id=? AND file_path=? ORDER BY start_byte`, projectID, filePath)
 }
 
+// ListSymbolsForProject returns every symbol in projectID, ordered by
+// id for a stable dump. Backs `pincher export-graph`.
+func (s *Store) ListSymbolsForProject(projectID string) ([]Symbol, error) {
+	return s.querySymbols(symSelectFrom+` WHERE project_id=? ORDER BY id`, projectID)
+}
+
 // GetDeadCode returns symbols with no inbound edges of any kind
 // (CALLS, REFERENCES, READS, WRITES, IMPORTS), filtered to internal
 // callable symbols that *should* have callers — i.e., not exported
@@ -4270,6 +4276,36 @@ func (s *Store) queryEdges(col, id string, kinds []string) ([]Edge, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// ListEdgesForProject returns every edge in projectID, ordered by id.
+// Unlike queryEdges it also scans source + branch — `pincher
+// export-graph` dumps the complete edge record. Returns a non-nil
+// empty slice so JSON consumers can iterate without a null check.
+func (s *Store) ListEdgesForProject(projectID string) ([]Edge, error) {
+	rows, err := s.ro.Query(
+		`SELECT id, project_id, from_id, to_id, kind, confidence, properties, source, branch
+		   FROM edges WHERE project_id=? ORDER BY id`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	edges := []Edge{}
+	for rows.Next() {
+		var e Edge
+		var propsStr, source, branch sql.NullString
+		if err := rows.Scan(&e.ID, &e.ProjectID, &e.FromID, &e.ToID, &e.Kind,
+			&e.Confidence, &propsStr, &source, &branch); err != nil {
+			return nil, err
+		}
+		if propsStr.Valid && propsStr.String != "" {
+			_ = json.Unmarshal([]byte(propsStr.String), &e.Properties)
+		}
+		e.Source = source.String
+		e.Branch = branch.String
+		edges = append(edges, e)
+	}
+	return edges, rows.Err()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

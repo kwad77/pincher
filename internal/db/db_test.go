@@ -486,6 +486,8 @@ var readerRoutedStoreMethods = map[string]bool{
 	"GetSymbolsByQN":          true,
 	"LoadAllSymbolsByQN":      true, // #1338: bulk pre-load for cold-path resolve. Pure SELECT, reader-routed.
 	"GetSymbolsForFile":       true,
+	"ListSymbolsForProject":   true, // export-graph: pure SELECT, reader pool.
+	"ListEdgesForProject":     true, // export-graph: pure SELECT, reader pool.
 	"GetHotspots":             true,
 	"GetDeadCode":             true,
 	"SearchSymbols":           true,
