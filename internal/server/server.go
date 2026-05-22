@@ -3398,6 +3398,7 @@ var toolComplexityTiers = map[string]string{
 	"neighborhood": "standard",
 	"dead_code":    "standard",
 	"architecture": "standard",
+	"branch_overlap": "standard",
 	"fetch":        "standard",
 
 	// heavy — synthesis-style output requiring frontier parsing
@@ -3450,6 +3451,7 @@ var toolIdempotent = map[string]bool{
 	"changes":          true,
 	"fetch":        true,
 	"architecture": true,
+	"branch_overlap": true,
 	"dead_code":    true,
 	"neighborhood": true,
 	"list":         true,
@@ -12673,6 +12675,7 @@ var baselineMethodForTool = map[string]string{
 	// Admin / orientation / write-side tools — no Read/Grep alternative.
 	"index":        baselineMethodNone,
 	"architecture": baselineMethodNone,
+	"branch_overlap": baselineMethodNone,
 	"schema":       baselineMethodNone,
 	"list":         baselineMethodNone,
 	"adr":          baselineMethodNone,
