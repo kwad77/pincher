@@ -459,15 +459,34 @@ func scanConfigured(cwd string) map[string]bool {
 }
 
 // printSetupSummary echoes the apply results to the cooked terminal so
-// they survive after the alt-screen-free wizard clears.
+// they survive after the alt-screen-free wizard clears. It ends with
+// the next steps — the renderDone screen's guidance is wiped when the
+// wizard exits, so the load-bearing "restart your MCP client" line has
+// to be re-emitted here or the user never sees it (#1710 v0.92).
 func printSetupSummary(m *setupModel) {
 	fmt.Fprintln(setupOut)
 	fmt.Fprintln(setupOut, "pincher setup — summary:")
+	anyOK := false
 	for _, r := range m.results {
 		mark := "OK  "
 		if !r.ok {
 			mark = "FAIL"
+		} else {
+			anyOK = true
 		}
 		fmt.Fprintf(setupOut, "  [%s] %s\n", mark, r.label)
 	}
+	if !anyOK {
+		return
+	}
+	fmt.Fprintln(setupOut)
+	fmt.Fprintln(setupOut, "Next steps:")
+	n := 1
+	if !m.indexAfter {
+		fmt.Fprintf(setupOut, "  %d. Run `pincher index` here to build the symbol graph.\n", n)
+		n++
+	}
+	fmt.Fprintf(setupOut, "  %d. Restart your editor / MCP client so it picks up the pincher server.\n", n)
+	n++
+	fmt.Fprintf(setupOut, "  %d. Run `pincher doctor` any time to check the install.\n", n)
 }

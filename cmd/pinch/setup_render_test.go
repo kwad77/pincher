@@ -191,6 +191,50 @@ func TestPrintSetupSummary(t *testing.T) {
 	if !strings.Contains(out, "[OK  ]") || !strings.Contains(out, "[FAIL]") {
 		t.Errorf("summary should mark each result OK/FAIL; got:\n%s", out)
 	}
+	// At least one OK → the next-steps block must survive the wizard.
+	if !strings.Contains(out, "Next steps:") {
+		t.Errorf("summary missing the Next steps block; got:\n%s", out)
+	}
+	if !strings.Contains(out, "Restart your editor") {
+		t.Errorf("summary must tell the user to restart the MCP client; got:\n%s", out)
+	}
+	if !strings.Contains(out, "pincher index") {
+		t.Errorf("indexAfter=false summary should tell the user to run pincher index; got:\n%s", out)
+	}
+}
+
+// printSetupSummary skips the next-steps block when nothing succeeded.
+func TestPrintSetupSummary_AllFailedNoNextSteps(t *testing.T) {
+	var buf strings.Builder
+	setupOut = &buf
+	defer func() { setupOut = os.Stdout }()
+
+	m := newSetupModel(pinit.AllTargets, nil, false)
+	m.results = []applyResult{{name: "zed", ok: false, label: "zed — failed"}}
+	printSetupSummary(&m)
+	if strings.Contains(buf.String(), "Next steps:") {
+		t.Errorf("all-failed summary should not print next steps; got:\n%s", buf.String())
+	}
+}
+
+// printSetupSummary drops the index step when the user already chose
+// to index after setup.
+func TestPrintSetupSummary_IndexAfterDropsIndexStep(t *testing.T) {
+	var buf strings.Builder
+	setupOut = &buf
+	defer func() { setupOut = os.Stdout }()
+
+	m := newSetupModel(pinit.AllTargets, nil, false)
+	m.results = []applyResult{{name: "cursor", ok: true, label: "cursor — wrote rules"}}
+	m.indexAfter = true
+	printSetupSummary(&m)
+	out := buf.String()
+	if !strings.Contains(out, "Next steps:") {
+		t.Fatalf("expected next steps; got:\n%s", out)
+	}
+	if strings.Contains(out, "Run `pincher index`") {
+		t.Errorf("indexAfter=true summary should not tell the user to run pincher index; got:\n%s", out)
+	}
 }
 
 // tint wraps a string in an SGR code and a reset.
