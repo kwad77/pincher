@@ -55,7 +55,7 @@ import (
 type ExtractedSymbol struct {
 	Name          string
 	QualifiedName string
-	Kind          string // Function|Method|Class|Interface|Enum|Type|Variable|Module
+	Kind          string // Function|Method|Class|Interface|Enum|Type|Variable|Module|Rationale
 	StartByte     int
 	EndByte       int
 	StartLine     int
@@ -759,7 +759,126 @@ func extractGo(source []byte, relPath, modulePath string) *FileResult {
 		}
 	}
 
+	// #1859: design-rationale comments (NOTE/HACK/WHY/...) as queryable
+	// Rationale symbols — the "why" behind the code, made searchable.
+	result.Symbols = append(result.Symbols, extractGoRationale(f, fset, pkg)...)
+
 	return result
+}
+
+// rationaleTagRE matches a design-rationale annotation at the start of
+// a comment line: NOTE / HACK / WHY / FIXME / XXX / TODO / BUG followed
+// by an optional colon. Case-insensitive. Capture group 2 is the body.
+var rationaleTagRE = regexp.MustCompile(`(?i)^(NOTE|HACK|WHY|FIXME|XXX|TODO|BUG)\b:?\s*(.*)$`)
+
+// extractGoRationale (#1859) finds design-rationale comments — the
+// NOTE/HACK/WHY/FIXME/XXX/TODO/BUG annotations that carry the reasoning
+// behind code — and emits them as queryable `Rationale` symbols. Each
+// is parented to the enclosing top-level func when the comment sits
+// inside one, so a reader can hop from a function to the rationale that
+// explains it. One Rationale per comment group; its byte span covers
+// the whole group so multi-line `//` rationale is captured intact.
+func extractGoRationale(f *ast.File, fset *token.FileSet, pkg string) []ExtractedSymbol {
+	if len(f.Comments) == 0 {
+		return nil
+	}
+	// Byte ranges of top-level funcs, for enclosing-symbol lookup.
+	type funcRange struct {
+		start, end int
+		qn         string
+	}
+	var funcs []funcRange
+	for _, decl := range f.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		qn := pkg + "." + fn.Name.Name
+		if fn.Recv != nil && len(fn.Recv.List) > 0 {
+			if rt := rationaleRecvName(fn.Recv.List[0].Type); rt != "" {
+				qn = pkg + "." + rt + "." + fn.Name.Name
+			}
+		}
+		funcs = append(funcs, funcRange{
+			start: fset.Position(fn.Pos()).Offset,
+			end:   fset.Position(fn.End()).Offset,
+			qn:    qn,
+		})
+	}
+	parentOf := func(off int) string {
+		for _, fr := range funcs {
+			if off >= fr.start && off < fr.end {
+				return fr.qn
+			}
+		}
+		return ""
+	}
+
+	var out []ExtractedSymbol
+	for _, cg := range f.Comments {
+		for _, c := range cg.List {
+			m := rationaleTagRE.FindStringSubmatch(cleanCommentText(c.Text))
+			if m == nil {
+				continue
+			}
+			tag := strings.ToUpper(m[1])
+			startPos := fset.Position(c.Pos())
+			endPos := fset.Position(cg.List[len(cg.List)-1].End())
+			name := tag
+			if body := strings.TrimSpace(m[2]); body != "" {
+				name = tag + ": " + truncateRunes(body, 72)
+			}
+			out = append(out, ExtractedSymbol{
+				Name:                 name,
+				QualifiedName:        fmt.Sprintf("%s.rationale.L%d", pkg, startPos.Line),
+				Kind:                 "Rationale",
+				StartByte:            startPos.Offset,
+				EndByte:              endPos.Offset,
+				StartLine:            startPos.Line,
+				EndLine:              endPos.Line,
+				Parent:               parentOf(startPos.Offset),
+				ExtractionConfidence: 1.0,
+			})
+			break // one Rationale symbol per comment group
+		}
+	}
+	return out
+}
+
+// cleanCommentText strips the comment delimiters (`//`, `/*`, `*/`)
+// and surrounding whitespace from a raw go/ast comment line.
+func cleanCommentText(raw string) string {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimPrefix(s, "//")
+	s = strings.TrimPrefix(s, "/*")
+	s = strings.TrimSuffix(s, "*/")
+	return strings.TrimSpace(s)
+}
+
+// rationaleRecvName resolves a method receiver type expression to its
+// bare type name (`*T` / `T[X]` → `T`). Empty when unrecognised.
+func rationaleRecvName(e ast.Expr) string {
+	switch t := e.(type) {
+	case *ast.StarExpr:
+		return rationaleRecvName(t.X)
+	case *ast.Ident:
+		return t.Name
+	case *ast.IndexExpr:
+		return rationaleRecvName(t.X)
+	case *ast.IndexListExpr:
+		return rationaleRecvName(t.X)
+	}
+	return ""
+}
+
+// truncateRunes shortens s to at most n runes, appending an ellipsis
+// when it had to cut.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 func goFuncToSymbol(d *ast.FuncDecl, fset *token.FileSet, source []byte, lineOffsets []int, pkg string, isTest bool) ExtractedSymbol {
