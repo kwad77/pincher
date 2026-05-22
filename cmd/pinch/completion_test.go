@@ -75,3 +75,21 @@ func TestCompletionScript(t *testing.T) {
 		t.Error("completionScript should reject an unsupported shell")
 	}
 }
+
+// TestNearestSubcommand checks the typo `did you mean` hint.
+func TestNearestSubcommand(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"doctr", "doctor"},
+		{"docter", "doctor"},
+		{"stat", "stats"},
+		{"setp", "setup"},
+		{"indx", "index"},
+		{"completon", "completion"},
+		{"wholly-unrelated-token", ""}, // too far from anything
+	}
+	for _, c := range cases {
+		if got := nearestSubcommand(c.in); got != c.want {
+			t.Errorf("nearestSubcommand(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

@@ -120,7 +120,11 @@ func main() {
 	// so the typo looked like it silently succeeded. Reject it loudly
 	// with the usage banner (which lists every valid subcommand).
 	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
-		fmt.Fprintf(os.Stderr, "pincher: unknown subcommand %q\n\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "pincher: unknown subcommand %q\n", os.Args[1])
+		if near := nearestSubcommand(os.Args[1]); near != "" {
+			fmt.Fprintf(os.Stderr, "Did you mean %q?\n", near)
+		}
+		fmt.Fprintln(os.Stderr, "")
 		printHelpBanner(os.Stderr)
 		os.Exit(1)
 	}

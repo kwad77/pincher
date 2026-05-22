@@ -47,6 +47,60 @@ func runCompletionCLI(args []string) {
 	fmt.Print(script)
 }
 
+// nearestSubcommand returns the pincher subcommand closest to arg by
+// Levenshtein distance, or "" if nothing is within distance 2. It backs
+// the `did you mean` hint for typo'd subcommands (#1710 v0.92) — e.g.
+// `pincher doctr` suggests `doctor`.
+func nearestSubcommand(arg string) string {
+	best, bestDist := "", 3
+	for _, s := range pincherSubcommands {
+		d := levenshtein(arg, s)
+		if d < bestDist {
+			best, bestDist = s, d
+		}
+	}
+	return best
+}
+
+// levenshtein is the standard edit distance between a and b.
+func levenshtein(a, b string) int {
+	la, lb := len(a), len(b)
+	if la == 0 {
+		return lb
+	}
+	if lb == 0 {
+		return la
+	}
+	prev := make([]int, lb+1)
+	for j := 0; j <= lb; j++ {
+		prev[j] = j
+	}
+	for i := 1; i <= la; i++ {
+		cur := make([]int, lb+1)
+		cur[0] = i
+		for j := 1; j <= lb; j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min3(cur[j-1]+1, prev[j]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[lb]
+}
+
+func min3(a, b, c int) int {
+	m := a
+	if b < m {
+		m = b
+	}
+	if c < m {
+		m = c
+	}
+	return m
+}
+
 // completionScript returns the completion script for shell, generated
 // from pincherSubcommands. ok is false for an unrecognized shell.
 func completionScript(shell string) (script string, ok bool) {
