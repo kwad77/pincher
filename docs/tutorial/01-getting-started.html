@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Getting started · pincherMCP tutorial</title>
+<meta name="description" content="Install pincher, wire it into your editor with pincher setup, index your first project, and confirm it works."/>
+<meta name="theme-color" content="#0d1117"/>
+<link rel="icon" type="image/png" sizes="32x32" href="../assets/favicon-32.png"/>
+<link rel="stylesheet" href="../assets/tutorial.css"/>
+</head>
+<body>
+
+<nav class="top">
+  <a class="brand" href="../index.html">pincher<span>MCP</span></a>
+  <div class="links">
+    <a href="../index.html">Home</a>
+    <a href="../tutorial.html">Tutorial</a>
+    <a href="../reference/">Reference</a>
+    <a href="https://github.com/kwad77/pincher">GitHub</a>
+  </div>
+</nav>
+
+<main class="tut">
+  <div class="crumbs"><a href="../index.html">Home</a> / <a href="../tutorial.html">Tutorial</a> / Getting started</div>
+  <ul class="track">
+    <li class="current"><a href="01-getting-started.html"><span class="n">1</span>Getting started</a></li>
+    <li><a href="02-the-graph.html"><span class="n">2</span>The graph</a></li>
+    <li><a href="03-composites-and-meta.html"><span class="n">3</span>Composites &amp; _meta</a></li>
+    <li><a href="04-dashboard-and-ops.html"><span class="n">4</span>Dashboard &amp; ops</a></li>
+  </ul>
+
+  <h1>Getting started</h1>
+  <p class="lede">
+    Five steps: install the binary, wire pincher into your editor, index a
+    project, and confirm the agent can see it. About five minutes.
+  </p>
+
+  <h2>What pincher is — in one paragraph</h2>
+  <p>
+    pincher is a single Go binary that runs locally as an
+    <a href="https://modelcontextprotocol.io">MCP</a> server. It indexes a
+    codebase into three co-located layers — a byte-offset symbol store, a
+    knowledge graph of CALLS/IMPORTS/READS edges, and FTS5 full-text search —
+    and exposes them to your AI agent as callable tools. The agent answers
+    "who calls this?" or "read this function in context" with a cheap indexed
+    lookup instead of reading whole files. No cloud, no CGO, no daemon you
+    manage by hand.
+  </p>
+
+  <h2>Step 1 — Install the binary</h2>
+  <div class="step">
+    <div class="marker">1</div>
+    <div class="body">
+      <p>
+        Grab the release for your platform from the
+        <a href="../index.html#install">Install section</a> on the home page —
+        a tarball (macOS / Linux) or zip (Windows), or Homebrew / Scoop /
+        Docker. Every path produces the same single <code>pincher</code>
+        binary. Put it on your <code>PATH</code> and check it:
+      </p>
+      <pre><code>pincher --version</code></pre>
+    </div>
+  </div>
+
+  <h2>Step 2 — Run the setup wizard</h2>
+  <div class="step">
+    <div class="marker">2</div>
+    <div class="body">
+      <p>
+        <code>pincher setup</code> is an interactive wizard. It detects which
+        editors and agents you have installed, pre-checks them, and writes the
+        config each one needs — so you never have to look up a flag name.
+      </p>
+      <pre><code>pincher setup</code></pre>
+      <p>
+        Use <kbd>↑</kbd>/<kbd>↓</kbd> to move, <kbd>space</kbd> to toggle a
+        host, <kbd>enter</kbd> to continue. The wizard walks you through
+        host selection, a short options step (global rules, the Claude
+        PreToolUse hook, git hooks), a review of exactly what files it will
+        write, and then applies it.
+      </p>
+      <div class="callout">
+        <span class="k">Scripted installs</span>
+        Prefer flags? <code>pincher init --target=cursor</code> (and
+        <code>--target=claude</code>, <code>codex</code>, …) does the same
+        write non-interactively. <code>setup</code> is the guided front end;
+        <code>init</code> is the scriptable one. Run <code>pincher init -h</code>
+        for every target.
+      </div>
+    </div>
+  </div>
+
+  <h2>Step 3 — Index your first project</h2>
+  <div class="step">
+    <div class="marker">3</div>
+    <div class="body">
+      <p>
+        Change into a repository and index it. pincher walks the tree
+        (respecting <code>.gitignore</code>), extracts symbols, and builds the
+        graph:
+      </p>
+      <pre><code>cd ~/code/my-project
+pincher index</code></pre>
+      <p>
+        It prints a one-line summary — symbols, edges, files, duration — and,
+        on a project's first index, a pointer to what comes next. Re-running
+        <code>pincher index</code> later is incremental: only changed files
+        are re-extracted.
+      </p>
+      <div class="callout tip">
+        <span class="k">You usually don't need to</span>
+        Once an editor is wired up, pincher's background watcher keeps the
+        index fresh automatically. The manual <code>pincher index</code> is
+        handy for the very first build and for CI.
+      </div>
+    </div>
+  </div>
+
+  <h2>Step 4 — Confirm it works</h2>
+  <div class="step">
+    <div class="marker">4</div>
+    <div class="body">
+      <p>Two quick checks:</p>
+      <pre><code>pincher doctor      # schema, index freshness, any advisories
+pincher web         # opens the dashboard in your browser</code></pre>
+      <p>
+        <code>doctor</code> should report your project with a recent
+        <code>indexed_at</code> and no advisories. <code>web</code> opens a
+        local dashboard showing the same project's symbol and edge counts.
+      </p>
+    </div>
+  </div>
+
+  <h2>Step 5 — Ask your agent</h2>
+  <div class="step">
+    <div class="marker">5</div>
+    <div class="body">
+      <p>
+        Open the editor you wired up in Step 2 and ask the agent a
+        code-navigation question — "what calls <code>processOrder</code>?",
+        "show me the auth middleware". If pincher is connected, the agent
+        answers from the index instead of grepping. You can confirm the MCP
+        connection in your host's MCP panel (it should list
+        <code>pincher</code> with its tools).
+      </p>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <span class="k">Heads up — `pincher` by itself</span>
+    Running bare <code>pincher</code> in a terminal prints an orientation and
+    exits: pincher is an MCP <em>server</em>, launched by your editor over a
+    pipe, not run directly. The commands you run by hand are the subcommands —
+    <code>setup</code>, <code>index</code>, <code>web</code>, <code>doctor</code>.
+  </div>
+
+  <div class="pagenav">
+    <a class="prev disabled"><span class="dir">Prev</span>—</a>
+    <a class="next" href="02-the-graph.html"><span class="dir">Next</span>Stop 2 — Working with the graph →</a>
+  </div>
+</main>
+
+<footer>
+  pincherMCP — <a href="https://github.com/kwad77/pincher">github.com/kwad77/pincher</a> ·
+  <a href="../tutorial.html">Tutorial home</a>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Tutorial · pincherMCP</title>
+<meta name="description" content="A four-stop tutorial track for pincherMCP — install and wire it up, work the symbol graph, use the composite tools and the _meta envelope, and run the dashboard."/>
+<meta name="theme-color" content="#0d1117"/>
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png"/>
+<link rel="stylesheet" href="assets/tutorial.css"/>
+</head>
+<body>
+
+<nav class="top">
+  <a class="brand" href="index.html">pincher<span>MCP</span></a>
+  <div class="links">
+    <a href="index.html">Home</a>
+    <a href="tutorial.html">Tutorial</a>
+    <a href="reference/">Reference</a>
+    <a href="https://github.com/kwad77/pincher">GitHub</a>
+  </div>
+</nav>
+
+<main class="tut">
+  <div class="crumbs"><a href="index.html">Home</a> / Tutorial</div>
+  <h1>Learn pincher in four stops</h1>
+  <p class="lede">
+    pincher is a local code-intelligence MCP server: it indexes your repo into a
+    symbol store, a knowledge graph, and full-text search, then exposes that to
+    your AI agent as callable tools. This track takes you from a fresh install to
+    fluent — each stop is a short, hands-on page.
+  </p>
+
+  <div class="cards">
+    <a class="card" href="tutorial/01-getting-started.html">
+      <div class="n">Stop 1</div>
+      <h3>Getting started</h3>
+      <p>Install the binary, run <code>pincher setup</code> to wire your editor, index your first project, and confirm it works.</p>
+    </a>
+    <a class="card" href="tutorial/02-the-graph.html">
+      <div class="n">Stop 2</div>
+      <h3>Working with the graph</h3>
+      <p>Search, read symbols in context, trace callers and callees, and run pinchQL graph queries — the core navigation loop.</p>
+    </a>
+    <a class="card" href="tutorial/03-composites-and-meta.html">
+      <div class="n">Stop 3</div>
+      <h3>Composites &amp; the <code>_meta</code> envelope</h3>
+      <p>One-call investigations with the composite tools, and how to read the <code>_meta</code> envelope your agent branches on.</p>
+    </a>
+    <a class="card" href="tutorial/04-dashboard-and-ops.html">
+      <div class="n">Stop 4</div>
+      <h3>Dashboard &amp; operations</h3>
+      <p>The HTTP dashboard, <code>pincher doctor</code>, the background watcher, multi-project setups, and keeping the index healthy.</p>
+    </a>
+  </div>
+
+  <h2>Per-host setup walkthroughs</h2>
+  <p>
+    Stop 1 covers the universal flow. For copy-paste config specific to one
+    editor or agent, these short walkthroughs go straight to the point:
+  </p>
+  <ul>
+    <li><a href="tutorials/claude-code.md">Claude Code</a></li>
+    <li><a href="tutorials/cursor.md">Cursor</a></li>
+    <li><a href="tutorials/codex.md">Codex</a></li>
+    <li><a href="tutorials/zed.md">Zed</a></li>
+    <li><a href="tutorials/jetbrains.md">JetBrains IDEs</a></li>
+    <li><a href="tutorials/vscode-copilot.md">VS Code (Copilot)</a></li>
+    <li><a href="tutorials/http-dashboard.md">HTTP dashboard</a></li>
+  </ul>
+
+  <div class="callout tip">
+    <span class="k">New here?</span>
+    Start at <a href="tutorial/01-getting-started.html">Stop 1</a> and read straight
+    through — each page ends with a link to the next. The whole track is about a
+    20-minute read.
+  </div>
+</main>
+
+<footer>
+  pincherMCP — <a href="https://github.com/kwad77/pincher">github.com/kwad77/pincher</a> ·
+  <a href="index.html">Home</a> · <a href="reference/">Reference</a>
+</footer>
+
+</body>
+</html>

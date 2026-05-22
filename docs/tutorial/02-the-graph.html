@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Working with the graph · pincherMCP tutorial</title>
+<meta name="description" content="Search, read symbols in context, trace callers and callees, and run pinchQL graph queries — pincher's core code-navigation loop."/>
+<meta name="theme-color" content="#0d1117"/>
+<link rel="icon" type="image/png" sizes="32x32" href="../assets/favicon-32.png"/>
+<link rel="stylesheet" href="../assets/tutorial.css"/>
+</head>
+<body>
+
+<nav class="top">
+  <a class="brand" href="../index.html">pincher<span>MCP</span></a>
+  <div class="links">
+    <a href="../index.html">Home</a>
+    <a href="../tutorial.html">Tutorial</a>
+    <a href="../reference/">Reference</a>
+    <a href="https://github.com/kwad77/pincher">GitHub</a>
+  </div>
+</nav>
+
+<main class="tut">
+  <div class="crumbs"><a href="../index.html">Home</a> / <a href="../tutorial.html">Tutorial</a> / Working with the graph</div>
+  <ul class="track">
+    <li><a href="01-getting-started.html"><span class="n">1</span>Getting started</a></li>
+    <li class="current"><a href="02-the-graph.html"><span class="n">2</span>The graph</a></li>
+    <li><a href="03-composites-and-meta.html"><span class="n">3</span>Composites &amp; _meta</a></li>
+    <li><a href="04-dashboard-and-ops.html"><span class="n">4</span>Dashboard &amp; ops</a></li>
+  </ul>
+
+  <h1>Working with the graph</h1>
+  <p class="lede">
+    These are the tools your agent calls all day. You rarely invoke them by
+    hand — but knowing what each one does, and the order they go in, is how
+    you tell whether the agent is using pincher well.
+  </p>
+
+  <h2>The mental model</h2>
+  <p>
+    One <code>symbols</code> table feeds three layers, all populated in a
+    single parse pass:
+  </p>
+  <ul>
+    <li><strong>Byte-offset store</strong> — every symbol records its exact
+      start/end byte. Reading a function is one SQL row plus one file seek;
+      no re-parsing, no whole-file read.</li>
+    <li><strong>Knowledge graph</strong> — <code>CALLS</code>,
+      <code>IMPORTS</code>, <code>READS</code>/<code>WRITES</code> edges
+      between symbols.</li>
+    <li><strong>FTS5 search</strong> — BM25 full-text ranking over symbol
+      names, signatures, and docs.</li>
+  </ul>
+  <p>The navigation tools each lean on one or more of those layers.</p>
+
+  <h2>search — find code by name or keyword</h2>
+  <p>
+    Always the first call when you don't have a symbol ID yet.
+    <code>search</code> runs BM25 over the code corpus and returns ranked hits
+    with signatures. It supports prefix (<code>auth*</code>), phrase
+    (<code>"token validation"</code>), and filters by <code>kind</code>,
+    <code>language</code>, and <code>corpus</code> (<code>code</code> /
+    <code>config</code> / <code>docs</code>).
+  </p>
+  <pre><code>search query="processOrder"
+search query="auth*" kind=Function language=Go</code></pre>
+
+  <h2>symbol, symbols, context — read a symbol</h2>
+  <p>
+    Once you have an ID (<code>{file}::{qualified_name}#{kind}</code>):
+  </p>
+  <ul>
+    <li><code>symbol</code> — one symbol's source via the byte-offset seek.</li>
+    <li><code>symbols</code> — a batch of IDs in one round trip.</li>
+    <li><code>context</code> — the symbol <em>plus</em> its direct imports and
+      callees. This is the one to reach for before editing: you see the
+      function and everything it depends on in a single response, ~90% cheaper
+      than reading the files.</li>
+  </ul>
+  <pre><code>context id="internal/db/db.go::db.Open#Function"</code></pre>
+
+  <h2>trace — follow the call graph</h2>
+  <p>
+    <code>trace</code> walks CALLS-family edges with a breadth-first search and
+    tags each hop with a risk label (CRITICAL = direct caller, HIGH = two
+    hops, …). Use <code>direction=inbound</code> for "who calls this",
+    <code>outbound</code> for "what does this call".
+  </p>
+  <pre><code>trace name="processOrder" direction=inbound</code></pre>
+  <div class="callout">
+    <span class="k">Before you change behavior</span>
+    Run <code>trace inbound</code> on the symbol you're about to edit — it is
+    the cheap way to see the blast radius before you touch anything.
+  </div>
+
+  <h2>query — structural questions in pinchQL</h2>
+  <p>
+    When you want relationships, not text matches, <code>query</code> takes
+    pinchQL — a pragmatic Cypher-shaped subset with <code>MATCH</code>,
+    <code>WHERE</code>, <code>RETURN</code>, single-hop joins, and bounded
+    variable-length traversal:
+  </p>
+  <pre><code># every caller of Open
+MATCH (a)-[:CALLS]->(b) WHERE b.name="Open" RETURN a.name
+
+# functions in the server package with no inbound calls (audit shape)
+MATCH (n:Function) WHERE n.file_path CONTAINS "server" RETURN n.name</code></pre>
+
+  <h2>architecture &amp; neighborhood — orient</h2>
+  <p>
+    <code>architecture</code> is the once-at-the-start call for an unfamiliar
+    repo: entry points, hotspots (most-called symbols), language breakdown,
+    node and edge counts. <code>neighborhood</code> returns the other symbols
+    in the same file as a seed — handy for planning an in-file refactor.
+  </p>
+
+  <h2>The workflow shape</h2>
+  <p>
+    The tools compose into one loop, and it's worth recognizing when the agent
+    follows it:
+  </p>
+  <pre><code>architecture        →  orient (once, on unfamiliar code)
+search / query      →  find the symbol
+context / symbol    →  read it
+trace               →  check impact, if you're changing behavior
+…edit…
+changes             →  verify the blast radius before you're done</code></pre>
+  <p>
+    For audit-shaped questions ("find every X without Y"), skip straight to
+    <code>query</code> with a property predicate.
+  </p>
+
+  <div class="pagenav">
+    <a class="prev" href="01-getting-started.html"><span class="dir">Prev</span>← Stop 1 — Getting started</a>
+    <a class="next" href="03-composites-and-meta.html"><span class="dir">Next</span>Stop 3 — Composites &amp; _meta →</a>
+  </div>
+</main>
+
+<footer>
+  pincherMCP — <a href="https://github.com/kwad77/pincher">github.com/kwad77/pincher</a> ·
+  <a href="../tutorial.html">Tutorial home</a>
+</footer>
+
+</body>
+</html>
