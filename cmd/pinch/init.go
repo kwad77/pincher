@@ -38,25 +38,36 @@ var initPickerShortlist = []struct{ target, label string }{
 	{"gemini", "Gemini CLI"},
 }
 
-// autoResolveInitTarget picks the init target when `pincher init` ran
-// with no --target. It uses the shared host-aware resolver; when that
-// is inconclusive it asks the user interactively (if stdin is a TTY)
-// and otherwise refuses with exit 1 — #1862, silently defaulting to
-// claude gave a Codex user a CLAUDE.md + .claude/ hook they never
-// asked for.
-func autoResolveInitTarget(cwd string, out io.Writer) string {
-	res := pinit.AutoResolveInitTarget(cwd)
+// resolveInitTargetChoice turns a host-resolution result into a target
+// name. When the resolver was conclusive it returns that target; when
+// not, it asks the user interactively (picker) and otherwise reports
+// ok=false so the caller refuses. Pure relative to its inputs — res,
+// streams, and the interactive flag are all passed in — so every
+// branch is unit-testable. #1862.
+func resolveInitTargetChoice(res pinit.AutoResolveResult, out io.Writer, in io.Reader, interactive bool) (string, bool) {
 	if res.Decided {
 		fmt.Fprintf(out, "pincher init: no --target given — %s. Pass --target to override.\n", res.Reason)
-		return res.Target
+		return res.Target, true
 	}
 	// Inconclusive. A human at a terminal gets a picker; a scripted /
-	// agent invocation (no TTY) gets a clear refusal so it can re-run
-	// with an explicit --target.
-	if term.IsTerminal(int(os.Stdin.Fd())) {
-		if picked, ok := promptInitTarget(out, os.Stdin); ok {
-			return picked
+	// agent invocation (no TTY) falls through to the caller's refusal.
+	if interactive {
+		if picked, ok := promptInitTarget(out, in); ok {
+			return picked, true
 		}
+	}
+	return "", false
+}
+
+// autoResolveInitTarget picks the init target when `pincher init` ran
+// with no --target — wiring the real environment into
+// resolveInitTargetChoice and exiting 1 with guidance when no target
+// could be determined. #1862.
+func autoResolveInitTarget(cwd string, out io.Writer) string {
+	res := pinit.AutoResolveInitTarget(cwd)
+	interactive := term.IsTerminal(int(os.Stdin.Fd()))
+	if target, ok := resolveInitTargetChoice(res, out, os.Stdin, interactive); ok {
+		return target
 	}
 	fmt.Fprintln(os.Stderr, "pincher init: could not determine which agent/editor to configure.")
 	fmt.Fprintln(os.Stderr, "  No host env signal (e.g. CLAUDECODE) and no editor marker files were found.")

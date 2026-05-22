@@ -11,6 +11,44 @@ import (
 	pinit "github.com/kwad77/pincher/internal/init"
 )
 
+// TestResolveInitTargetChoice covers every branch of the
+// host-resolution → target decision: conclusive resolver result,
+// inconclusive + interactive picker, inconclusive + non-interactive
+// (caller must refuse). #1862.
+func TestResolveInitTargetChoice(t *testing.T) {
+	t.Parallel()
+
+	// Conclusive resolver result → that target, ignoring streams.
+	got, ok := resolveInitTargetChoice(
+		pinit.AutoResolveResult{Target: "codex", Reason: "running under host codex", Decided: true},
+		&bytes.Buffer{}, strings.NewReader(""), false)
+	if !ok || got != "codex" {
+		t.Errorf("decided result: got (%q,%v), want (codex,true)", got, ok)
+	}
+
+	// Inconclusive + interactive → the picker resolves it.
+	got, ok = resolveInitTargetChoice(
+		pinit.AutoResolveResult{Decided: false},
+		&bytes.Buffer{}, strings.NewReader("2\n"), true)
+	if !ok || got != "codex" {
+		t.Errorf("inconclusive+interactive: got (%q,%v), want (codex,true)", got, ok)
+	}
+
+	// Inconclusive + non-interactive → no guess; caller refuses.
+	if _, ok := resolveInitTargetChoice(
+		pinit.AutoResolveResult{Decided: false},
+		&bytes.Buffer{}, strings.NewReader(""), false); ok {
+		t.Error("inconclusive + non-interactive must report ok=false, not guess")
+	}
+
+	// Inconclusive + interactive + unusable picker input → ok=false.
+	if _, ok := resolveInitTargetChoice(
+		pinit.AutoResolveResult{Decided: false},
+		&bytes.Buffer{}, strings.NewReader("garbage\n"), true); ok {
+		t.Error("inconclusive + bad picker input must report ok=false")
+	}
+}
+
 // TestPromptInitTarget covers the interactive picker shown when
 // `pincher init` can't auto-detect the host (#1862). Feeds canned
 // stdin so every menu branch is exercised without a TTY.
