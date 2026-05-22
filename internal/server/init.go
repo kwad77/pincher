@@ -59,9 +59,6 @@ func (s *Server) handleInit(_ context.Context, req *mcp.CallToolRequest) (*mcp.C
 	start, tool, args := beginCall(req)
 
 	target, _ := args["target"].(string)
-	if target == "" {
-		target = "detect"
-	}
 	write, _ := args["write"].(bool)
 	projectPath, _ := args["project_path"].(string)
 	if projectPath == "" {
@@ -84,6 +81,28 @@ func (s *Server) handleInit(_ context.Context, req *mcp.CallToolRequest) (*mcp.C
 	absProjectPath, err := filepath.Abs(projectPath)
 	if err != nil {
 		return errResult(fmt.Sprintf("init: project_path resolve: %v", err)), nil
+	}
+
+	// #1862: an init call with no `target` must NOT silently default to
+	// claude (nor to detect-then-claude-fallback). Resolve host-aware:
+	// the agent pincher is running under (env signal) → marker files →
+	// refuse rather than guess. The MCP server is spawned BY the host,
+	// so its process env carries the host signal.
+	if target == "" {
+		res := pinit.AutoResolveInitTarget(absProjectPath)
+		if !res.Decided {
+			return s.errResultRich(
+				"init: no `target` given and the host could not be determined (no host env signal, no editor marker files). Pass `target` explicitly.",
+				[]map[string]string{
+					{"tool": "init", "args": initArgsJSON("claude", absProjectPath),
+						"why": "configure Claude Code (CLAUDE.md + .claude/ PreToolUse hook)"},
+					{"tool": "init", "args": initArgsJSON("codex", absProjectPath),
+						"why": "configure OpenAI Codex (~/.codex/config.toml MCP entry)"},
+					{"tool": "init", "args": initArgsJSON("detect", absProjectPath),
+						"why": "scan for every editor whose marker files are present"},
+				}), nil
+		}
+		target = res.Target
 	}
 
 	// Hard-reject continue: it's always-global, path lives in the

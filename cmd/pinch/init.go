@@ -22,13 +22,31 @@ import (
 //
 // The pure planning + merge logic lives in internal/init (#253);
 // this function is the CLI orchestration layer.
+// autoResolveInitTarget picks the init target when `pincher init` ran
+// with no --target. Wraps the shared host-aware resolver: it refuses
+// (exit 1) rather than guessing when no host is conclusive — #1862,
+// silently defaulting to claude gave a Codex user a CLAUDE.md and a
+// .claude/ hook they never asked for.
+func autoResolveInitTarget(cwd string, out io.Writer) string {
+	res := pinit.AutoResolveInitTarget(cwd)
+	if !res.Decided {
+		fmt.Fprintln(os.Stderr, "pincher init: could not determine which agent/editor to configure.")
+		fmt.Fprintln(os.Stderr, "  No host env signal (e.g. CLAUDECODE) and no editor marker files were found.")
+		fmt.Fprintf(os.Stderr, "  Pass --target=NAME explicitly — one of: %s\n", strings.Join(pinit.TargetNames(), ", "))
+		fmt.Fprintln(os.Stderr, "  Or --target=detect to scan, --target=all for every target.")
+		os.Exit(1)
+	}
+	fmt.Fprintf(out, "pincher init: no --target given — %s. Pass --target to override.\n", res.Reason)
+	return res.Target
+}
+
 func runInitCLI(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	global := fs.Bool("global", false, "Write the global rules file (target-dependent; e.g. ~/.claude/CLAUDE.md for claude)")
 	dryRun := fs.Bool("dry-run", false, "Print what would be written; do not modify any file")
 	force := fs.Bool("force", false, "Overwrite the marker block without prompting (default behavior anyway, kept for explicit scripted use)")
 	dataDir := fs.String("data-dir", "", "Override data directory (used to discover the running HTTP dashboard URL)")
-	targetFlag := fs.String("target", "claude", "Editor target: "+strings.Join(pinit.TargetNames(), ", "))
+	targetFlag := fs.String("target", "", "Editor/agent target: "+strings.Join(pinit.TargetNames(), ", ")+". Default: auto-detect the host pincher is running under (env signal) then editor marker files; refuses rather than guessing when neither is conclusive.")
 	noHook := fs.Bool("no-hook", false, "(claude target only) Skip writing the .claude/settings.json PreToolUse hook. Default false — the hook is what closes the Read/Grep → pincher gap at runtime.")
 	gitHooks := fs.Bool("git-hooks", false, "Install post-checkout / post-merge / post-rewrite git hooks into .git/hooks so branch switches and rebases trigger an eager reindex (#1261). Pincher-managed hooks carry a marker comment; pre-existing non-pincher hooks are skipped unless --force is set.")
 	quiet := fs.Bool("quiet", false, "Suppress the per-language extraction-tier profile printed after the wiring step (#631). The wiring itself still runs.")
@@ -51,6 +69,13 @@ func runInitCLI(args []string) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pincher init: cwd: %v\n", err)
 		os.Exit(1)
+	}
+	// #1862: bare `pincher init` (no --target) must NOT silently default
+	// to claude — a Codex user running it got CLAUDE.md + .claude/. When
+	// --target is omitted, resolve it host-aware: env signal → marker
+	// files → refuse rather than guess.
+	if *targetFlag == "" {
+		*targetFlag = autoResolveInitTarget(cwd, out)
 	}
 	targets, err := pinit.ResolveTargets(*targetFlag, cwd)
 	if err != nil {

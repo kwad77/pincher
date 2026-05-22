@@ -101,15 +101,28 @@ func TargetNames() []string {
 	return out
 }
 
-// DetectTargets walks cwd and returns every target whose DetectFn
-// returns true. If none match, returns just claude (the safe default).
-func DetectTargets(cwd string) []Target {
+// DetectTargetsRaw walks cwd and returns every target whose DetectFn
+// returns true — with NO fallback. An empty result means "no host
+// could be detected", which callers doing host-aware target resolution
+// (#1862) must distinguish from "claude detected": silently defaulting
+// to claude is exactly the bug where a Codex user got CLAUDE.md.
+func DetectTargetsRaw(cwd string) []Target {
 	var hits []Target
 	for _, t := range AllTargets {
 		if t.DetectFn != nil && t.DetectFn(cwd) {
 			hits = append(hits, t)
 		}
 	}
+	return hits
+}
+
+// DetectTargets walks cwd and returns every target whose DetectFn
+// returns true. If none match, returns just claude (the safe default).
+// Backs `--target=detect`, which is an explicit opt-in — the claude
+// fallback here is acceptable because the user asked to "detect or
+// else"; for the no-target auto-resolution path use DetectTargetsRaw.
+func DetectTargets(cwd string) []Target {
+	hits := DetectTargetsRaw(cwd)
 	if len(hits) == 0 {
 		hits = append(hits, ClaudeTarget)
 	}
