@@ -212,3 +212,24 @@ func TestRenderHosts_Colorized(t *testing.T) {
 		t.Error("renderHosts should emit the accent color on the cursor row")
 	}
 }
+
+// renderHosts shows ·configured (pincher already wired in) ahead of
+// the weaker ·detected tag (#1710 v0.92).
+func TestRenderHosts_ConfiguredIndicator(t *testing.T) {
+	m := newSetupModel(pinit.AllTargets, []pinit.Target{pinit.ClaudeTarget, pinit.CursorTarget}, false)
+	m.configured = map[string]bool{"claude": true} // claude wired, cursor only detected
+	out := joinLines(renderHosts(&m))
+	if !strings.Contains(out, "·configured") {
+		t.Error("a configured host should render the ·configured tag")
+	}
+	if !strings.Contains(out, "·detected") {
+		t.Error("a detected-but-not-configured host should still render ·detected")
+	}
+	// A configured host must not also carry the weaker ·detected tag on
+	// its own row — ·configured supersedes it.
+	for _, line := range renderHosts(&m) {
+		if strings.Contains(line, "claude") && strings.Contains(line, "·detected") {
+			t.Error("the configured claude row should show ·configured, not ·detected")
+		}
+	}
+}

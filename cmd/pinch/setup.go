@@ -76,6 +76,7 @@ func runSetupCLI(args []string) {
 	}
 
 	m := newSetupModel(pinit.AllTargets, pinit.DetectTargets(cwd), isGitRepo(cwd))
+	m.configured = scanConfigured(cwd)
 
 	oldState, err := term.MakeRaw(inFd)
 	if err != nil {
@@ -278,9 +279,13 @@ func renderHosts(m *setupModel) []string {
 		if i == m.cursor {
 			name = tint(ansiBold, name)
 		}
+		// ·configured (pincher already wired in) is the stronger signal
+		// and supersedes the ·detected (editor merely installed) tag.
 		suffix := ""
-		if m.detected[t.Name] {
-			suffix = tint(ansiGreen, "  ·detected")
+		if m.configured[t.Name] {
+			suffix = tint(ansiGreen, "  ·configured")
+		} else if m.detected[t.Name] {
+			suffix = tint(ansiDim, "  ·detected")
 		}
 		lines = append(lines, cursor+box+"  "+name+" "+tint(ansiDim, t.Describe)+suffix)
 	}
@@ -434,6 +439,23 @@ func condenseHome(p string) string {
 func isGitRepo(cwd string) bool {
 	_, err := os.Stat(filepath.Join(cwd, ".git"))
 	return err == nil
+}
+
+// scanConfigured returns the targets whose config already carries a
+// pincher policy block. Plan reports action "updated" when a managed
+// block is found (and would be replaced in place); "wrote"/"appended"
+// mean pincher is not yet wired in. Lets the wizard render
+// "·configured" so a re-run tells done from todo. Checks the
+// project-local path (global=false) the wizard writes by default; a
+// Plan error (malformed target file) counts as not-configured.
+func scanConfigured(cwd string) map[string]bool {
+	out := map[string]bool{}
+	for _, t := range pinit.AllTargets {
+		if plan, err := pinit.Plan(t, cwd, false); err == nil && plan.Action == "updated" {
+			out[t.Name] = true
+		}
+	}
+	return out
 }
 
 // printSetupSummary echoes the apply results to the cooked terminal so

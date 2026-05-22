@@ -38,9 +38,14 @@ type applyResult struct {
 type setupModel struct {
 	screen  setupScreen
 	targets []pinit.Target  // AllTargets, in registry order
-	detected map[string]bool // target name → marker found under cwd
-	selected map[string]bool // target name → chosen for install
-	cursor   int             // row index within the current screen
+	detected map[string]bool // target name → editor marker found under cwd
+	// configured: target name → pincher's policy block is ALREADY in
+	// that host's config (Plan reports action "updated"). Set by
+	// runSetupCLI after construction; nil is fine — a nil-map read is
+	// false. Distinguishes "editor installed" from "pincher wired up".
+	configured map[string]bool
+	selected   map[string]bool // target name → chosen for install
+	cursor     int             // row index within the current screen
 
 	inGitRepo bool
 
