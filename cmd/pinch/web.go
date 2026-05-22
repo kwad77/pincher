@@ -18,6 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/kwad77/pincher/internal/db"
 )
 
@@ -52,11 +54,12 @@ func runWebCLI(args []string) {
 	fs := flag.NewFlagSet("web", flag.ExitOnError)
 	dataDir := fs.String("data-dir", "", "Override data directory")
 	noStart := fs.Bool("no-start", false, "Do not auto-start an HTTP server when none is running; exit 1 instead")
+	noOpen := fs.Bool("no-open", false, "Do not open the dashboard in a browser; just print the URL")
 	port := fs.Int("port", webDefaultStartPort, "Starting port for auto-start scan")
 	jsonOut := fs.Bool("json", false, "Emit a single JSON line {url, pid, started_by} instead of a human banner")
 	timeoutSec := fs.Int("timeout", int(webBackgroundReadyTimeout/time.Second), "Seconds to wait for an auto-started server to become ready")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: pincher web [--data-dir DIR] [--no-start] [--port N] [--json] [--timeout SEC]")
+		fmt.Fprintln(os.Stderr, "usage: pincher web [--data-dir DIR] [--no-start] [--no-open] [--port N] [--json] [--timeout SEC]")
 		fmt.Fprintln(os.Stderr, "  Resolves the active pincher HTTP URL. Auto-starts a server on demand.")
 		fs.PrintDefaults()
 	}
@@ -95,6 +98,7 @@ func runWebCLI(args []string) {
 				runningVer, version, pid)
 		}
 		emitWebResult(os.Stdout, base, dashboardURL(base), pid, "existing", *jsonOut)
+		maybeOpenDashboard(dashboardURL(base), *jsonOut, *noOpen)
 		return
 	}
 
@@ -109,6 +113,19 @@ func runWebCLI(args []string) {
 		os.Exit(1)
 	}
 	emitWebResult(os.Stdout, base, dashboardURL(base), pid, "started", *jsonOut)
+	maybeOpenDashboard(dashboardURL(base), *jsonOut, *noOpen)
+}
+
+// maybeOpenDashboard opens the dashboard in the user's browser when
+// `pincher web` is run interactively. Best-effort: a launch failure is
+// silent because emitWebResult has already printed the URL.
+func maybeOpenDashboard(dashboard string, jsonOut, noOpen bool) {
+	if !shouldOpenBrowser(term.IsTerminal(int(os.Stdout.Fd())), jsonOut, noOpen) {
+		return
+	}
+	if err := openBrowser(dashboard); err == nil {
+		fmt.Fprintln(os.Stdout, "  (opening in your browser…)")
+	}
 }
 
 // dashboardURL turns a base URL (no path) into the full dashboard URL.
