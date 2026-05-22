@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,100 @@ import (
 
 	pinit "github.com/kwad77/pincher/internal/init"
 )
+
+// TestResolveInitTargetChoice covers every branch of the
+// host-resolution → target decision: conclusive resolver result,
+// inconclusive + interactive picker, inconclusive + non-interactive
+// (caller must refuse). #1862.
+func TestResolveInitTargetChoice(t *testing.T) {
+	t.Parallel()
+
+	// Conclusive resolver result → that target, ignoring streams.
+	got, ok := resolveInitTargetChoice(
+		pinit.AutoResolveResult{Target: "codex", Reason: "running under host codex", Decided: true},
+		&bytes.Buffer{}, strings.NewReader(""), false)
+	if !ok || got != "codex" {
+		t.Errorf("decided result: got (%q,%v), want (codex,true)", got, ok)
+	}
+
+	// Inconclusive + interactive → the picker resolves it.
+	got, ok = resolveInitTargetChoice(
+		pinit.AutoResolveResult{Decided: false},
+		&bytes.Buffer{}, strings.NewReader("2\n"), true)
+	if !ok || got != "codex" {
+		t.Errorf("inconclusive+interactive: got (%q,%v), want (codex,true)", got, ok)
+	}
+
+	// Inconclusive + non-interactive → no guess; caller refuses.
+	if _, ok := resolveInitTargetChoice(
+		pinit.AutoResolveResult{Decided: false},
+		&bytes.Buffer{}, strings.NewReader(""), false); ok {
+		t.Error("inconclusive + non-interactive must report ok=false, not guess")
+	}
+
+	// Inconclusive + interactive + unusable picker input → ok=false.
+	if _, ok := resolveInitTargetChoice(
+		pinit.AutoResolveResult{Decided: false},
+		&bytes.Buffer{}, strings.NewReader("garbage\n"), true); ok {
+		t.Error("inconclusive + bad picker input must report ok=false")
+	}
+}
+
+// TestInitCLI_Binary_AutoDetectsHostFromEnv — #1862. Bare `pincher
+// init` (no --target) auto-resolves the host: CLAUDECODE in the env
+// ⇒ claude. Exercises the runInitCLI auto-resolve wiring and
+// autoResolveInitTarget end to end through the instrumented binary.
+func TestInitCLI_Binary_AutoDetectsHostFromEnv(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI binary build in -short mode")
+	}
+	bin := buildPincherBinary(t)
+	workdir := t.TempDir()
+	cmd := exec.Command(bin, "init", "--dry-run") // no --target
+	cmd.Dir = workdir
+	// Force CLAUDECODE so resolution is deterministic regardless of the
+	// host the test itself runs under (CI has it unset, a dev box may
+	// have it set).
+	cmd.Env = append(pincherCoverEnv(), "CLAUDECODE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bare init with CLAUDECODE set should resolve to claude: %v\n%s", err, out)
+	}
+	got := string(out)
+	if !strings.Contains(got, "no --target given") || !strings.Contains(got, "claude") {
+		t.Errorf("expected a host-detection note naming claude; got:\n%s", got)
+	}
+}
+
+// TestPromptInitTarget covers the interactive picker shown when
+// `pincher init` can't auto-detect the host (#1862). Feeds canned
+// stdin so every menu branch is exercised without a TTY.
+func TestPromptInitTarget(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, in, want string
+		ok             bool
+	}{
+		{"shortlist by number", "1\n", "claude", true},
+		{"shortlist by number 2", "2\n", "codex", true},
+		{"literal target name", "cursor\n", "cursor", true},
+		{"detect by number", "6\n", "detect", true},
+		{"detect by name", "detect\n", "detect", true},
+		{"other then full-list number", "7\n2\n", pinit.AllTargets[1].Name, true},
+		{"EOF — no input", "", "", false},
+		{"out-of-range number", "99\n", "", false},
+		{"garbage", "not-a-target\n", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var out bytes.Buffer
+			got, ok := promptInitTarget(&out, strings.NewReader(c.in))
+			if got != c.want || ok != c.ok {
+				t.Errorf("promptInitTarget(%q) = (%q,%v), want (%q,%v)", c.in, got, ok, c.want, c.ok)
+			}
+		})
+	}
+}
 
 // CLI binary tests. The merge primitives, target writers, and detect
 // logic are tested directly in internal/init; this file covers the
@@ -24,7 +119,7 @@ func TestInitCLI_Binary_DryRun(t *testing.T) {
 	bin := buildPincherBinary(t)
 
 	workdir := t.TempDir()
-	cmd := exec.Command(bin, "init", "--dry-run")
+	cmd := exec.Command(bin, "init", "--target", "claude", "--dry-run")
 	cmd.Dir = workdir
 	cmd.Env = pincherCoverEnv()
 	out, err := cmd.CombinedOutput()
@@ -54,7 +149,7 @@ func TestInitCLI_Binary_ProfilePrintedByDefault(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workdir, "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(bin, "init", "--data-dir", t.TempDir(), "--no-hook")
+	cmd := exec.Command(bin, "init", "--target", "claude", "--data-dir", t.TempDir(), "--no-hook")
 	cmd.Dir = workdir
 	cmd.Env = pincherCoverEnv()
 	out, err := cmd.CombinedOutput()
@@ -78,7 +173,7 @@ func TestInitCLI_Binary_QuietSuppressesProfile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workdir, "main.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(bin, "init", "--quiet", "--data-dir", t.TempDir(), "--no-hook")
+	cmd := exec.Command(bin, "init", "--target", "claude", "--quiet", "--data-dir", t.TempDir(), "--no-hook")
 	cmd.Dir = workdir
 	cmd.Env = pincherCoverEnv()
 	out, err := cmd.CombinedOutput()
@@ -104,7 +199,7 @@ func TestInitCLI_Binary_WriteThenIdempotent(t *testing.T) {
 	bin := buildPincherBinary(t)
 
 	workdir := t.TempDir()
-	cmd := exec.Command(bin, "init", "--data-dir", t.TempDir())
+	cmd := exec.Command(bin, "init", "--target", "claude", "--data-dir", t.TempDir())
 	cmd.Dir = workdir
 	cmd.Env = pincherCoverEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -120,7 +215,7 @@ func TestInitCLI_Binary_WriteThenIdempotent(t *testing.T) {
 		t.Fatalf("first init didn't write the marker block:\n%s", first)
 	}
 
-	cmd2 := exec.Command(bin, "init", "--data-dir", t.TempDir())
+	cmd2 := exec.Command(bin, "init", "--target", "claude", "--data-dir", t.TempDir())
 	cmd2.Dir = workdir
 	cmd2.Env = pincherCoverEnv()
 	if out, err := cmd2.CombinedOutput(); err != nil {
@@ -155,7 +250,7 @@ func TestInitCLI_Binary_PreservesExistingContent(t *testing.T) {
 		t.Fatalf("seed CLAUDE.md: %v", err)
 	}
 
-	cmd := exec.Command(bin, "init", "--data-dir", t.TempDir())
+	cmd := exec.Command(bin, "init", "--target", "claude", "--data-dir", t.TempDir())
 	cmd.Dir = workdir
 	cmd.Env = pincherCoverEnv()
 	if out, err := cmd.CombinedOutput(); err != nil {
