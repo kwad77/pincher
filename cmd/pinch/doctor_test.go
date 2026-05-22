@@ -71,6 +71,13 @@ func TestDoctorReport_EmptyDatabase(t *testing.T) {
 	if !strings.Contains(md, "No diagnostic issues to report") {
 		t.Errorf("empty-state Markdown missing healthy footer:\n%s", md)
 	}
+	// #1710: a fresh install must tell the user what to do next, not
+	// just print "Projects: 0" and stop.
+	for _, want := range []string{"No projects indexed yet", "pincher index", "pincher setup"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("zero-projects doctor report missing %q:\n%s", want, md)
+		}
+	}
 }
 
 // TestDoctorReport_WithFailuresAndSlowQueries — populated state. Each
