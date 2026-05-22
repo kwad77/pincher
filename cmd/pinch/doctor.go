@@ -1008,6 +1008,14 @@ func formatDoctorMarkdown(r *DoctorReport) string {
 				truncMid(p.Name, 30), p.Files, p.Symbols, p.Edges, marker)
 		}
 		fmt.Fprintln(&b)
+	} else {
+		// Fresh install: zero indexed projects. Without this the report
+		// just says "Projects: 0" and stops — silent about the one thing
+		// the user needs to do next (#1710 v0.92).
+		fmt.Fprintln(&b, "No projects indexed yet.")
+		fmt.Fprintln(&b, "  Run `pincher index <path>` to index a repository, or")
+		fmt.Fprintln(&b, "  `pincher setup` to wire pincher into your editor — it indexes for you.")
+		fmt.Fprintln(&b)
 	}
 
 	// Stale-projects roll-up (#236). Names every project that predates
