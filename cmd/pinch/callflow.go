@@ -26,9 +26,17 @@ const callflowNodeCap = 150
 
 // runCallflowCLI implements `pincher callflow`.
 func runCallflowCLI(args []string) {
+	os.Exit(callflowCLI(args, os.Stdout, os.Stderr))
+}
+
+// callflowCLI is the testable core of runCallflowCLI: it writes to the
+// supplied streams and returns the process exit code instead of calling
+// os.Exit, so every branch is unit-testable.
+func callflowCLI(args []string, stdout, stderr io.Writer) int {
 	log.SetOutput(io.Discard)
 
-	fs := flag.NewFlagSet("callflow", flag.ExitOnError)
+	fs := flag.NewFlagSet("callflow", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	symbolFlag := fs.String("symbol", "", "Symbol name or id to anchor the diagram on (required)")
 	projectFlag := fs.String("project", "", "Project name or id (default: the current directory's project)")
 	depth := fs.Int("depth", 2, "How many call hops to follow (1-4)")
@@ -36,24 +44,26 @@ func runCallflowCLI(args []string) {
 	outPath := fs.String("out", "", "Write to this file (default: stdout)")
 	dataDir := fs.String("data-dir", "", "Override data directory")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: pincher callflow --symbol=NAME [--depth=2] [--direction=both] [--out=FILE]")
-		fmt.Fprintln(os.Stderr, "  Renders a Mermaid call-flow diagram (callers + callees) for a symbol.")
-		fmt.Fprintln(os.Stderr, "  Paste the output into Markdown or https://mermaid.live .")
+		fmt.Fprintln(stderr, "usage: pincher callflow --symbol=NAME [--depth=2] [--direction=both] [--out=FILE]")
+		fmt.Fprintln(stderr, "  Renders a Mermaid call-flow diagram (callers + callees) for a symbol.")
+		fmt.Fprintln(stderr, "  Paste the output into Markdown or https://mermaid.live .")
 		fs.PrintDefaults()
 	}
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
 
 	if *symbolFlag == "" {
-		fmt.Fprintln(os.Stderr, "pincher callflow: --symbol is required")
+		fmt.Fprintln(stderr, "pincher callflow: --symbol is required")
 		fs.Usage()
-		os.Exit(1)
+		return 1
 	}
 	dir := strings.ToLower(*direction)
 	switch dir {
 	case "callers", "callees", "both":
 	default:
-		fmt.Fprintf(os.Stderr, "pincher callflow: unknown --direction %q (want callers, callees, or both)\n", *direction)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "pincher callflow: unknown --direction %q (want callers, callees, or both)\n", *direction)
+		return 1
 	}
 	d := *depth
 	if d < 1 {
@@ -65,48 +75,49 @@ func runCallflowCLI(args []string) {
 
 	store, _, err := openProjectStore(*dataDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pincher callflow: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "pincher callflow: %v\n", err)
+		return 1
 	}
 	defer store.Close()
 
 	project, err := resolveExportProject(store, *projectFlag)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pincher callflow: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "pincher callflow: %v\n", err)
+		return 1
 	}
 
 	seedID, err := resolveCallflowSeed(store, project.ID, *symbolFlag)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pincher callflow: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "pincher callflow: %v\n", err)
+		return 1
 	}
 
 	nodes, edges, truncated := collectCallflow(store, seedID, dir, d)
 	mermaid, err := renderCallflowMermaid(store, project.ID, seedID, nodes, edges, truncated)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pincher callflow: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "pincher callflow: %v\n", err)
+		return 1
 	}
 
-	out := os.Stdout
+	out := stdout
 	if *outPath != "" {
 		f, err := os.Create(*outPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "pincher callflow: create %s: %v\n", *outPath, err)
-			os.Exit(1)
+			fmt.Fprintf(stderr, "pincher callflow: create %s: %v\n", *outPath, err)
+			return 1
 		}
 		defer f.Close()
 		out = f
 	}
 	if _, err := io.WriteString(out, mermaid); err != nil {
-		fmt.Fprintf(os.Stderr, "pincher callflow: write: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "pincher callflow: write: %v\n", err)
+		return 1
 	}
 	if *outPath != "" {
-		fmt.Fprintf(os.Stderr, "wrote call-flow for %s (%d nodes) to %s\n",
+		fmt.Fprintf(stderr, "wrote call-flow for %s (%d nodes) to %s\n",
 			shortNameFromID(seedID), len(nodes), *outPath)
 	}
+	return 0
 }
 
 // resolveCallflowSeed turns a --symbol value (an id or a short name)

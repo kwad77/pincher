@@ -132,3 +132,63 @@ func TestResolveCallflowSeed_UnknownName(t *testing.T) {
 		t.Error("expected error for an unknown symbol name")
 	}
 }
+
+// TestCallflowCLI_EndToEnd indexes a project into a temp data dir and
+// drives callflowCLI through the real flag/open/resolve/render path.
+func TestCallflowCLI_EndToEnd(t *testing.T) {
+	dataDir := t.TempDir()
+	projDir := t.TempDir()
+	src := "package chain\n\nfunc funcC() int { return 3 }\n\n" +
+		"func funcB() int { return funcC() }\n\nfunc funcA() int { return funcB() }\n"
+	if err := os.WriteFile(filepath.Join(projDir, "chain.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	store, err := db.Open(dataDir)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	res, err := index.New(store).Index(context.Background(), projDir, false)
+	if err != nil {
+		store.Close()
+		t.Fatalf("index: %v", err)
+	}
+	project, _ := store.GetProject(res.ProjectID)
+	store.Close()
+
+	t.Run("renders to stdout", func(t *testing.T) {
+		var out, errb strings.Builder
+		code := callflowCLI([]string{"--data-dir", dataDir, "--project", project.Name,
+			"--symbol", "funcB"}, &out, &errb)
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
+		}
+		if !strings.Contains(out.String(), "flowchart LR") {
+			t.Errorf("stdout is not a Mermaid flowchart:\n%s", out.String())
+		}
+	})
+
+	t.Run("missing --symbol exits 1", func(t *testing.T) {
+		var out, errb strings.Builder
+		if code := callflowCLI([]string{"--data-dir", dataDir}, &out, &errb); code != 1 {
+			t.Errorf("exit = %d, want 1", code)
+		}
+	})
+
+	t.Run("bad direction exits 1", func(t *testing.T) {
+		var out, errb strings.Builder
+		code := callflowCLI([]string{"--data-dir", dataDir, "--project", project.Name,
+			"--symbol", "funcB", "--direction", "sideways"}, &out, &errb)
+		if code != 1 {
+			t.Errorf("exit = %d, want 1", code)
+		}
+	})
+
+	t.Run("unknown symbol exits 1", func(t *testing.T) {
+		var out, errb strings.Builder
+		code := callflowCLI([]string{"--data-dir", dataDir, "--project", project.Name,
+			"--symbol", "noSuchThing"}, &out, &errb)
+		if code != 1 {
+			t.Errorf("exit = %d, want 1", code)
+		}
+	})
+}
