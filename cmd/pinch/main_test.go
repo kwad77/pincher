@@ -267,3 +267,32 @@ func TestIndexCLI_Binary_BloatTrap(t *testing.T) {
 		t.Errorf("hook mode should not have indexed a non-project dir; got:\n%s", out)
 	}
 }
+
+// shouldShowIndexFooter shows the onboarding line only on a human's
+// first index of a project (#1710 v0.92).
+func TestShouldShowIndexFooter(t *testing.T) {
+	cases := []struct {
+		name              string
+		firstIndex, isTTY bool
+		want              bool
+	}{
+		{"human, first index", true, true, true},
+		{"human, re-index", false, true, false},
+		{"piped, first index", true, false, false},
+		{"piped, re-index", false, false, false},
+	}
+	for _, c := range cases {
+		if got := shouldShowIndexFooter(c.firstIndex, c.isTTY); got != c.want {
+			t.Errorf("%s: shouldShowIndexFooter(%v,%v) = %v, want %v",
+				c.name, c.firstIndex, c.isTTY, got, c.want)
+		}
+	}
+}
+
+// indexNextSteps points the freshly-indexed user at the next command.
+func TestIndexNextSteps(t *testing.T) {
+	s := indexNextSteps()
+	if !strings.Contains(s, "pincher setup") || !strings.Contains(s, "pincher web") {
+		t.Errorf("index footer should point at setup + web; got %q", s)
+	}
+}
