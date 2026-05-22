@@ -34,7 +34,7 @@
   },
   {
     "name": "architecture",
-    "description": "**Call once at the start of unfamiliar work** to orient. Returns: project metadata, `languages` (per-language symbol count), `entry_points` (up to 20, scratch/fixture paths filtered), `hotspots` (top-10 most-called Function/Method/Class/Interface/Type/Module symbols — highest change risk), `node_kinds` (per-kind symbol count), and `edge_kinds` (per-kind edge count). Hotspots default to production code only (test files filtered); pass `include_tests=true` to surface test helpers too. Much cheaper than reading files to understand the structure.",
+    "description": "**Call once at the start of unfamiliar work** to orient. Returns: project metadata, `languages` (per-language symbol count), `entry_points` (up to 20, scratch/fixture paths filtered), `hotspots` (top-10 most-called Function/Method/Class/Interface/Type/Module symbols — highest change risk), `node_kinds` (per-kind symbol count), `edge_kinds` (per-kind edge count), and `surprising_connections` (up to 10 rarest cross-package CALLS pairs — packages joined by just one or two calls, the fragile/hidden coupling points worth a reviewer's eye). Hotspots default to production code only (test files filtered); pass `include_tests=true` to surface test helpers too. Much cheaper than reading files to understand the structure.",
     "input_schema": {
       "properties": {
         "include_tests": {
