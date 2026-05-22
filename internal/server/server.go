@@ -4049,7 +4049,7 @@ func (s *Server) registerTools() {
 	// 10. architecture — agent-facing orient tool. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
 		Name:        "architecture",
-		Description: "**Call once at the start of unfamiliar work** to orient. Returns: project metadata, `languages` (per-language symbol count), `entry_points` (up to 20, scratch/fixture paths filtered), `hotspots` (top-10 most-called Function/Method/Class/Interface/Type/Module symbols — highest change risk), `node_kinds` (per-kind symbol count), and `edge_kinds` (per-kind edge count). Hotspots default to production code only (test files filtered); pass `include_tests=true` to surface test helpers too. Much cheaper than reading files to understand the structure.",
+		Description: "**Call once at the start of unfamiliar work** to orient. Returns: project metadata, `languages` (per-language symbol count), `entry_points` (up to 20, scratch/fixture paths filtered), `hotspots` (top-10 most-called Function/Method/Class/Interface/Type/Module symbols — highest change risk), `node_kinds` (per-kind symbol count), `edge_kinds` (per-kind edge count), and `surprising_connections` (up to 10 rarest cross-package CALLS pairs — packages joined by just one or two calls, the fragile/hidden coupling points worth a reviewer's eye). Hotspots default to production code only (test files filtered); pass `include_tests=true` to surface test helpers too. Much cheaper than reading files to understand the structure.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string"},
@@ -9301,13 +9301,22 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 	// Graph stats
 	_, _, kindCounts, edgeKindCounts, _ := s.store.GraphStats(projectID)
 
+	// Surprising connections (#1846 follow-up): the rarest cross-package
+	// CALLS edges — package pairs joined by just one or two calls. Always
+	// a non-nil slice so JSON consumers can iterate without a null check.
+	surprising := []surprisingConnection{}
+	if allEdges, err := s.store.ListEdgesForProject(projectID); err == nil {
+		surprising = computeSurprisingConnections(allEdges)
+	}
+
 	data := map[string]any{
-		"project":         p,
-		"languages":       langs,
-		"entry_points":    entryPoints,
-		"hotspots":        hotspotMaps,
-		"node_kinds":      kindCounts,
-		"edge_kinds":      edgeKindCounts,
+		"project":                p,
+		"languages":              langs,
+		"entry_points":           entryPoints,
+		"hotspots":               hotspotMaps,
+		"node_kinds":             kindCounts,
+		"edge_kinds":             edgeKindCounts,
+		"surprising_connections": surprising,
 	}
 	// Suggest the obvious next moves after orientation. The agent has the
 	// hotspots + entry points; the next step is reading the top hotspot's
