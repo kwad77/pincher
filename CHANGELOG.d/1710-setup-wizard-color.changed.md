@@ -1,1 +1,0 @@
-The `pincher setup` wizard is now colorized ([#1710](https://github.com/kwad77/pincher/issues/1710) v0.92). Detected hosts and checked boxes render green, the cursor row and headers pick up the cyan accent, and the done screen marks results green ✓ / red ✗. Color spans are applied per-segment so nothing nests — the wizard stays readable on any terminal.

@@ -24,7 +24,7 @@ An agent asks "what does `processPayment` do?" Pincher returns the symbol's sour
 
 Conventional code-search tools index a codebase for humans browsing a UI. Pincher indexes the same codebase for an LLM agent calling tools: responses sized for a context window, runtime interception of `Read`/`Grep` before the agent opens a file, and a local-only binary so neither the index nor the code leaves the machine.
 
-Under the hood, one Go binary indexes the codebase into three co-located layers — byte-offset symbol store, knowledge graph, and FTS5 full-text search — populated in a single AST parse pass from one shared `symbols` table. All three are exposed through **28 agent-callable MCP tools**, each also reachable over an **HTTP REST gateway** at `/v1/<tool>` with full OpenAPI 3.1 contracts.
+Under the hood, one Go binary indexes the codebase into three co-located layers — byte-offset symbol store, knowledge graph, and FTS5 full-text search — populated in a single AST parse pass from one shared `symbols` table. All three are exposed through **29 agent-callable MCP tools**, each also reachable over an **HTTP REST gateway** at `/v1/<tool>` with full OpenAPI 3.1 contracts.
 
 Every response carries a `_meta` envelope: real BPE token counts, the savings number (totaled across sessions in SQLite), a `complexity_tier`, `capabilities`, `next_steps`, and an `X-Request-ID` for distributed tracing. Pincher is the foundation; the `_meta` envelope makes consequences legible; the LLM in your host's loop does the routing.
 
@@ -134,7 +134,7 @@ Aggregate session savings land around **70-90%** on large Go/JS projects, **40-7
 - **[CHANGELOG](CHANGELOG.md)** — release-by-release history. Milestone burndown: <https://github.com/kwad77/pincher/milestones>.
 - **[Migration guide](docs/migration/v0.4-to-v1.0.md)** — v0.4 → v1.0.
 
-Current release: **v0.91** — first release candidate of the Phase 5 cadence: graph-correctness root-cause fixes (the #1772 resolve-atomicity family) plus dashboard, extractor, and CI-gate fixes. Latest stable: **v0.90**. v1.0 freezes tool schemas and ships schema attestation + a public launch.
+Current release: **v0.92** — an onboarding-friction sweep (interactive `pincher setup` wizard, shell completion, GitHub Pages tutorial) plus a deterministic graph-tooling suite: `export-graph` (JSON/GraphML/DOT), `callflow` (Mermaid diagrams), `architecture` surprising-connections, the `branch_overlap` tool, and queryable `Rationale` symbols. Latest stable: **v0.90**. v1.0 freezes tool schemas and ships schema attestation + a public launch.
 
 ---
 

@@ -1,1 +1,0 @@
-A typo'd subcommand now gets a `Did you mean` hint ([#1710](https://github.com/kwad77/pincher/issues/1710) v0.92). `pincher doctr` previously printed only `unknown subcommand "doctr"` plus the full help banner; it now adds `Did you mean "doctor"?` by Levenshtein-matching against the `pincherSubcommands` list.
