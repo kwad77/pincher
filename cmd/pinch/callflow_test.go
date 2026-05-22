@@ -90,6 +90,62 @@ func TestCollectCallflow_BothDirections(t *testing.T) {
 	}
 }
 
+// TestCollectCallflow_TruncatesAtNodeCap builds a fixture wider than
+// callflowNodeCap and checks the BFS reports truncation and the
+// rendered diagram carries the truncation note.
+func TestCollectCallflow_TruncatesAtNodeCap(t *testing.T) {
+	dir := t.TempDir()
+	src := "package wide\n\nfunc hubFn() int { return 0 }\n"
+	for i := 0; i < callflowNodeCap+20; i++ {
+		src += "func use" + itoaCF(i) + "() { hubFn() }\n"
+	}
+	if err := os.WriteFile(filepath.Join(dir, "wide.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	store, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	res, err := index.New(store).Index(context.Background(), dir, false)
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	seedID, err := resolveCallflowSeed(store, res.ProjectID, "hubFn")
+	if err != nil {
+		t.Fatalf("resolveCallflowSeed: %v", err)
+	}
+
+	nodes, edges, truncated := collectCallflow(store, seedID, "callers", 2)
+	if !truncated {
+		t.Errorf("a %d-caller fixture should truncate at the %d-node cap", callflowNodeCap+20, callflowNodeCap)
+	}
+	if len(nodes) > callflowNodeCap {
+		t.Errorf("node set %d exceeds cap %d", len(nodes), callflowNodeCap)
+	}
+	out, err := renderCallflowMermaid(store, res.ProjectID, seedID, nodes, edges, truncated)
+	if err != nil {
+		t.Fatalf("renderCallflowMermaid: %v", err)
+	}
+	if !strings.Contains(out, "truncated") {
+		t.Errorf("truncated diagram should carry a truncation note:\n%s", out[:min(len(out), 200)])
+	}
+}
+
+// itoaCF is a tiny int→string for fixture generation (avoids importing
+// strconv just for the test).
+func itoaCF(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	return string(b)
+}
+
 func TestCollectCallflow_CalleesOnly(t *testing.T) {
 	store, projectID := callflowTestStore(t)
 	seedID, _ := resolveCallflowSeed(store, projectID, "funcB")
@@ -130,6 +186,32 @@ func TestResolveCallflowSeed_UnknownName(t *testing.T) {
 	store, projectID := callflowTestStore(t)
 	if _, err := resolveCallflowSeed(store, projectID, "noSuchSymbol"); err == nil {
 		t.Error("expected error for an unknown symbol name")
+	}
+}
+
+// resolveCallflowSeed accepts a full symbol id (the `::`-bearing path)
+// as well as a short name.
+func TestResolveCallflowSeed_ByFullID(t *testing.T) {
+	store, projectID := callflowTestStore(t)
+	// First resolve by name to learn the concrete id, then feed that id
+	// back through the id branch.
+	id, err := resolveCallflowSeed(store, projectID, "funcB")
+	if err != nil {
+		t.Fatalf("resolve by name: %v", err)
+	}
+	if !strings.Contains(id, "::") {
+		t.Fatalf("expected a full id with ::, got %q", id)
+	}
+	got, err := resolveCallflowSeed(store, projectID, id)
+	if err != nil {
+		t.Fatalf("resolve by id: %v", err)
+	}
+	if got != id {
+		t.Errorf("resolve by id = %q, want %q", got, id)
+	}
+	// An unknown id is rejected.
+	if _, err := resolveCallflowSeed(store, projectID, "no/such.go::x.Y#Function"); err == nil {
+		t.Error("expected error for an unknown symbol id")
 	}
 }
 
@@ -189,6 +271,28 @@ func TestCallflowCLI_EndToEnd(t *testing.T) {
 			"--symbol", "noSuchThing"}, &out, &errb)
 		if code != 1 {
 			t.Errorf("exit = %d, want 1", code)
+		}
+	})
+
+	t.Run("out to file with clamped depth", func(t *testing.T) {
+		var out, errb strings.Builder
+		dest := filepath.Join(t.TempDir(), "cf.mmd")
+		// --depth=99 exercises the upper clamp; --out exercises the file
+		// path + the receipt line.
+		code := callflowCLI([]string{"--data-dir", dataDir, "--project", project.Name,
+			"--symbol", "funcB", "--depth", "99", "--out", dest}, &out, &errb)
+		if code != 0 {
+			t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
+		}
+		blob, err := os.ReadFile(dest)
+		if err != nil {
+			t.Fatalf("read export: %v", err)
+		}
+		if !strings.Contains(string(blob), "flowchart LR") {
+			t.Errorf("export file is not a Mermaid flowchart:\n%s", blob)
+		}
+		if !strings.Contains(errb.String(), "wrote call-flow") {
+			t.Errorf("stderr should print a receipt; got %s", errb.String())
 		}
 	})
 }
