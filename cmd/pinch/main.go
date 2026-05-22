@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/term"
+
 	"github.com/kwad77/pincher/internal/db"
 	"github.com/kwad77/pincher/internal/index"
 	"github.com/kwad77/pincher/internal/server"
@@ -170,6 +172,17 @@ func main() {
 
 	if *showVersion {
 		fmt.Printf("pincherMCP v%s\n", version)
+		os.Exit(0)
+	}
+
+	// #1710 v0.92 friction fix: a bare `pincher` typed into a terminal
+	// is a human exploring, not an MCP client — clients always pipe
+	// JSON-RPC over a stdin PIPE. Without this the process falls
+	// through to the stdio loop and blocks on the TTY forever, looking
+	// hung. Print an orientation and exit instead. `pincher supervised`
+	// and a piped stdin keep running the server unchanged.
+	if shouldOrientInteractive(*httpAddr, *noStdio, term.IsTerminal(int(os.Stdin.Fd()))) {
+		printInteractiveOrientation(os.Stdout)
 		os.Exit(0)
 	}
 
