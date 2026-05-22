@@ -3398,6 +3398,7 @@ var toolComplexityTiers = map[string]string{
 	"neighborhood": "standard",
 	"dead_code":    "standard",
 	"architecture": "standard",
+	"branch_overlap": "standard",
 	"fetch":        "standard",
 
 	// heavy — synthesis-style output requiring frontier parsing
@@ -3450,6 +3451,7 @@ var toolIdempotent = map[string]bool{
 	"changes":          true,
 	"fetch":        true,
 	"architecture": true,
+	"branch_overlap": true,
 	"dead_code":    true,
 	"neighborhood": true,
 	"list":         true,
@@ -3757,6 +3759,7 @@ var toolMetadata = map[string]toolMetadataEntry{
 	"trace":        {Annotations: annotationsReadOnly},
 	"changes":      {Annotations: annotationsReadOnly},
 	"architecture": {Annotations: annotationsReadOnly},
+	"branch_overlap": {Title: "Merge-order risk between two branches", Annotations: annotationsReadOnly},
 	"schema":       {Annotations: annotationsReadOnly},
 	"list":         {Annotations: annotationsReadOnly},
 	"neighborhood": {Title: "Same-file symbols", Annotations: annotationsReadOnly},
@@ -4057,6 +4060,22 @@ func (s *Server) registerTools() {
 			}
 		}`),
 	}, s.handleArchitecture)
+
+	// 10b. branch_overlap — v1.1. Pairs the `changes scope=base:` idea:
+	// given two in-flight branches, report where they collide.
+	s.addTool(&mcp.Tool{
+		Name:        "branch_overlap",
+		Description: "**Check two in-flight branches for merge-order risk.** Diffs `branch_a` and `branch_b` each against their shared merge-base (override with `base`), maps the changed files to symbols, and intersects the sets. Returns `overlapping_files`, `overlapping_symbols`, and a `verdict`: independent (disjoint files — merge in any order), low risk (shared files but no shared symbols — textual conflict only), or merge-order risk (shared symbols — the branch that merges second needs re-review). Deterministic: `git diff` + pincher's file→symbol index.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","properties":{
+				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
+				"branch_a":{"type":"string","description":"First branch (or commit-ish ref) to compare."},
+				"branch_b":{"type":"string","description":"Second branch (or commit-ish ref) to compare."},
+				"base":{"type":"string","description":"Optional shared base ref. Default: the merge-base of branch_a and branch_b."}
+			},
+			"required":["branch_a","branch_b"]
+		}`),
+	}, s.handleBranchOverlap)
 
 	// 11. schema — agent-callable introspection. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
@@ -12665,6 +12684,7 @@ var baselineMethodForTool = map[string]string{
 	// Admin / orientation / write-side tools — no Read/Grep alternative.
 	"index":        baselineMethodNone,
 	"architecture": baselineMethodNone,
+	"branch_overlap": baselineMethodNone,
 	"schema":       baselineMethodNone,
 	"list":         baselineMethodNone,
 	"adr":          baselineMethodNone,

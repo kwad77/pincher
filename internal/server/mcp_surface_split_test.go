@@ -45,6 +45,7 @@ var expectedMCPTools = map[string]bool{
 	// aggregator-shaped deployment for "user opens new repo via Cursor +
 	// zelos → agent fires init/index/architecture" workflows
 	"architecture": true,
+	"branch_overlap": true, // #1856 v1.1 — merge-order risk between two branches
 	"dead_code":    true,
 	"neighborhood": true,
 	"health":       true,
