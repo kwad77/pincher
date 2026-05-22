@@ -517,6 +517,17 @@ func runIndexCLI(args []string) {
 	// trap that nbarari hit during a validation test.
 	warnIfNestedUnderIndexed(store, path)
 
+	// #1710 v0.92: detect a first-time index of this project so the
+	// human-facing output can close the loop with a one-line "what's
+	// next" footer. A re-index must not nag — the footer is onboarding,
+	// not status.
+	firstIndex := false
+	if absPath, aerr := filepath.Abs(path); aerr == nil {
+		if prior, _ := store.GetProject(db.ProjectIDFromPath(absPath)); prior == nil {
+			firstIndex = true
+		}
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -570,7 +581,25 @@ func runIndexCLI(args []string) {
 		if changedFiles > 0 {
 			fmt.Printf("  %d file(s) with uncommitted changes\n", changedFiles)
 		}
+		// #1710 v0.92: close the onboarding loop — but only on a human's
+		// first index of a project. A re-index already knows the way.
+		if shouldShowIndexFooter(firstIndex, term.IsTerminal(int(os.Stdout.Fd()))) {
+			fmt.Println(indexNextSteps())
+		}
 	}
+}
+
+// shouldShowIndexFooter reports whether `pincher index` should print
+// the onboarding "what's next" line: only on a human's (TTY) first
+// index of a project. Pure so the gate is unit-testable. #1710 v0.92.
+func shouldShowIndexFooter(firstIndex, stdoutTTY bool) bool {
+	return firstIndex && stdoutTTY
+}
+
+// indexNextSteps is the one-line footer pointing a freshly-indexed
+// user at the next command.
+func indexNextSteps() string {
+	return "Next: run `pincher setup` to connect your editor, or `pincher web` to open the dashboard."
 }
 
 // emitSnapshotJSON writes the corpus-snapshot shape (#33) to stdout. Counts
