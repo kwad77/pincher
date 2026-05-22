@@ -340,15 +340,25 @@ func renderDone(m *setupModel) []string {
 
 // ── key input ───────────────────────────────────────────────────────
 
-// readKey reads and decodes one keystroke from raw-mode stdin.
+// readKey reads one keystroke from raw-mode stdin and decodes it.
 func readKey() wkey {
 	var buf [8]byte
 	n, err := os.Stdin.Read(buf[:])
 	if err != nil || n == 0 {
 		return keyQuit // treat a closed stdin as quit rather than spinning
 	}
-	if n >= 3 && buf[0] == 0x1b && buf[1] == '[' {
-		switch buf[2] {
+	return decodeKey(buf[:n])
+}
+
+// decodeKey maps a raw keystroke byte slice to a wkey. Split out from
+// readKey so the decode table is unit-testable without a TTY.
+func decodeKey(b []byte) wkey {
+	if len(b) == 0 {
+		return keyQuit
+	}
+	// CSI arrow sequences: ESC [ A/B.
+	if len(b) >= 3 && b[0] == 0x1b && b[1] == '[' {
+		switch b[2] {
 		case 'A':
 			return keyUp
 		case 'B':
@@ -356,7 +366,7 @@ func readKey() wkey {
 		}
 		return keyNone
 	}
-	switch buf[0] {
+	switch b[0] {
 	case '\r', '\n':
 		return keyEnter
 	case ' ':
@@ -421,13 +431,13 @@ func isGitRepo(cwd string) bool {
 // printSetupSummary echoes the apply results to the cooked terminal so
 // they survive after the alt-screen-free wizard clears.
 func printSetupSummary(m *setupModel) {
-	fmt.Println()
-	fmt.Println("pincher setup — summary:")
+	fmt.Fprintln(setupOut)
+	fmt.Fprintln(setupOut, "pincher setup — summary:")
 	for _, r := range m.results {
 		mark := "OK  "
 		if !r.ok {
 			mark = "FAIL"
 		}
-		fmt.Printf("  [%s] %s\n", mark, r.label)
+		fmt.Fprintf(setupOut, "  [%s] %s\n", mark, r.label)
 	}
 }
