@@ -3757,6 +3757,7 @@ var toolMetadata = map[string]toolMetadataEntry{
 	"trace":        {Annotations: annotationsReadOnly},
 	"changes":      {Annotations: annotationsReadOnly},
 	"architecture": {Annotations: annotationsReadOnly},
+	"branch_overlap": {Title: "Merge-order risk between two branches", Annotations: annotationsReadOnly},
 	"schema":       {Annotations: annotationsReadOnly},
 	"list":         {Annotations: annotationsReadOnly},
 	"neighborhood": {Title: "Same-file symbols", Annotations: annotationsReadOnly},

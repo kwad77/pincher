@@ -227,6 +227,23 @@ var outputSchemas = map[string]string{
 		}
 	}`,
 
+	// 10b. branch_overlap — merge-order risk between two branches.
+	"branch_overlap": `{
+		"type":"object",
+		"required":["branch_a","branch_b","base","overlapping_files","overlapping_symbols","verdict","_meta"],
+		"properties":{
+			"branch_a":{"type":"string"},
+			"branch_b":{"type":"string"},
+			"base":{"type":"string"},
+			"branch_a_file_count":{"type":"integer"},
+			"branch_b_file_count":{"type":"integer"},
+			"overlapping_files":{"type":"array","items":{"type":"string"}},
+			"overlapping_symbols":{"type":"array","items":{"type":"string"}},
+			"verdict":{"type":"string"},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
 	// 11. schema — schema diagram.
 	"schema": `{
 		"type":"object",
