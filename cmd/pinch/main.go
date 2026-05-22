@@ -73,6 +73,10 @@ func main() {
 		runInitCLI(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "setup" {
+		runSetupCLI(os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "project" {
 		runProjectCLI(os.Args[2:])
 		return
@@ -377,7 +381,8 @@ func printHelpBanner(out io.Writer) {
 	fmt.Fprintln(out, "  pincher bench [--project ID]   Falsifiable savings measurement vs full-file Read baseline (#1263)")
 	fmt.Fprintln(out, "  pincher update                 Update pincher in place (git pull + build, or release asset)")
 	fmt.Fprintln(out, "  pincher web                    Print dashboard URL of running HTTP server (auto-starts one if none)")
-	fmt.Fprintln(out, "  pincher init [--target=NAME]   Inject the pincher usage policy block into editor rules files")
+	fmt.Fprintln(out, "  pincher setup                  Interactive install wizard — pick hosts + options from a terminal UI")
+	fmt.Fprintln(out, "  pincher init [--target=NAME]   Inject the pincher usage policy block into editor rules files (scripted)")
 	fmt.Fprintln(out, "  pincher project list           List indexed projects (alias: ls)")
 	fmt.Fprintln(out, "  pincher project rm <name>      Remove an indexed project (alias: remove, delete)")
 	fmt.Fprintln(out, "  pincher project prune-stale    Drop projects indexed by an old schema and untouched for N days")
