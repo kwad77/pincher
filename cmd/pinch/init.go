@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
+
+	"golang.org/x/term"
 
 	"github.com/kwad77/pincher/internal/db"
 	pinit "github.com/kwad77/pincher/internal/init"
@@ -22,22 +26,107 @@ import (
 //
 // The pure planning + merge logic lives in internal/init (#253);
 // this function is the CLI orchestration layer.
+
+// initPickerShortlist is the curated set offered when `pincher init`
+// can't auto-detect the host and stdin is interactive. Ordered by
+// rough popularity; the "other" menu entry expands to AllTargets.
+var initPickerShortlist = []struct{ target, label string }{
+	{"claude", "Claude Code"},
+	{"codex", "OpenAI Codex"},
+	{"cursor", "Cursor"},
+	{"vscode", "VS Code (Copilot)"},
+	{"gemini", "Gemini CLI"},
+}
+
 // autoResolveInitTarget picks the init target when `pincher init` ran
-// with no --target. Wraps the shared host-aware resolver: it refuses
-// (exit 1) rather than guessing when no host is conclusive — #1862,
-// silently defaulting to claude gave a Codex user a CLAUDE.md and a
-// .claude/ hook they never asked for.
+// with no --target. It uses the shared host-aware resolver; when that
+// is inconclusive it asks the user interactively (if stdin is a TTY)
+// and otherwise refuses with exit 1 — #1862, silently defaulting to
+// claude gave a Codex user a CLAUDE.md + .claude/ hook they never
+// asked for.
 func autoResolveInitTarget(cwd string, out io.Writer) string {
 	res := pinit.AutoResolveInitTarget(cwd)
-	if !res.Decided {
-		fmt.Fprintln(os.Stderr, "pincher init: could not determine which agent/editor to configure.")
-		fmt.Fprintln(os.Stderr, "  No host env signal (e.g. CLAUDECODE) and no editor marker files were found.")
-		fmt.Fprintf(os.Stderr, "  Pass --target=NAME explicitly — one of: %s\n", strings.Join(pinit.TargetNames(), ", "))
-		fmt.Fprintln(os.Stderr, "  Or --target=detect to scan, --target=all for every target.")
-		os.Exit(1)
+	if res.Decided {
+		fmt.Fprintf(out, "pincher init: no --target given — %s. Pass --target to override.\n", res.Reason)
+		return res.Target
 	}
-	fmt.Fprintf(out, "pincher init: no --target given — %s. Pass --target to override.\n", res.Reason)
-	return res.Target
+	// Inconclusive. A human at a terminal gets a picker; a scripted /
+	// agent invocation (no TTY) gets a clear refusal so it can re-run
+	// with an explicit --target.
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		if picked, ok := promptInitTarget(out, os.Stdin); ok {
+			return picked
+		}
+	}
+	fmt.Fprintln(os.Stderr, "pincher init: could not determine which agent/editor to configure.")
+	fmt.Fprintln(os.Stderr, "  No host env signal (e.g. CLAUDECODE) and no editor marker files were found.")
+	fmt.Fprintf(os.Stderr, "  Pass --target=NAME explicitly — one of: %s\n", strings.Join(pinit.TargetNames(), ", "))
+	fmt.Fprintln(os.Stderr, "  Or --target=detect to scan, --target=all for every target.")
+	os.Exit(1)
+	return "" // unreachable — os.Exit above
+}
+
+// promptInitTarget asks the user to choose a target when init couldn't
+// auto-detect one and stdin is interactive. Returns ("", false) on EOF
+// or an unrecognized choice, in which case the caller refuses.
+func promptInitTarget(out io.Writer, in io.Reader) (string, bool) {
+	sc := bufio.NewScanner(in)
+	n := len(initPickerShortlist)
+	fmt.Fprintln(out, "pincher init: couldn't auto-detect your agent/editor — which are you setting up?")
+	for i, o := range initPickerShortlist {
+		fmt.Fprintf(out, "  %d. %-8s %s\n", i+1, o.target, o.label)
+	}
+	fmt.Fprintf(out, "  %d. detect   scan marker files, configure every match\n", n+1)
+	fmt.Fprintf(out, "  %d. other    pick from the full target list\n", n+2)
+	fmt.Fprintf(out, "Enter 1-%d (or a target name): ", n+2)
+	if !sc.Scan() {
+		return "", false
+	}
+
+	switch choice := strings.TrimSpace(sc.Text()); {
+	case isMenuIndex(choice, 1, n):
+		idx, _ := strconv.Atoi(choice)
+		return initPickerShortlist[idx-1].target, true
+	case choice == strconv.Itoa(n+1) || choice == "detect":
+		return "detect", true
+	case choice == strconv.Itoa(n+2) || choice == "other":
+		return promptInitTargetFull(out, sc)
+	default:
+		// A literal target name typed instead of a menu number.
+		if _, ok := pinit.FindTarget(choice); ok {
+			return choice, true
+		}
+		fmt.Fprintf(out, "pincher init: %q is not a valid choice.\n", choice)
+		return "", false
+	}
+}
+
+// promptInitTargetFull shows the complete AllTargets list (the "other"
+// branch of the shortlist menu) and reads one selection.
+func promptInitTargetFull(out io.Writer, sc *bufio.Scanner) (string, bool) {
+	for i, t := range pinit.AllTargets {
+		fmt.Fprintf(out, "  %2d. %-16s %s\n", i+1, t.Name, t.Describe)
+	}
+	fmt.Fprintf(out, "Enter 1-%d (or a target name): ", len(pinit.AllTargets))
+	if !sc.Scan() {
+		return "", false
+	}
+	choice := strings.TrimSpace(sc.Text())
+	if isMenuIndex(choice, 1, len(pinit.AllTargets)) {
+		idx, _ := strconv.Atoi(choice)
+		return pinit.AllTargets[idx-1].Name, true
+	}
+	if _, ok := pinit.FindTarget(choice); ok {
+		return choice, true
+	}
+	fmt.Fprintf(out, "pincher init: %q is not a valid choice.\n", choice)
+	return "", false
+}
+
+// isMenuIndex reports whether s is an integer in [lo, hi].
+func isMenuIndex(s string, lo, hi int) bool {
+	n, err := strconv.Atoi(s)
+	return err == nil && n >= lo && n <= hi
 }
 
 func runInitCLI(args []string) {
