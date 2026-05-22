@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Dashboard &amp; operations · pincherMCP tutorial</title>
+<meta name="description" content="The pincher HTTP dashboard, pincher doctor, the background watcher, multi-project setups, HTTP mode, and keeping the index healthy."/>
+<meta name="theme-color" content="#0d1117"/>
+<link rel="icon" type="image/png" sizes="32x32" href="../assets/favicon-32.png"/>
+<link rel="stylesheet" href="../assets/tutorial.css"/>
+</head>
+<body>
+
+<nav class="top">
+  <a class="brand" href="../index.html">pincher<span>MCP</span></a>
+  <div class="links">
+    <a href="../index.html">Home</a>
+    <a href="../tutorial.html">Tutorial</a>
+    <a href="../reference/">Reference</a>
+    <a href="https://github.com/kwad77/pincher">GitHub</a>
+  </div>
+</nav>
+
+<main class="tut">
+  <div class="crumbs"><a href="../index.html">Home</a> / <a href="../tutorial.html">Tutorial</a> / Dashboard &amp; ops</div>
+  <ul class="track">
+    <li><a href="01-getting-started.html"><span class="n">1</span>Getting started</a></li>
+    <li><a href="02-the-graph.html"><span class="n">2</span>The graph</a></li>
+    <li><a href="03-composites-and-meta.html"><span class="n">3</span>Composites &amp; _meta</a></li>
+    <li class="current"><a href="04-dashboard-and-ops.html"><span class="n">4</span>Dashboard &amp; ops</a></li>
+  </ul>
+
+  <h1>Dashboard &amp; operations</h1>
+  <p class="lede">
+    The last stop: the human-facing side. The dashboard, diagnostics, the
+    watcher that keeps the index fresh, multi-project setups, and HTTP mode
+    for when an agent isn't an editor.
+  </p>
+
+  <h2>The dashboard</h2>
+  <p>
+    <code>pincher web</code> resolves (or auto-starts) the local HTTP server
+    and opens the dashboard in your browser. Tabs cover the picture at a
+    glance:
+  </p>
+  <ul>
+    <li><strong>Overview</strong> — token-savings ROI for the session and
+      all-time, plus the PreToolUse hook panel.</li>
+    <li><strong>Insights</strong> — per-tool call breakdown, complexity-tier
+      mix, response-payload sizes, benchmark history.</li>
+    <li><strong>Doctor</strong> — index health at a glance: schema, DB size,
+      advisories, a per-project table, extraction failures by reason.</li>
+    <li><strong>Search / ADR</strong> — drive a search or browse the project's
+      stored decisions, right in the browser.</li>
+  </ul>
+  <div class="callout tip">
+    <span class="k">Just want the URL</span>
+    <code>pincher web --no-open</code> prints the dashboard URL without
+    launching a browser; <code>--json</code> emits it as one machine-readable
+    line.
+  </div>
+
+  <h2>pincher doctor</h2>
+  <p>
+    <code>pincher doctor</code> is the command-line diagnostic — the same data
+    the dashboard's Doctor tab shows. It reports the schema version, the
+    running binary, DB and WAL size, per-project rows (so you can spot a
+    project indexed by an old binary), advisories for pathological states
+    (a giant DB, a "ghost" project that indexed but extracted almost
+    nothing), and recent extraction failures.
+  </p>
+  <pre><code>pincher doctor
+pincher doctor --json    # same data, machine-readable</code></pre>
+
+  <h2>The background watcher</h2>
+  <p>
+    Once an editor is wired up, pincher runs a file watcher: it polls indexed
+    projects (fast while active, slow while idle) and re-indexes changed
+    files <em>incrementally</em> — only what changed, not the whole tree. You
+    do not run <code>pincher index</code> by hand in normal use; the watcher
+    keeps the graph current as you edit.
+  </p>
+
+  <h2>Multiple projects</h2>
+  <p>
+    One pincher install indexes many repositories — the database holds them
+    all, each scoped by project. Manage them from the CLI:
+  </p>
+  <pre><code>pincher project list           # every indexed project
+pincher project rm &lt;name&gt;       # drop one
+pincher project prune-stale     # drop old-schema, long-untouched projects
+pincher vacuum                  # reclaim disk after removals</code></pre>
+
+  <h2>HTTP mode</h2>
+  <p>
+    Not every agent is an editor. Started with <code>--http :PORT</code>,
+    pincher also serves a REST gateway — every tool is reachable as
+    <code>POST /v1/&lt;tool&gt;</code>, with OpenAPI contracts, optional bearer
+    auth (<code>--http-key</code>), and request IDs. This is the path a
+    router or a CI job uses to call pincher without spawning a stdio child.
+  </p>
+
+  <h2>Keeping the index healthy</h2>
+  <ul>
+    <li><strong>Staleness</strong> — <code>doctor</code> and the
+      <code>health</code> tool report how long since each project was indexed;
+      a stale project is the first thing to check if answers look wrong.</li>
+    <li><strong>Drift</strong> — after a binary upgrade pincher re-indexes
+      affected projects automatically so resolution rules stay consistent.</li>
+    <li><strong>verify</strong> — <code>pincher verify</code> re-hashes every
+      indexed file and reports drift vs. the stored hash.</li>
+  </ul>
+
+  <div class="callout">
+    <span class="k">That's the track</span>
+    You've installed pincher, wired it into your editor, learned the graph
+    tools and composites, read the <code>_meta</code> envelope, and seen the
+    operational surface. From here, the <a href="../reference/">reference</a>
+    documents every tool, flag, and endpoint in full.
+  </div>
+
+  <div class="pagenav">
+    <a class="prev" href="03-composites-and-meta.html"><span class="dir">Prev</span>← Stop 3 — Composites &amp; _meta</a>
+    <a class="next" href="../reference/"><span class="dir">Next</span>Full reference →</a>
+  </div>
+</main>
+
+<footer>
+  pincherMCP — <a href="https://github.com/kwad77/pincher">github.com/kwad77/pincher</a> ·
+  <a href="../tutorial.html">Tutorial home</a>
+</footer>
+
+</body>
+</html>

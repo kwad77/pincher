@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Composites &amp; the _meta envelope · pincherMCP tutorial</title>
+<meta name="description" content="One-call investigations with pincher's composite tools, and how to read the _meta envelope your agent branches on."/>
+<meta name="theme-color" content="#0d1117"/>
+<link rel="icon" type="image/png" sizes="32x32" href="../assets/favicon-32.png"/>
+<link rel="stylesheet" href="../assets/tutorial.css"/>
+</head>
+<body>
+
+<nav class="top">
+  <a class="brand" href="../index.html">pincher<span>MCP</span></a>
+  <div class="links">
+    <a href="../index.html">Home</a>
+    <a href="../tutorial.html">Tutorial</a>
+    <a href="../reference/">Reference</a>
+    <a href="https://github.com/kwad77/pincher">GitHub</a>
+  </div>
+</nav>
+
+<main class="tut">
+  <div class="crumbs"><a href="../index.html">Home</a> / <a href="../tutorial.html">Tutorial</a> / Composites &amp; _meta</div>
+  <ul class="track">
+    <li><a href="01-getting-started.html"><span class="n">1</span>Getting started</a></li>
+    <li><a href="02-the-graph.html"><span class="n">2</span>The graph</a></li>
+    <li class="current"><a href="03-composites-and-meta.html"><span class="n">3</span>Composites &amp; _meta</a></li>
+    <li><a href="04-dashboard-and-ops.html"><span class="n">4</span>Dashboard &amp; ops</a></li>
+  </ul>
+
+  <h1>Composites &amp; the <code>_meta</code> envelope</h1>
+  <p class="lede">
+    The graph tools from Stop 2 are atomic — one question each. Composites
+    bundle a whole investigation behind one call. And every response, atomic
+    or composite, carries a <code>_meta</code> envelope the agent reads to
+    decide what to do next.
+  </p>
+
+  <h2>Why composites exist</h2>
+  <p>
+    Picking up a bug normally costs a 5–10 call loop: search for suspects,
+    read each one, trace callers, check what changed. Each round trip is
+    latency the user watches as a "thinking…" spinner. A composite runs that
+    sequence <em>inside one tool call</em> — against the same store, with no
+    nested round trips — and returns the assembled result.
+  </p>
+
+  <h2>context_for_task — pick up an investigation</h2>
+  <p>
+    Give it a free-form task or a seed ID. It resolves the top matching
+    symbols, pulls each one's source and direct dependencies, traces callers
+    and callees, and folds in any uncommitted-change overlap — one envelope
+    of <code>{seeds, neighbors, callers, callees, recent_changes}</code>.
+  </p>
+  <pre><code>context_for_task task="fix the login retry bug"</code></pre>
+
+  <h2>plan_change — preview a blast radius</h2>
+  <p>
+    Before editing a function or file, <code>plan_change</code> composes
+    <code>changes</code> + inbound <code>trace</code> + relevant ADRs into a
+    blast-radius report: depth-1 (CRITICAL) and depth-2 (HIGH) callers,
+    cross-package boundary crossings, and the test files that exercise the
+    target.
+  </p>
+  <pre><code>plan_change target="internal/auth/login.go::auth.Login#Function"</code></pre>
+
+  <h2>investigate_failure — triage a stack trace</h2>
+  <p>
+    Paste a panic or exception. It parses the frame tokens, ranks suspect
+    symbols by frame-match + recent-change + caller fan-in, and returns each
+    with the evidence that fired — so the agent can trust a suspect or pivot.
+  </p>
+
+  <h2>audit_unused &amp; onboard_module</h2>
+  <ul>
+    <li><code>audit_unused</code> — dead-code candidates, each confirmed by a
+      deeper inbound trace and classified <em>high</em> / <em>medium</em> /
+      <em>low</em> confidence, so "safe to delete" is actually safe.</li>
+    <li><code>onboard_module</code> — point it at a directory and it returns
+      the module's entry points, exported surface, language mix, and the
+      CALLS edges that cross its boundary in and out.</li>
+  </ul>
+
+  <h2>The <code>_meta</code> envelope</h2>
+  <p>
+    Every tool response carries a <code>_meta</code> block. It is not
+    decoration — it is the planning-loop input the agent branches on:
+  </p>
+  <ul>
+    <li><code>tokens_used</code> / <code>tokens_saved</code> — the real BPE
+      cost of this call vs. the file-read it replaced.</li>
+    <li><code>complexity_tier</code> — <code>lite</code> / <code>standard</code>
+      / <code>heavy</code>, a hint at how expensive the call was.</li>
+    <li><code>empty_reason</code> — when a result is empty, <em>why</em>:
+      <code>stale_index</code>, <code>no_results_in_corpus</code>,
+      <code>query_too_narrow</code>, and more.</li>
+    <li><code>next_steps</code> — concrete follow-up tool calls, with arguments
+      filled in.</li>
+    <li><code>warnings</code> — clamped arguments, drift, anything the caller
+      should know.</li>
+  </ul>
+  <div class="callout">
+    <span class="k">When a call comes back empty</span>
+    Don't guess. Pass the <code>_meta.empty_reason</code> value to the
+    <code>why_empty</code> tool — it returns the catalog entry for that reason
+    with concrete recovery steps. An empty result in pincher is a signpost,
+    not a dead end.
+  </div>
+  <p>
+    For the full field-by-field contract, see the
+    <a href="../reference/">reference</a> and
+    <a href="../empty-reasons.md">empty-reasons catalog</a>.
+  </p>
+
+  <div class="pagenav">
+    <a class="prev" href="02-the-graph.html"><span class="dir">Prev</span>← Stop 2 — Working with the graph</a>
+    <a class="next" href="04-dashboard-and-ops.html"><span class="dir">Next</span>Stop 4 — Dashboard &amp; ops →</a>
+  </div>
+</main>
+
+<footer>
+  pincherMCP — <a href="https://github.com/kwad77/pincher">github.com/kwad77/pincher</a> ·
+  <a href="../tutorial.html">Tutorial home</a>
+</footer>
+
+</body>
+</html>
