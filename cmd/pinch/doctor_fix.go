@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/kwad77/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/index"
 )
 
 // #1260 §3: `pincher doctor --fix` — auto-resolves the SAFE subset
@@ -55,11 +58,12 @@ type FixAction struct {
 // runDoctorFix performs the safe-action allowlist + emits the report.
 // Called when `pincher doctor --fix` is invoked. Output mirrors the
 // other CLI subcommands: text by default, JSON with --json.
-func runDoctorFix(store *db.Store, dir string, asJSON bool, out io.Writer) {
+func runDoctorFix(store *db.Store, dir string, asJSON, reapOrphans bool, out io.Writer) {
 	report := FixReport{DataDir: dir, Actions: []FixAction{}}
 
 	report.Actions = append(report.Actions, fixVacuumIfBloated(store))
 	report.Actions = append(report.Actions, fixPruneStaleFailures(store))
+	report.Actions = append(report.Actions, fixReapOrphanLocks(dir, version, reapOrphans))
 
 	if asJSON {
 		enc := json.NewEncoder(out)
@@ -155,6 +159,69 @@ func fixPruneStaleFailures(store *db.Store) FixAction {
 	}
 }
 
+// fixReapOrphanLocks reclaims orphaned project lockfiles. Tier 1 —
+// lockfiles whose holder is dead or whose PID was recycled by an
+// unrelated process — is always reclaimed (pure file removal, the same
+// thing acquireProjectLock does lazily). Tier 2 — terminating a live
+// version-skewed orphan pincher process — happens only when reapOrphans
+// is set (the `--reap-orphans` flag); otherwise the live orphans are
+// reported with the escalation command. #1860.
+func fixReapOrphanLocks(dir, binVersion string, reapOrphans bool) FixAction {
+	res, err := index.ReapOrphanLocks(dir, binVersion, reapOrphans)
+	if err != nil {
+		return FixAction{
+			Name:    "reap-orphan-locks",
+			Status:  "error",
+			Details: fmt.Sprintf("ReapOrphanLocks: %v", err),
+		}
+	}
+	staleN := len(res.StaleRemoved)
+	orphanN := len(res.OrphansFound)
+
+	switch {
+	case staleN == 0 && orphanN == 0:
+		return FixAction{
+			Name:    "reap-orphan-locks",
+			Status:  "noop",
+			Details: "no orphaned project locks found",
+		}
+	case orphanN > 0 && !reapOrphans:
+		// Stale lockfiles (if any) were already reclaimed; live orphans
+		// need the explicit opt-in before pincher will kill a process.
+		d := fmt.Sprintf("%d live version-skewed orphan pincher process(es) hold project locks (PID %s) — re-run `pincher doctor --fix --reap-orphans` to terminate them",
+			orphanN, orphanPIDs(res.OrphansFound))
+		if staleN > 0 {
+			d = fmt.Sprintf("reclaimed %d stale lockfile(s); ", staleN) + d
+		}
+		return FixAction{Name: "reap-orphan-locks", Status: "skipped", Details: d}
+	default:
+		var parts []string
+		if staleN > 0 {
+			parts = append(parts, fmt.Sprintf("reclaimed %d stale lockfile(s) (dead/recycled holders)", staleN))
+		}
+		if orphanN > 0 {
+			parts = append(parts, fmt.Sprintf("terminated %d orphan pincher process(es): PID %s", orphanN, orphanPIDs(res.OrphansFound)))
+		}
+		return FixAction{Name: "reap-orphan-locks", Status: "applied", Details: strings.Join(parts, "; ")}
+	}
+}
+
+// orphanPIDs formats the distinct PID list for the fix-action details
+// line. One orphan process can hold several project lockfiles, so
+// OrphansFound carries duplicate PIDs — dedupe for the display.
+func orphanPIDs(orphans []index.OrphanKill) string {
+	seen := map[int]bool{}
+	ids := make([]string, 0, len(orphans))
+	for _, o := range orphans {
+		if seen[o.PID] {
+			continue
+		}
+		seen[o.PID] = true
+		ids = append(ids, strconv.Itoa(o.PID))
+	}
+	return strings.Join(ids, ", ")
+}
+
 // formatFixText renders the FixReport as a compact text block. One
 // line per action with status-prefixed verb ("✓ applied", "·  noop",
 // "!  error"); a trailing summary count.
@@ -192,12 +259,12 @@ func formatFixText(r *FixReport) string {
 // runDoctorFixCLI is the package-main entry point — called from
 // runDoctorCLI when --fix is set. Stays alongside runDoctorCLI so the
 // flag dispatch is one-liner-trivial.
-func runDoctorFixCLI(dir string, asJSON bool) {
+func runDoctorFixCLI(dir string, asJSON, reapOrphans bool) {
 	store, err := db.Open(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pincher: failed to open database: %v\n", err)
 		os.Exit(1)
 	}
 	defer store.Close()
-	runDoctorFix(store, dir, asJSON, os.Stdout)
+	runDoctorFix(store, dir, asJSON, reapOrphans, os.Stdout)
 }

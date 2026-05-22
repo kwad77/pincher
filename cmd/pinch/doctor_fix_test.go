@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -52,7 +54,7 @@ func TestRunDoctorFix_FullReport(t *testing.T) {
 	defer store.Close()
 
 	var buf bytes.Buffer
-	runDoctorFix(store, dir, false, &buf)
+	runDoctorFix(store, dir, false, false, &buf)
 	out := buf.String()
 	if !strings.Contains(out, "vacuum-db") {
 		t.Errorf("output missing vacuum-db action; got:\n%s", out)
@@ -77,7 +79,7 @@ func TestRunDoctorFix_JSONShape(t *testing.T) {
 	defer store.Close()
 
 	var buf bytes.Buffer
-	runDoctorFix(store, dir, true, &buf)
+	runDoctorFix(store, dir, true, false, &buf)
 	var report FixReport
 	if err := json.Unmarshal(buf.Bytes(), &report); err != nil {
 		t.Fatalf("JSON parse failed: %v\nbody:\n%s", err, buf.String())
@@ -95,6 +97,45 @@ func TestRunDoctorFix_JSONShape(t *testing.T) {
 		if !validStatuses[a.Status] {
 			t.Errorf("action %q has invalid status %q; want one of applied/skipped/noop/error", a.Name, a.Status)
 		}
+	}
+}
+
+// TestFixReapOrphanLocks_NoLocks — a data dir with no locks/ directory
+// yields a noop action, not an error.
+func TestFixReapOrphanLocks_NoLocks(t *testing.T) {
+	act := fixReapOrphanLocks(t.TempDir(), "1.0.0", false)
+	if act.Name != "reap-orphan-locks" {
+		t.Errorf("action name = %q", act.Name)
+	}
+	if act.Status != "noop" {
+		t.Errorf("status = %q, want noop; details: %s", act.Status, act.Details)
+	}
+}
+
+// TestFixReapOrphanLocks_DeadHolderReclaimed — a lockfile whose holder
+// PID is long dead is reclaimed (the safe, no-kill tier), reported as
+// "applied".
+func TestFixReapOrphanLocks_DeadHolderReclaimed(t *testing.T) {
+	dir := t.TempDir()
+	lockDir := filepath.Join(dir, "locks")
+	if err := os.MkdirAll(lockDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	lockPath := filepath.Join(lockDir, "dead.lock")
+	// PID 4_000_001 is above any real process table — a dead holder.
+	if err := os.WriteFile(lockPath, []byte(`{"pid":4000001,"project_id":"abandoned"}`), 0o644); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+
+	act := fixReapOrphanLocks(dir, "1.0.0", false)
+	if act.Status != "applied" {
+		t.Errorf("status = %q, want applied; details: %s", act.Status, act.Details)
+	}
+	if !strings.Contains(act.Details, "stale lockfile") {
+		t.Errorf("details should mention the reclaimed stale lockfile; got %q", act.Details)
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Error("dead-holder lockfile should have been reclaimed")
 	}
 }
 
