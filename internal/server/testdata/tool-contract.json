@@ -82,6 +82,35 @@
     }
   },
   {
+    "name": "branch_overlap",
+    "description": "**Check two in-flight branches for merge-order risk.** Diffs `branch_a` and `branch_b` each against their shared merge-base (override with `base`), maps the changed files to symbols, and intersects the sets. Returns `overlapping_files`, `overlapping_symbols`, and a `verdict`: independent (disjoint files — merge in any order), low risk (shared files but no shared symbols — textual conflict only), or merge-order risk (shared symbols — the branch that merges second needs re-review). Deterministic: `git diff` + pincher's file→symbol index.",
+    "input_schema": {
+      "properties": {
+        "base": {
+          "description": "Optional shared base ref. Default: the merge-base of branch_a and branch_b.",
+          "type": "string"
+        },
+        "branch_a": {
+          "description": "First branch (or commit-ish ref) to compare.",
+          "type": "string"
+        },
+        "branch_b": {
+          "description": "Second branch (or commit-ish ref) to compare.",
+          "type": "string"
+        },
+        "project": {
+          "description": "Project name or ID. Defaults to session project.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "branch_a",
+        "branch_b"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "changes",
     "description": "**Use before final response after code edits** to surface the blast radius. Maps `git diff` to affected symbols, BFS-traces impact, returns `changed_symbols` + impacted callers tagged CRITICAL/HIGH/MEDIUM/LOW + summary counts + `tests_to_run` (test functions that exercise the changed symbols, ranked by overlap descending — re-run the top entries before pushing). Scopes: `unstaged` (default) / `staged` / `all` (includes untracked) / `base:\u003cbranch\u003e` (committed-only diff vs \u003cbranch\u003e's merge-base — use this to preview a PR's blast radius before opening it).",
     "input_schema": {

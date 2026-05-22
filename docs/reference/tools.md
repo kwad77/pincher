@@ -1,4 +1,4 @@
-# The 28 MCP tools
+# The 29 MCP tools
 
 [Back to reference index](README.md)
 
@@ -41,7 +41,8 @@ All latencies measured on this codebase. Token counts use cl100k_base BPE — th
 
 | Tool | Capability | Tested latency |
 |---|---|---|
-| `architecture` | Language breakdown, entry points, hotspot functions, graph stats. Start here on any unfamiliar project. | 12 ms |
+| `architecture` | Language breakdown, entry points, hotspot functions, graph stats, surprising connections (rarest cross-package CALLS pairs). Start here on any unfamiliar project. | 12 ms |
+| `branch_overlap` | Diffs two in-flight branches against their shared merge-base, maps changed files to symbols, intersects the sets. Returns `overlapping_files`, `overlapping_symbols`, and a merge-order-risk `verdict`. | ~10 ms |
 | `schema` | Node kind counts, edge kind counts, totals. Use before `query` to see what's indexed. | 1 ms |
 | `adr` | Persistent key/value store per project. Survives context resets and binary upgrades. Actions: `get`, `set`, `list`, `delete`. | <1 ms |
 | `health` | Schema version, index staleness, per-language extraction coverage. Detects stale indexes. | 1 ms |
