@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"regexp"
 	"sort"
@@ -74,6 +75,42 @@ func TestCompletionScript(t *testing.T) {
 	if _, ok := completionScript("powershell"); ok {
 		t.Error("completionScript should reject an unsupported shell")
 	}
+}
+
+// TestCompletionCLI exercises the runCompletionCLI core: a good shell
+// prints the script to stdout and returns 0; a bad shell or wrong arg
+// count prints usage to stderr and returns 1.
+func TestCompletionCLI(t *testing.T) {
+	t.Run("good shell", func(t *testing.T) {
+		var out, errb bytes.Buffer
+		if code := completionCLI([]string{"bash"}, &out, &errb); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if !strings.Contains(out.String(), "_pincher_complete") {
+			t.Errorf("stdout missing the bash script:\n%s", out.String())
+		}
+		if errb.Len() != 0 {
+			t.Errorf("stderr should be empty, got: %s", errb.String())
+		}
+	})
+	t.Run("bad shell", func(t *testing.T) {
+		var out, errb bytes.Buffer
+		if code := completionCLI([]string{"powershell"}, &out, &errb); code != 1 {
+			t.Fatalf("exit code = %d, want 1", code)
+		}
+		if !strings.Contains(errb.String(), "unsupported shell") {
+			t.Errorf("stderr missing the error, got: %s", errb.String())
+		}
+	})
+	t.Run("no arg", func(t *testing.T) {
+		var out, errb bytes.Buffer
+		if code := completionCLI(nil, &out, &errb); code != 1 {
+			t.Fatalf("exit code = %d, want 1", code)
+		}
+		if !strings.Contains(errb.String(), "usage:") {
+			t.Errorf("stderr missing usage, got: %s", errb.String())
+		}
+	})
 }
 
 // TestNearestSubcommand checks the typo `did you mean` hint.

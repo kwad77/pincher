@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -25,26 +26,34 @@ var pincherSubcommands = []string{
 
 // runCompletionCLI implements `pincher completion [bash|zsh|fish]`.
 func runCompletionCLI(args []string) {
+	os.Exit(completionCLI(args, os.Stdout, os.Stderr))
+}
+
+// completionCLI is the testable core of runCompletionCLI: it writes to
+// the supplied streams and returns the process exit code instead of
+// calling os.Exit, so the error paths are unit-testable.
+func completionCLI(args []string, stdout, stderr io.Writer) int {
 	usage := func() {
-		fmt.Fprintln(os.Stderr, "usage: pincher completion <bash|zsh|fish>")
-		fmt.Fprintln(os.Stderr, "  Prints a shell completion script for pincher's subcommands.")
-		fmt.Fprintln(os.Stderr, "")
-		fmt.Fprintln(os.Stderr, "  Install (add to your shell rc):")
-		fmt.Fprintln(os.Stderr, "    bash:  eval \"$(pincher completion bash)\"")
-		fmt.Fprintln(os.Stderr, "    zsh:   eval \"$(pincher completion zsh)\"")
-		fmt.Fprintln(os.Stderr, "    fish:  pincher completion fish | source")
+		fmt.Fprintln(stderr, "usage: pincher completion <bash|zsh|fish>")
+		fmt.Fprintln(stderr, "  Prints a shell completion script for pincher's subcommands.")
+		fmt.Fprintln(stderr, "")
+		fmt.Fprintln(stderr, "  Install (add to your shell rc):")
+		fmt.Fprintln(stderr, "    bash:  eval \"$(pincher completion bash)\"")
+		fmt.Fprintln(stderr, "    zsh:   eval \"$(pincher completion zsh)\"")
+		fmt.Fprintln(stderr, "    fish:  pincher completion fish | source")
 	}
 	if len(args) != 1 {
 		usage()
-		os.Exit(1)
+		return 1
 	}
 	script, ok := completionScript(args[0])
 	if !ok {
-		fmt.Fprintf(os.Stderr, "pincher completion: unsupported shell %q (want bash, zsh, or fish)\n\n", args[0])
+		fmt.Fprintf(stderr, "pincher completion: unsupported shell %q (want bash, zsh, or fish)\n\n", args[0])
 		usage()
-		os.Exit(1)
+		return 1
 	}
-	fmt.Print(script)
+	fmt.Fprint(stdout, script)
+	return 0
 }
 
 // nearestSubcommand returns the pincher subcommand closest to arg by
