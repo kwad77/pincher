@@ -281,6 +281,57 @@ func TestAuditUnused_SortsByConfidence(t *testing.T) {
 // TestAuditUnused_IsRegistered — gate: tool is registered and
 // discoverable. Pins the runtime registration; cross-cutting parity
 // tests pin description + complexityTier + idempotency + schema.
+// TestAuditUnused_MidResolve_RefusesNotConfidentlyWrong — #1847. While
+// the resolver is mid-pass the call graph is incomplete: inbound CALLS
+// edges are not yet populated, so every function looks unreachable.
+// audit_unused must refuse rather than emit confidence:high
+// "deep_trace_confirms_unreachable" verdicts for live code.
+func TestAuditUnused_MidResolve_RefusesNotConfidentlyWrong(t *testing.T) {
+	t.Parallel()
+	srv, _, projectID := setupAuditUnusedTestServer(t)
+
+	srv.indexer.MarkActiveForTest(projectID, 30, 100)
+	t.Cleanup(func() { srv.indexer.UnmarkActiveForTest(projectID) })
+
+	res, err := srv.handleAuditUnused(context.Background(), makeReq(map[string]any{
+		"project": projectID,
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	body := decode(t, res)
+
+	// Must refuse: no candidates, an error naming the mid-pass cause.
+	if cands, ok := body["candidates"].([]any); ok && len(cands) > 0 {
+		t.Errorf("mid-resolve audit_unused must not emit candidates; got %v", cands)
+	}
+	errMsg, _ := body["error"].(string)
+	if !strings.Contains(errMsg, "mid-pass") {
+		t.Errorf("error should name the mid-pass cause; got %q", errMsg)
+	}
+}
+
+// TestAuditUnused_IdleIndexer_StillReturnsCandidates — control: with the
+// indexer idle, the #1847 guard is inert and the normal path runs.
+func TestAuditUnused_IdleIndexer_StillReturnsCandidates(t *testing.T) {
+	t.Parallel()
+	srv, _, projectID := setupAuditUnusedTestServer(t)
+
+	res, err := srv.handleAuditUnused(context.Background(), makeReq(map[string]any{
+		"project": projectID,
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	body := decode(t, res)
+	if _, isErr := body["error"]; isErr {
+		t.Fatalf("idle indexer must not trip the mid-pass guard; got error %v", body["error"])
+	}
+	if cands, ok := body["candidates"].([]any); !ok || len(cands) == 0 {
+		t.Errorf("idle indexer should still surface helperUnused; got %v", body["candidates"])
+	}
+}
+
 func TestAuditUnused_IsRegistered(t *testing.T) {
 	t.Parallel()
 	srv, _, _ := newTestServer(t)

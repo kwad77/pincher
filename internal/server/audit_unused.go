@@ -79,6 +79,29 @@ func (s *Server) handleAuditUnused(ctx context.Context, req *mcp.CallToolRequest
 		return errRes, nil
 	}
 
+	// #1847: a dead-code verdict is only sound against a COMPLETE call
+	// graph. During the resolve pass, inbound CALLS edges are not yet
+	// populated — so every function (including live entry points like
+	// `runDoctorCLI`, reachable only from `func main()`) looks
+	// unreachable. Pre-fix, audit_unused emitted `confidence: high` +
+	// `deep_trace_confirms_unreachable` mid-pass, surfacing the
+	// `index_in_progress` warning in `_meta` but not letting it touch
+	// the confidence field — and `confidence` is what an agent acts on.
+	// Refuse outright rather than ship a confidently-wrong verdict.
+	if s.indexer != nil {
+		if done, total, active := s.indexer.GetProgress(projectID); active {
+			return s.errResultRich(
+				fmt.Sprintf("audit_unused: indexer is mid-pass (%d/%d files) for this project — the call graph is incomplete, so every function looks unreachable. A dead-code verdict now would be confidently wrong; re-run once indexing finishes.", done, total),
+				[]map[string]string{
+					{"tool": "audit_unused", "args": "{}",
+						"why": "retry after the resolve pass completes — the call graph is whole then"},
+					{"tool": "health", "args": "{}",
+						"why": "check indexing status (project.staleness_seconds, index_in_progress)"},
+				},
+			), nil
+		}
+	}
+
 	language := str(args, "language")
 	kindsRaw := str(args, "kinds")
 	kinds := []string{}
