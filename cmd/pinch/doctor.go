@@ -41,7 +41,8 @@ func runDoctorCLI(args []string) {
 	asJSON := fs.Bool("json", false, "Emit structured JSON instead of Markdown")
 	lookbackHours := fs.Int("lookback", 168, "Hours of history to include in failure / slow-query lists (default 168 = 7 days)")
 	top := fs.Int("top", 10, "Maximum number of failures / slow queries to list per section")
-	fix := fs.Bool("fix", false, "Auto-resolve the safe subset of advisories (currently: VACUUM the DB when >50 MB of reclaimable space; prune extraction_failures rows whose last_seen_at predates their project's indexed_at). Destructive remediations (project deletion, force-reindex) stay explicit-action — run their targeted subcommands. (#1260 §3, #1382/#1386)")
+	fix := fs.Bool("fix", false, "Auto-resolve the safe subset of advisories (currently: VACUUM the DB when >50 MB of reclaimable space; prune extraction_failures rows whose last_seen_at predates their project's indexed_at; reclaim stale project lockfiles left by dead/recycled holders). Destructive remediations (project deletion, force-reindex) stay explicit-action — run their targeted subcommands. (#1260 §3, #1382/#1386)")
+	reapOrphans := fs.Bool("reap-orphans", false, "With --fix: also terminate live version-skewed orphan pincher processes that hold project locks (a dev build or a detached --http server left over from a prior session). Off by default — killing a process is opt-in. The four gates: holds a pincher lockfile, alive, executable verified as a pincher binary, binary_version differs from this one.")
 	projectFilter := fs.String("project", "", "#1401 — restrict the projects + extraction_failures sections to projects whose name or id contains this case-insensitive substring (same shape as `pincher project rm` / `pincher verify --project`). Empty = all projects. Database-level advisories (large-DB / WAL / ghost / nested / branch drift) remain project-wide.")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: pincher doctor [--json] [--fix] [--data-dir DIR] [--lookback HOURS] [--top N] [--project NAME|ID|SUBSTR]")
@@ -66,7 +67,7 @@ func runDoctorCLI(args []string) {
 	// action allowlist directly. Mutually exclusive with the diagnose
 	// modes; fix shares the same DB open + close.
 	if *fix {
-		runDoctorFixCLI(dir, *asJSON)
+		runDoctorFixCLI(dir, *asJSON, *reapOrphans)
 		return
 	}
 
