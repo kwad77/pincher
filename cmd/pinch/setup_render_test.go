@@ -192,3 +192,23 @@ func TestPrintSetupSummary(t *testing.T) {
 		t.Errorf("summary should mark each result OK/FAIL; got:\n%s", out)
 	}
 }
+
+// tint wraps a string in an SGR code and a reset.
+func TestTint(t *testing.T) {
+	got := tint(ansiGreen, "ok")
+	if got != ansiGreen+"ok"+ansiReset {
+		t.Errorf("tint = %q, want code+s+reset", got)
+	}
+}
+
+// renderHosts colorizes the detected marker and the checked box.
+func TestRenderHosts_Colorized(t *testing.T) {
+	m := newSetupModel(pinit.AllTargets, []pinit.Target{pinit.ClaudeTarget}, false)
+	out := joinLines(renderHosts(&m))
+	if !strings.Contains(out, ansiGreen) {
+		t.Error("renderHosts should emit a green span for the detected/checked host")
+	}
+	if !strings.Contains(out, ansiAccent) {
+		t.Error("renderHosts should emit the accent color on the cursor row")
+	}
+}

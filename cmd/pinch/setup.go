@@ -30,7 +30,14 @@ const (
 	ansiReset   = "\x1b[0m"
 	ansiHideCur = "\x1b[?25l"
 	ansiShowCur = "\x1b[?25h"
+	ansiGreen   = "\x1b[32m"
+	ansiRed     = "\x1b[31m"
+	ansiAccent  = "\x1b[36m" // cyan — the wizard's highlight color
 )
+
+// tint wraps s in an SGR code and a reset. Each call is self-contained
+// (no nesting) so colored spans compose cleanly within a row.
+func tint(code, s string) string { return code + s + ansiReset }
 
 // wkey is a decoded keystroke.
 type wkey int
@@ -248,7 +255,7 @@ func renderScreen(m *setupModel, cwd string) []string {
 }
 
 func header(title string) []string {
-	return []string{"", "  " + ansiBold + "pincher setup" + ansiReset + " — " + title, ""}
+	return []string{"", "  " + tint(ansiAccent+ansiBold, "pincher setup") + " — " + title, ""}
 }
 
 func footer(hint string) []string {
@@ -261,21 +268,21 @@ func renderHosts(m *setupModel) []string {
 	for i, t := range m.targets {
 		cursor := "  "
 		if i == m.cursor {
-			cursor = "› "
+			cursor = tint(ansiAccent+ansiBold, "› ")
 		}
-		box := "[ ]"
+		box := tint(ansiDim, "[ ]")
 		if m.selected[t.Name] {
-			box = "[x]"
+			box = tint(ansiGreen, "[x]")
+		}
+		name := fmt.Sprintf("%-20s", displaySetupName(t))
+		if i == m.cursor {
+			name = tint(ansiBold, name)
 		}
 		suffix := ""
 		if m.detected[t.Name] {
-			suffix = "  ·detected"
+			suffix = tint(ansiGreen, "  ·detected")
 		}
-		row := fmt.Sprintf("%s%s  %-20s %s%s", cursor, box, displaySetupName(t), t.Describe, suffix)
-		if i == m.cursor {
-			row = ansiBold + row + ansiReset
-		}
-		lines = append(lines, row)
+		lines = append(lines, cursor+box+"  "+name+" "+tint(ansiDim, t.Describe)+suffix)
 	}
 	if !m.anySelected() {
 		lines = append(lines, "", "  "+ansiDim+"(select at least one host to continue)"+ansiReset)
@@ -289,17 +296,17 @@ func renderOptions(m *setupModel) []string {
 	for i, key := range keys {
 		cursor := "  "
 		if i == m.cursor {
-			cursor = "› "
+			cursor = tint(ansiAccent+ansiBold, "› ")
 		}
-		box := "[ ]"
+		box := tint(ansiDim, "[ ]")
 		if m.optionValue(key) {
-			box = "[x]"
+			box = tint(ansiGreen, "[x]")
 		}
-		row := fmt.Sprintf("%s%s  %s", cursor, box, optionLabel(key))
+		label := optionLabel(key)
 		if i == m.cursor {
-			row = ansiBold + row + ansiReset
+			label = tint(ansiBold, label)
 		}
-		lines = append(lines, row)
+		lines = append(lines, cursor+box+"  "+label)
 	}
 	return append(lines, footer("↑/↓ move · space toggle · enter continue · b back · q quit")...)
 }
@@ -307,20 +314,21 @@ func renderOptions(m *setupModel) []string {
 func renderConfirm(m *setupModel, cwd string) []string {
 	lines := header("review")
 	lines = append(lines, "  "+ansiDim+"These files will be written:"+ansiReset, "")
+	bullet := tint(ansiAccent, "•")
 	for _, t := range m.selectedTargets() {
 		plan, err := pinit.Plan(t, cwd, m.optGlobal)
 		if err != nil {
-			lines = append(lines, fmt.Sprintf("  ! %-20s %v", displaySetupName(t), err))
+			lines = append(lines, fmt.Sprintf("  %s %-20s %v", tint(ansiRed, "!"), displaySetupName(t), err))
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("  • %-20s %s %s", displaySetupName(t),
+		lines = append(lines, fmt.Sprintf("  %s %-20s %s %s", bullet, displaySetupName(t),
 			pinit.PresentTenseAction(plan.Action), condenseHome(plan.Path)))
 	}
 	if m.selected["claude"] && m.optHook {
-		lines = append(lines, "  • "+fmt.Sprintf("%-20s install .claude/settings.json PreToolUse hook", "Claude hook"))
+		lines = append(lines, "  "+bullet+fmt.Sprintf(" %-20s install .claude/settings.json PreToolUse hook", "Claude hook"))
 	}
 	if m.optGitHooks {
-		lines = append(lines, "  • "+fmt.Sprintf("%-20s install .git/hooks reindex hooks", "Git hooks"))
+		lines = append(lines, "  "+bullet+fmt.Sprintf(" %-20s install .git/hooks reindex hooks", "Git hooks"))
 	}
 	return append(lines, footer("enter apply · b back · q cancel")...)
 }
@@ -328,9 +336,9 @@ func renderConfirm(m *setupModel, cwd string) []string {
 func renderDone(m *setupModel) []string {
 	lines := header("done")
 	for _, r := range m.results {
-		mark := "✓"
+		mark := tint(ansiGreen, "✓")
 		if !r.ok {
-			mark = "✗"
+			mark = tint(ansiRed, "✗")
 		}
 		lines = append(lines, "  "+mark+" "+r.label)
 	}
