@@ -468,12 +468,27 @@ func TestUpdateCLI_CheckBinary(t *testing.T) {
 		t.Skip("git not on PATH")
 	}
 
-	bin := buildPincherBinary(t)
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
+
+	// `pincher update --check` in-repo path runs `git fetch origin` to
+	// compute ahead/behind. CI runners with actions/checkout@v4 SHOULD
+	// have an http.extraheader credential, but the helper occasionally
+	// fails to fire on the test subprocess (#1875), producing
+	// "could not read Username for 'https://github.com'" and a hard
+	// test failure on what is functionally a network-auth flake. Probe
+	// fetchability up-front and skip when origin isn't reachable — the
+	// test's actual contract is "dispatch + in-repo detection works",
+	// which doesn't need a real fetch to verify.
+	probe := exec.Command("git", "fetch", "--dry-run", "origin")
+	probe.Dir = cwd
+	if out, err := probe.CombinedOutput(); err != nil {
+		t.Skipf("git fetch unavailable (likely missing credentials in this env): %v\n%s", err, out)
+	}
+
+	bin := buildPincherBinary(t)
 
 	cmd := exec.Command(bin, "update", "--check")
 	cmd.Dir = cwd
