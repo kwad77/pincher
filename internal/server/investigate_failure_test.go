@@ -177,6 +177,44 @@ func TestInvestigateFailure_StopwordsFiltered(t *testing.T) {
 	}
 }
 
+// TestInvestigateFailure_TestFrameworkVocabularyFiltered_1880 — control:
+// Go testing-package output tokens that BM25-leaked into ranked
+// suspects on a real test-failure dogfood probe (#1880) must be
+// dropped by parseStackFrames before they reach the search step.
+// Pre-fix `FAIL` / `PASS` / `SKIP` / `RUN` / `PAUSE` / `status` / `exit`
+// were treated as identifier-shaped tokens; this test pins them as
+// stopwords so a regression that adds testing.T or `t.Run` output to
+// the trace can't re-leak through.
+func TestInvestigateFailure_TestFrameworkVocabularyFiltered_1880(t *testing.T) {
+	t.Parallel()
+	trace := `--- FAIL: TestX (1.63s)
+    update_test.go:483: pincher update: exit status 1
+=== RUN   TestY
+=== PAUSE TestY
+--- PASS: TestY (0.00s)
+--- SKIP: TestZ
+FAIL	github.com/kwad77/pincher/cmd/pinch	158.200s`
+	names, _ := parseStackFrames(trace)
+	for _, leaked := range []string{"FAIL", "PASS", "SKIP", "RUN", "PAUSE", "status", "exit"} {
+		for _, n := range names {
+			if n == leaked {
+				t.Errorf("test-framework token %q survived filter — must be in stopwordFrames", leaked)
+				break
+			}
+		}
+	}
+	// Sanity: real identifier-shaped tokens (TestX / TestY) must survive.
+	survived := map[string]bool{}
+	for _, n := range names {
+		survived[n] = true
+	}
+	for _, expect := range []string{"TestX", "TestY"} {
+		if !survived[expect] {
+			t.Errorf("expected identifier %q to survive filter; got names=%v", expect, names)
+		}
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Handler tests (server + real indexed corpus)
 // ─────────────────────────────────────────────────────────────────
