@@ -148,6 +148,25 @@ var stopwordFrames = map[string]bool{
 	"bitbucket": true,
 	"golang": true,
 	"gopkg":  true,
+	// #1880: Go testing package framework vocabulary. Every Go test
+	// failure emits `--- FAIL: TestX`, `--- PASS: TestX`, `=== RUN`,
+	// `FAIL\t<pkg>\t<seconds>s`, `exit status N`. These tokens are
+	// shape-mandatory output, not domain identifiers, and they
+	// BM25-match unrelated symbols whose names happen to be common
+	// English verbs (`compare` matched cmd/benchcmp.compare from
+	// "fetching origin to compare..."; `fetch` matched
+	// install.sh::install.fetch from "git fetch"; `FAIL` matched
+	// scoop-manifest_test.fail). Tokens like `compare` / `fetch` /
+	// `check` / `update` are too risky to filter universally (a real
+	// failure site could legitimately be named `compare`), so we
+	// limit ourselves to the testing-package output vocabulary.
+	"FAIL":   true,
+	"PASS":   true,
+	"SKIP":   true,
+	"RUN":    true,
+	"PAUSE":  true,
+	"status": true,
+	"exit":   true,
 }
 
 // parseStackFrames extracts candidate symbol names and file paths from
