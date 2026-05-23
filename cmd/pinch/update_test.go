@@ -498,19 +498,39 @@ func TestUpdateCLI_CheckBinary(t *testing.T) {
 
 	bin := buildPincherBinary(t)
 
-	// --source points the dispatcher at the temp repo. The in-repo
-	// detector resolves it, runs `git fetch origin` against the
-	// self-hosted remote, and prints the banner.
-	cmd := exec.Command(bin, "update", "--check", "--source", dir)
-	cmd.Env = pincherCoverEnv()
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("pincher update --check: %v\n%s", err, out)
-	}
-	got := string(out)
-	if !strings.Contains(got, "in-repo mode") {
-		t.Fatalf("expected in-repo banner; got:\n%s", got)
-	}
+	// Two sub-tests: --source explicit AND cwd-detection implicit.
+	// The two dispatcher branches share most of the in-repo path but
+	// the source-resolution prelude differs; covering both is what
+	// keeps cmd/pinch coverage at parity with the pre-#1875 baseline
+	// (otherwise --source-only loses ~0.1pp on detectUpdateSource's
+	// cwd-walking branches and trips the 85% total-coverage gate).
+	t.Run("explicit_source_flag", func(t *testing.T) {
+		cmd := exec.Command(bin, "update", "--check", "--source", dir)
+		cmd.Env = pincherCoverEnv()
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("pincher update --check --source: %v\n%s", err, out)
+		}
+		if got := string(out); !strings.Contains(got, "in-repo mode") {
+			t.Fatalf("expected in-repo banner; got:\n%s", got)
+		}
+	})
+
+	t.Run("cwd_detection", func(t *testing.T) {
+		// Set cmd.Dir = dir so the dispatcher walks up from there
+		// looking for go.mod (which we wrote above). Same effective
+		// result, different code path exercised.
+		cmd := exec.Command(bin, "update", "--check")
+		cmd.Dir = dir
+		cmd.Env = pincherCoverEnv()
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("pincher update --check (cwd): %v\n%s", err, out)
+		}
+		if got := string(out); !strings.Contains(got, "in-repo mode") {
+			t.Fatalf("expected in-repo banner; got:\n%s", got)
+		}
+	})
 }
 
 // TestUpdateCLI_DryRunStandalone forces the standalone path with --source
