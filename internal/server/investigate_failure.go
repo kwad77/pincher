@@ -843,12 +843,3 @@ func truncateForOutput(s string, n int) string {
 	}
 	return s[:n] + "...[truncated]"
 }
-
-func firstNonEmpty(ss []string, fallback string) string {
-	for _, s := range ss {
-		if s != "" {
-			return s
-		}
-	}
-	return fallback
-}
