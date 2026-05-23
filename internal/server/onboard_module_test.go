@@ -395,6 +395,69 @@ func TestOnboardModule_PathPrefixDoesNotMatchSubstring(t *testing.T) {
 	}
 }
 
+// TestOnboardModule_NoEntryPoints_EmitsWarningAndNextStep_1879 —
+// positive empty-shape: a library package (core/) has no main() /
+// Test*() / init(), so is_entry_point fires for zero symbols and
+// entry_points_local_to_scope = []. Pre-#1879 this came back silent
+// — empty list, no annotation, no orientation hint. The fix emits
+// a warnings_v2.no_entry_points_in_scope entry plus a next_step
+// pointing at the most-consumed exported symbol (the real "where
+// do I start reading" answer for a library package).
+func TestOnboardModule_NoEntryPoints_EmitsWarningAndNextStep_1879(t *testing.T) {
+	t.Parallel()
+	srv, _, projectID := setupOnboardTestServer(t)
+
+	res, err := srv.handleOnboardModule(context.Background(), makeReq(map[string]any{
+		"directory": "core/",
+		"project":   projectID,
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	body := decode(t, res)
+
+	// Sanity: entry_points is empty (precondition for the warning).
+	entryPoints, _ := body["entry_points_local_to_scope"].([]any)
+	if len(entryPoints) != 0 {
+		t.Fatalf("precondition: expected entry_points_local_to_scope=[]; got %v", entryPoints)
+	}
+
+	meta, _ := body["_meta"].(map[string]any)
+	if meta == nil {
+		t.Fatal("missing _meta")
+	}
+	warnings, _ := meta["warnings_v2"].([]any)
+	foundWarning := false
+	for _, w := range warnings {
+		m, _ := w.(map[string]any)
+		if m["code"] == "no_entry_points_in_scope" {
+			foundWarning = true
+			if sev, _ := m["severity"].(string); sev != "info" {
+				t.Errorf("warning severity = %q; want info", sev)
+			}
+			break
+		}
+	}
+	if !foundWarning {
+		t.Errorf("expected warnings_v2[].code = no_entry_points_in_scope; got %v", warnings)
+	}
+
+	// A next_step pointing at the most-consumed exported symbol
+	// (core.Foo, called by consumer.UseCore in the fixture).
+	nextSteps, _ := meta["next_steps"].([]any)
+	foundFooHint := false
+	for _, ns := range nextSteps {
+		m, _ := ns.(map[string]any)
+		if m["tool"] == "context" && strings.Contains(m["why"].(string), "Foo") {
+			foundFooHint = true
+			break
+		}
+	}
+	if !foundFooHint {
+		t.Errorf("expected next_steps entry pointing at core.Foo (most-consumed exported); got %v", nextSteps)
+	}
+}
+
 // TestOnboardModule_IsRegistered — gate: tool is registered and
 // the description mentions orientation intent.
 func TestOnboardModule_IsRegistered(t *testing.T) {
