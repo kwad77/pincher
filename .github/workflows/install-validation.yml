@@ -30,8 +30,15 @@
 name: Install validation
 
 on:
-  release:
-    types: [published]
+  # Triggered after the Release workflow completes. Using `workflow_run`
+  # instead of `release: published` ensures every release-artifact path
+  # is fully populated before validation starts — the Release workflow's
+  # `Docker image` job takes ~10 min after the tag push, well past the
+  # window when `release: published` would fire. Also avoids the
+  # release-asset CDN propagation race that bit v0.92.0 (#1871).
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -46,6 +53,12 @@ jobs:
   resolve:
     name: Resolve tag + channel
     runs-on: ubuntu-latest
+    # Skip when the triggering Release workflow run didn't succeed —
+    # there's nothing to validate if the artifacts weren't built.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
     outputs:
       tag: ${{ steps.r.outputs.tag }}
       channel: ${{ steps.r.outputs.channel }}
@@ -56,11 +69,18 @@ jobs:
         id: r
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "release" ]; then
-            TAG="${{ github.event.release.tag_name }}"
-          else
-            TAG="${{ inputs.tag }}"
-          fi
+          case "${{ github.event_name }}" in
+            workflow_run)
+              # workflow_run-triggered runs carry the source workflow's
+              # head_branch — for a tag-push trigger that's the tag name.
+              TAG="${{ github.event.workflow_run.head_branch }}"
+              ;;
+            workflow_dispatch)
+              TAG="${{ inputs.tag }}"
+              ;;
+            *)
+              echo "::error::unsupported event: ${{ github.event_name }}"; exit 1 ;;
+          esac
           case "$TAG" in
             v[0-9]*) ;;
             *) echo "::error::tag must look like vX.Y.Z (got '$TAG')"; exit 1 ;;
