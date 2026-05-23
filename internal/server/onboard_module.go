@@ -429,6 +429,52 @@ func (s *Server) handleOnboardModule(ctx context.Context, req *mcp.CallToolReque
 		}}
 	}
 
+	// #1879: silent-empty entry_points_local_to_scope is the dominant
+	// orientation failure mode for library packages. The `is_entry_point`
+	// extractor flag fires for main()/Test*()/init() only, so a
+	// non-application package (e.g. internal/index/) genuinely has zero
+	// "entry points" by that definition — but that's the WRONG criterion
+	// for a new contributor's "where do I start reading" question.
+	// Emit a warning + redirect to external_consumers (the actual
+	// public-API surface) and the largest exported symbol — both
+	// computable without changing the SQL extraction.
+	if len(entryPoints) == 0 && len(scopeSyms) > 0 {
+		warnings, _ := meta["warnings_v2"].([]map[string]any)
+		ws := warnings
+		ws = append(ws, map[string]any{
+			"code":     "no_entry_points_in_scope",
+			"severity": "info",
+			"message": "entry_points_local_to_scope=[] because the extractor's `is_entry_point` flag fires only for main() / Test*() / init() — a library package legitimately has zero by that criterion. For orientation (where do I start reading?), the external_consumers list IS the public-API surface (every symbol called from outside this directory). The next_steps tool list below points at the most-called of those.",
+		})
+		meta["warnings_v2"] = ws
+		// Add a next_step that surfaces the most-consumed exported
+		// symbol — the orientation answer to "where do I start reading".
+		if len(externalConsumers) > 0 {
+			// Tally inbound external-consumer count per target.
+			consumerCounts := map[string]int{}
+			consumerName := map[string]string{}
+			for _, e := range externalConsumers {
+				consumerCounts[e.ToID]++
+				consumerName[e.ToID] = e.ToName
+			}
+			topID, topName, topCount := "", "", 0
+			for id, n := range consumerCounts {
+				if n > topCount {
+					topCount = n
+					topID = id
+					topName = consumerName[id]
+				}
+			}
+			if topID != "" {
+				meta["next_steps"] = append(meta["next_steps"].([]map[string]string),
+					map[string]string{
+						"tool": "context", "args": fmt.Sprintf(`{"id":%q}`, topID),
+						"why": fmt.Sprintf("read %q — the most-called public surface (%d external callers); functional entry point for orientation", topName, topCount),
+					})
+			}
+		}
+	}
+
 	data := map[string]any{
 		"scope":                       scope,
 		"entry_points_local_to_scope": entryPoints,
