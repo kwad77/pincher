@@ -457,9 +457,16 @@ func TestPickAssetForPlatform_NoMatch(t *testing.T) {
 
 // TestUpdateCLI_CheckBinary exercises the dispatch + in-repo detection
 // end-to-end by building the binary, then running `pincher update --check`
-// from inside this checkout. We don't assert "up to date" / "behind"
-// because that depends on origin state; we only assert the command exits
-// 0 and prints the in-repo banner.
+// against a self-hosted-origin temp repo. Self-hosted origin (same trick
+// as TestUpdateInRepo_Check) means `git fetch origin` succeeds without
+// network or credentials — eliminating the actions/checkout@v4
+// extraheader flake (#1875) without the t.Skipf-on-fetch-failure
+// regression (#1875 follow-up) that dropped cmd/pinch coverage by
+// 0.2pp when the test silently skipped in CI.
+//
+// We don't assert "up to date" / "behind" because that depends on
+// origin state; we only assert the command exits 0 and prints the
+// in-repo banner.
 func TestUpdateCLI_CheckBinary(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping CLI binary build in -short mode")
@@ -468,39 +475,62 @@ func TestUpdateCLI_CheckBinary(t *testing.T) {
 		t.Skip("git not on PATH")
 	}
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
+	// Build a temp repo with itself as origin so `git fetch origin`
+	// always succeeds locally. Pincher must recognise this dir as a
+	// pincher checkout via go.mod — `makeTempRepo` only seeds a README,
+	// so add the minimum go.mod that satisfies isPincherModule.
+	dir := makeTempRepo(t)
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module github.com/kwad77/pincher\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
 	}
-
-	// `pincher update --check` in-repo path runs `git fetch origin` to
-	// compute ahead/behind. CI runners with actions/checkout@v4 SHOULD
-	// have an http.extraheader credential, but the helper occasionally
-	// fails to fire on the test subprocess (#1875), producing
-	// "could not read Username for 'https://github.com'" and a hard
-	// test failure on what is functionally a network-auth flake. Probe
-	// fetchability up-front and skip when origin isn't reachable — the
-	// test's actual contract is "dispatch + in-repo detection works",
-	// which doesn't need a real fetch to verify.
-	probe := exec.Command("git", "fetch", "--dry-run", "origin")
-	probe.Dir = cwd
-	if out, err := probe.CombinedOutput(); err != nil {
-		t.Skipf("git fetch unavailable (likely missing credentials in this env): %v\n%s", err, out)
+	for _, args := range [][]string{
+		{"git", "-C", dir, "add", "go.mod"},
+		{"git", "-C", dir, "commit", "-q", "-m", "add go.mod"},
+		{"git", "-C", dir, "config", "remote.origin.url", dir},
+		{"git", "-C", dir, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"},
+	} {
+		c := exec.Command(args[0], args[1:]...)
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
 	}
 
 	bin := buildPincherBinary(t)
 
-	cmd := exec.Command(bin, "update", "--check")
-	cmd.Dir = cwd
-	cmd.Env = pincherCoverEnv()
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("pincher update --check: %v\n%s", err, out)
-	}
-	got := string(out)
-	if !strings.Contains(got, "in-repo mode") {
-		t.Fatalf("expected in-repo banner; got:\n%s", got)
-	}
+	// Two sub-tests: --source explicit AND cwd-detection implicit.
+	// The two dispatcher branches share most of the in-repo path but
+	// the source-resolution prelude differs; covering both is what
+	// keeps cmd/pinch coverage at parity with the pre-#1875 baseline
+	// (otherwise --source-only loses ~0.1pp on detectUpdateSource's
+	// cwd-walking branches and trips the 85% total-coverage gate).
+	t.Run("explicit_source_flag", func(t *testing.T) {
+		cmd := exec.Command(bin, "update", "--check", "--source", dir)
+		cmd.Env = pincherCoverEnv()
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("pincher update --check --source: %v\n%s", err, out)
+		}
+		if got := string(out); !strings.Contains(got, "in-repo mode") {
+			t.Fatalf("expected in-repo banner; got:\n%s", got)
+		}
+	})
+
+	t.Run("cwd_detection", func(t *testing.T) {
+		// Set cmd.Dir = dir so the dispatcher walks up from there
+		// looking for go.mod (which we wrote above). Same effective
+		// result, different code path exercised.
+		cmd := exec.Command(bin, "update", "--check")
+		cmd.Dir = dir
+		cmd.Env = pincherCoverEnv()
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("pincher update --check (cwd): %v\n%s", err, out)
+		}
+		if got := string(out); !strings.Contains(got, "in-repo mode") {
+			t.Fatalf("expected in-repo banner; got:\n%s", got)
+		}
+	})
 }
 
 // TestUpdateCLI_DryRunStandalone forces the standalone path with --source
