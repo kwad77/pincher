@@ -1,1 +1,0 @@
-**Dependency bump:** `golang.org/x/net v0.54.0 → v0.55.0` (and transitive `golang.org/x/sys v0.44.0 → v0.45.0`). Closes 5 advisories surfaced by govulncheck (GO-2026-5025 / 5027 / 5028 / 5029 / 5030) — all reachable through the standard library's HTTP/2 path. The `govulncheck (advisory)` CI gate goes green with this bump.

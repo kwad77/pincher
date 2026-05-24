@@ -134,7 +134,7 @@ Aggregate session savings land around **70-90%** on large Go/JS projects, **40-7
 - **[CHANGELOG](CHANGELOG.md)** — release-by-release history. Milestone burndown: <https://github.com/kwad77/pincher/milestones>.
 - **[Migration guide](docs/migration/v0.4-to-v1.0.md)** — v0.4 → v1.0.
 
-Current release: **v0.92** — an onboarding-friction sweep (interactive `pincher setup` wizard, shell completion, GitHub Pages tutorial) plus a deterministic graph-tooling suite: `export-graph` (JSON/GraphML/DOT), `callflow` (Mermaid diagrams), `architecture` surprising-connections, the `branch_overlap` tool, and queryable `Rationale` symbols. Latest stable: **v0.90**. v1.0 freezes tool schemas and ships schema attestation + a public launch.
+Current release: **v0.93** — post-v0.92 polish: install-validation harness now triggers off `workflow_run` so it waits for every artifact path (the Docker push job runs ~8 min behind), the `onboard_module` and `investigate_failure` composites explain themselves on edge inputs instead of returning silent `[]` or BM25-matching Go test-framework vocabulary, and the v0.4 → v1.0 migration guide forward-ports through v0.92. v0.92's headline work — onboarding-friction sweep + graph-tooling suite (`export-graph`, `callflow`, `architecture` surprising-connections, `branch_overlap`, queryable `Rationale` symbols) — remains current. Latest stable: **v0.90**. v1.0 freezes tool schemas and ships schema attestation + a public launch.
 
 ---
 
