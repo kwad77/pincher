@@ -1,0 +1,1 @@
+**Init target detection tests are hermetic inside Codex.** Tests that override `HOME` now also neutralize `CODEX_HOME`, so `go test ./...` passes when the repository is exercised from a Codex-managed shell instead of inheriting the real host's global Codex config directory.

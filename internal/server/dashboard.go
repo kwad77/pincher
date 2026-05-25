@@ -101,6 +101,8 @@ const dashboardTemplate = `<!DOCTYPE html>
   <div class="grid grid-4" id="session-cards"><div class="loading">Loading…</div></div>
   <p class="section-title">All-Time ROI</p>
   <div class="grid grid-4" id="alltime-cards"><div class="loading">Loading…</div></div>
+  <p class="section-title">Savings Math</p>
+  <div id="savings-math-panel"><div class="loading">Loading…</div></div>
   <div id="projection-banner"></div>
   <p class="section-title">Token Savings History</p>
   <div class="sparkline-card">
@@ -132,6 +134,10 @@ const dashboardTemplate = `<!DOCTYPE html>
   <p class="section-title">Tool Call Breakdown (last 7 days)</p>
   <div class="tool-breakdown-card">
     <div id="tool-breakdown-body"><div class="loading">Loading…</div></div>
+  </div>
+  <p class="section-title">Recent Calls</p>
+  <div class="tool-breakdown-card">
+    <div id="per-call-breakdown-body"><div class="loading">Loading…</div></div>
   </div>
   <p class="section-title">Calls by Complexity Tier (last 7 days)</p>
   <div class="tier-breakdown-card">
@@ -537,6 +543,19 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .proj-banner-pills{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .proj-banner-pill{background:rgba(63,185,80,.12);border:1px solid rgba(63,185,80,.25);border-radius:20px;color:var(--green);font-size:12px;font-weight:600;padding:4px 12px}
 .proj-banner-pill.blue{background:rgba(88,166,255,.12);border-color:rgba(88,166,255,.25);color:var(--accent)}
+
+/* ── Savings math panel ── */
+.savings-math-card{background:linear-gradient(135deg,rgba(88,166,255,.07),rgba(163,113,247,.06));border:1px solid rgba(88,166,255,.22);border-radius:10px;padding:18px 20px;margin-bottom:32px}
+.savings-math-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-bottom:14px}
+.savings-math-title{font-size:15px;font-weight:700;color:var(--text)}
+.savings-math-sub{font-size:12px;color:var(--muted);margin-top:4px;line-height:1.45}
+.savings-math-badge{font-family:ui-monospace,monospace;font-size:11px;color:var(--accent);border:1px solid rgba(88,166,255,.28);border-radius:14px;padding:3px 9px;background:rgba(88,166,255,.08)}
+.savings-math-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:12px 0 14px}
+.savings-math-metric{background:rgba(13,17,23,.36);border:1px solid var(--border);border-radius:8px;padding:12px}
+.savings-math-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px}
+.savings-math-value{font-size:20px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}
+.savings-math-value.good{color:var(--green)}
+.savings-math-formula{font-family:ui-monospace,monospace;font-size:12px;line-height:1.6;color:var(--muted);background:rgba(13,17,23,.44);border:1px dashed var(--border);border-radius:8px;padding:10px 12px}
 
 /* ── Project detail panel ── */
 .detail-panel{background:var(--surface);border:1px solid var(--accent);border-radius:10px;padding:20px;margin-top:16px;display:none}
@@ -971,6 +990,44 @@ function statCard(label, value, cls, sub, cardCls) {
   return '<div class="card '+(cardCls||'')+'"><div class="card-label">'+esc(label)+'</div><div class="card-value '+cls+'">'+esc(value)+'</div>'+(sub?'<div class="card-sub">'+esc(sub)+'</div>':'')+'</div>';
 }
 
+function renderSavingsMath(data) {
+  const panel = document.getElementById('savings-math-panel');
+  if (!panel) return;
+  const a = data && data.all_time ? data.all_time : {};
+  const s = data && data.session ? data.session : {};
+  const math = a.savings_math || s.savings_math;
+  if (!math || !(math.baseline_tokens > 0)) {
+    panel.innerHTML = '<div class="empty">No savings math yet. Make a Pincher tool call with a full-file baseline and refresh.</div>';
+    return;
+  }
+  const baseline = math.baseline_tokens || ((math.tokens_used||0) + (math.tokens_saved||0));
+  const savedPct = (math.savings_pct || 0);
+  const usedPct = (math.used_pct || 0);
+  const compressionRatio = (math.compression_ratio || 0);
+  const method = math.baseline_method || 'full_file_read';
+  panel.innerHTML =
+    '<div class="savings-math-card">'+
+      '<div class="savings-math-head">'+
+        '<div><div class="savings-math-title">Savings Math</div>'+
+        '<div class="savings-math-sub">No model-price guesses, no dollars, no vibes. Baseline = used + saved. Savings % = saved / baseline × 100.</div></div>'+
+        '<div class="savings-math-badge">baseline_method: '+esc(method)+'</div>'+
+      '</div>'+
+      '<div class="savings-math-grid">'+
+        '<div class="savings-math-metric"><div class="savings-math-label">Without Pincher baseline</div><div class="savings-math-value">'+fmt(baseline)+'</div></div>'+
+        '<div class="savings-math-metric"><div class="savings-math-label">With Pincher actual</div><div class="savings-math-value">'+fmt(math.tokens_used||0)+'</div></div>'+
+        '<div class="savings-math-metric"><div class="savings-math-label">Tokens avoided</div><div class="savings-math-value good">'+fmt(math.tokens_saved||0)+'</div></div>'+
+        '<div class="savings-math-metric"><div class="savings-math-label">Savings rate</div><div class="savings-math-value good">'+savedPct.toFixed(1)+'%</div></div>'+
+        '<div class="savings-math-metric"><div class="savings-math-label">Context used</div><div class="savings-math-value">'+usedPct.toFixed(1)+'%</div></div>'+
+        '<div class="savings-math-metric"><div class="savings-math-label">Compression ratio</div><div class="savings-math-value">'+compressionRatio.toFixed(2)+'×</div></div>'+
+      '</div>'+
+      '<div class="savings-math-formula">'+
+        'baseline_tokens = tokens_used + tokens_saved = '+fmt(math.tokens_used||0)+' + '+fmt(math.tokens_saved||0)+' = '+fmt(baseline)+'<br/>'+
+        'savings_pct = tokens_saved / baseline_tokens × 100 = '+fmt(math.tokens_saved||0)+' / '+fmt(baseline)+' × 100 = '+savedPct.toFixed(1)+'%<br/>'+
+        'compressionRatio = baseline_tokens / tokens_used = '+fmt(baseline)+' / '+fmt(math.tokens_used||0)+' = '+compressionRatio.toFixed(2)+'×'+
+      '</div>'+
+    '</div>';
+}
+
 // ── Overview ───────────────────────────────────────────────────────────────
 async function load() {
   document.getElementById('error-box').innerHTML = '';
@@ -1022,6 +1079,7 @@ async function load() {
         'Index your first repo with <code>pincher index /path/to/repo</code> ' +
         'and start using pincher tools in Claude Code — your stats will populate here.</div>';
       document.getElementById('alltime-cards').innerHTML = '';
+      renderSavingsMath(data);
     } else {
       document.getElementById('session-cards').innerHTML =
         statCard('Tool Calls', fmt(s.calls||0), 'blue', sessAge, '') +
@@ -1032,6 +1090,7 @@ async function load() {
         statCard('Total Tokens Saved', fmt(a.tokens_saved||0), 'green', 'cumulative', 'green') +
         statCard('Tokens Used', fmt(a.tokens_used||0), 'purple', 'context consumed', 'purple') :
         '<div class="empty">No sessions recorded yet.</div>';
+      renderSavingsMath(data);
     }
   } else {
     document.getElementById('error-box').innerHTML = '<div class="error">Failed to load stats: '+esc(statsR.reason)+'</div>';
@@ -1043,6 +1102,7 @@ async function load() {
   loadSparkline();
   loadHookStats();
   loadToolBreakdown();
+  loadPerCallBreakdown();
   loadTierBreakdown();
   loadPayloadSize();
   loadEntropyPanel();
@@ -1160,6 +1220,47 @@ async function loadToolBreakdown() {
   } catch (e) {
     document.getElementById('tool-breakdown-body').innerHTML =
       '<div class="error">Failed to load tool breakdown: ' + esc(String(e)) + '</div>';
+  }
+}
+
+async function loadPerCallBreakdown() {
+  try {
+    const data = await fetch('/v1/tool-calls?limit=50').then(r => r.json());
+    const calls = data.calls || [];
+    const body = document.getElementById('per-call-breakdown-body');
+    if (!body) return;
+    if (calls.length === 0) {
+      body.innerHTML = '<div class="empty">No recent per-call rows yet. Use Pincher for a few code lookups and refresh.</div>';
+      return;
+    }
+    let html = '<table class="tool-breakdown-table"><thead><tr>' +
+      '<th>Time</th><th>Tool</th><th>Tier</th>' +
+      '<th class="num">Used</th><th class="num">Saved</th><th class="num">Baseline</th>' +
+      '<th class="num">Saved %</th><th>Improvement</th>' +
+      '</tr></thead><tbody>';
+    for (const c of calls) {
+      const m = c.savings_math || null;
+      const saved = m ? fmt(m.tokens_saved || 0) : '—';
+      const baseline = m ? fmt(m.baseline_tokens || 0) : '—';
+      const pct = m ? (m.savings_pct || 0).toFixed(1) + '%' : 'needs_baseline';
+      const signal = c.improvement_signal || 'needs_baseline';
+      html += '<tr>' +
+        '<td><code>' + esc((c.ts || '').replace('T',' ').replace('Z','')) + '</code></td>' +
+        '<td><code>' + esc(c.tool || '') + '</code></td>' +
+        '<td>' + esc(c.complexity_tier || '—') + '</td>' +
+        '<td class="num">' + fmt(c.tokens_used || 0) + '</td>' +
+        '<td class="num green">' + saved + '</td>' +
+        '<td class="num">' + baseline + '</td>' +
+        '<td class="num">' + pct + '</td>' +
+        '<td><code>' + esc(signal) + '</code></td>' +
+        '</tr>';
+    }
+    html += '</tbody></table>';
+    html += '<div class="doctor-note">Recent Calls is per-call, not aggregated. Baseline = used + saved when Pincher captured a full-file baseline; improvement_signal values: excellent, good, watch, improve_query, needs_baseline.</div>';
+    body.innerHTML = html;
+  } catch (e) {
+    document.getElementById('per-call-breakdown-body').innerHTML =
+      '<div class="error">Failed to load recent calls: ' + esc(String(e)) + '</div>';
   }
 }
 

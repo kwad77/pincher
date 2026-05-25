@@ -10,7 +10,7 @@ import (
 // #672 workstream 4 (v0.79 hardening): assert every registered MCP
 // tool name appears at least once in docs/REFERENCE.md as a
 // backticked code-span. Pre-fix, `context_for_task` (#1259 v0.71)
-// was registered + counted in the "23 MCP tools" metadata line but
+// was registered + counted in the MCP tool-count metadata line but
 // had no row in REFERENCE.md's tool tables — the count was right
 // but a user reading the tables would only find 22.
 //

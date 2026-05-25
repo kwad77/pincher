@@ -10,9 +10,9 @@ import (
 )
 
 // #672 workstream 4 (v0.79 capability-advertisement audit, doc parity
-// half). Pre-fix three tutorial pages linked to `#the-22-mcp-tools` —
+// half). Pre-fix three tutorial pages linked to a stale tool-count anchor —
 // a stale anchor that no longer resolved in REFERENCE.md
-// (current heading is `## The 23 MCP tools`). Users clicking those
+// (for example, `## The N MCP tools` for the wrong N). Users clicking those
 // links landed at the top of REFERENCE.md instead of the tool
 // catalogue, looking exactly like a 404 to the anchor-jumping
 // behaviour they expected. This drift shipped through six release
@@ -56,7 +56,7 @@ func TestReferenceMD_ToolCountParity(t *testing.T) {
 	}
 	tools := string(toolsBytes)
 
-	// Metadata line: **Schema version:** v34 · **MCP tools:** 28 · ...
+	// Metadata line: **Schema version:** v34 · **MCP tools:** N · ...
 	metaRE := regexp.MustCompile(`\*\*MCP tools:\*\*\s+(\d+)`)
 	metaMatch := metaRE.FindStringSubmatch(idx)
 	if metaMatch == nil {
@@ -64,7 +64,7 @@ func TestReferenceMD_ToolCountParity(t *testing.T) {
 	}
 	metaCount, _ := strconv.Atoi(metaMatch[1])
 
-	// Heading: # The 28 MCP tools
+	// Heading: # The N MCP tools
 	headingRE := regexp.MustCompile(`(?m)^# The (\d+) MCP tools\s*$`)
 	headingMatch := headingRE.FindStringSubmatch(tools)
 	if headingMatch == nil {

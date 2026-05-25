@@ -32,6 +32,9 @@ func withHome(t *testing.T, dir string) {
 	}
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir)
+	// Codex honors CODEX_HOME before HOME. Keep host-detection tests
+	// hermetic when the test suite itself is running inside Codex.
+	t.Setenv("CODEX_HOME", filepath.Join(dir, ".codex-test-home"))
 }
 
 func TestInitTargets_RegistryShape(t *testing.T) {

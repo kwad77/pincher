@@ -2,7 +2,7 @@
 
 [Back to reference index](README.md)
 
-All 28 tools are available via `POST /v1/{tool}` with a JSON body. Run alongside MCP stdio — no either/or.
+All 29 tools are available via `POST /v1/{tool}` with a JSON body. Run alongside MCP stdio — no either/or.
 
 ```bash
 # Start with both transports
@@ -46,7 +46,7 @@ Responses compress ~65% with `Accept-Encoding: gzip`. Tested clients: curl, Pyth
 | `/v1/dashboard` | GET | No | Self-contained HTML dashboard (stats, search, project cards, sparkline). No external deps. |
 | `/v1/dashboard.css` | GET | No | Dashboard stylesheet. Served separately so CSP can drop `'unsafe-inline'`. |
 | `/v1/dashboard.js` | GET | No | Dashboard JavaScript. Same CSP rationale. |
-| `/v1/openapi.json` | GET | No | OpenAPI 3.1 spec covering all 23 tool endpoints + the GET routes. Import into Postman or Cursor. |
+| `/v1/openapi.json` | GET | No | OpenAPI 3.1 spec covering all 29 tool endpoints + the GET routes. Import into Postman or Cursor. |
 | `/v1/stats` | GET | Yes | Current session + all-time savings as JSON. |
 | `/v1/sessions` | GET | Yes | Per-session history, last 90 sessions, sorted by recency. |
 | `/v1/projects` | GET | Yes | All indexed projects with file/symbol/edge counts. |
@@ -55,6 +55,7 @@ Responses compress ~65% with `Accept-Encoding: gzip`. Tested clients: curl, Pyth
 | `/v1/events` | GET | Yes* | Server-Sent Events stream — `index_started`, `index_complete`, `binary_drift`. Sends a `binary_drift` snapshot on connect, then live events. Optional `?project=<id>` filter. \*Honors `--http-key` when set. |
 | `/v1/hook-stats` | GET | Yes | Hook conversion-rate + raw counts over the last 7 days (#628). Powers the Overview tab's Hook Stats panel. |
 | `/v1/tool-call-stats` | GET | Yes | Per-tool aggregate over the trailing window (default 7d) — call_count, avg_tokens_used, sum_tokens_saved, avg_tokens_saved_pct, avg_response_bytes (#635 v0.67). Query params: `window_seconds`, `limit`. |
+| `/v1/tool-calls` | GET | Yes | Recent per-call token accounting rows for one session. Defaults to the newest session; query params: `session_id`, `limit` (default 50, max 200). Includes `savings_math` when a full-file baseline exists and `improvement_signal` for dashboard inspection. |
 | `/v1/tool-tier-stats` | GET | Yes | Per-complexity-tier aggregate (lite/standard/heavy) over the trailing window (#635 v0.67 panel 2). |
 | `/v1/tool-payload-stats` | GET | Yes | Per-tool response_bytes distribution (min/avg/max/sum) over the trailing window. Sorted by max_bytes DESC — the dashboard "outlier finder" view (#635 v0.67 panel 3). |
 | `/v1/metrics` | GET | No | Prometheus exposition format (#1163 v0.67). Standard counters/histograms/gauges for tool calls, latency, index pass, db/wal size. |

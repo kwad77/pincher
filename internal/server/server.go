@@ -42,12 +42,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/zeebo/xxh3"
 	"github.com/kwad77/pincher/internal/ast"
 	"github.com/kwad77/pincher/internal/cypher"
 	"github.com/kwad77/pincher/internal/db"
 	"github.com/kwad77/pincher/internal/index"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/zeebo/xxh3"
 )
 
 // sessionFlushInterval controls how often in-memory session stats are
@@ -77,7 +77,7 @@ type Server struct {
 	// tools holds the same set as handlers but keyed for inspection. Used
 	// by the tool-contract golden-file test (#127) so any rename / removal
 	// of a tool surfaces as a deliberate, reviewable diff.
-	tools   map[string]*mcp.Tool
+	tools map[string]*mcp.Tool
 	// outputSchemas maps tool name → JSON Schema describing its 200
 	// response body (#581). Populated by addToolWithOutput at
 	// registerTools time; consumed by openAPISpec to render real
@@ -91,7 +91,7 @@ type Server struct {
 	// request.
 	toolArgKeys     map[string]map[string]bool
 	toolArgKeysOnce sync.Once
-	httpKey  string // optional bearer token; empty = no auth required
+	httpKey         string // optional bearer token; empty = no auth required
 
 	// httpAllowOpen is the explicit opt-in to bind HTTP on a non-loopback
 	// interface without --http-key. Default false → refuse the bind (the
@@ -418,7 +418,7 @@ type projectIDCacheEntry struct {
 
 const projectIDCacheTTL = 60 * time.Second
 
-// New creates and registers all 23 MCP tools.
+// New creates and registers all MCP tools.
 func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 	now := time.Now()
 	s := &Server{
@@ -432,9 +432,9 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 		exitFn:              os.Exit, // #352: substituted by tests
 		autoRestartDelay:    autoRestartExitDelay,
 		diffContext:         os.Getenv("PINCHER_DIFF_CONTEXT") == "1", // #655
-		events:              newEventBus(),                           // #654
-		metrics:             newMetricsRegistry(),                    // #1163
-		tracer:              newOTLPTracer(version),                  // #1163 traces half
+		events:              newEventBus(),                            // #654
+		metrics:             newMetricsRegistry(),                     // #1163
+		tracer:              newOTLPTracer(version),                   // #1163 traces half
 	}
 	// #654: wire the indexer's lifecycle hook to the SSE bus so
 	// index_started / index_complete reach /v1/events subscribers. The
@@ -995,13 +995,13 @@ func isRuntimeInvokedGoSymbol(language, name string) bool {
 // heuristic (#319). Callers expect `trace name="main"` to land on
 // the binary's actual entry function, not a scratch file's
 // `package main` declaration. Order:
-//   1. Non-scratch + non-test files first.
-//   2. Callable kinds first (Function, Method, Class, Interface,
-//      Type) — these can actually have CALLS edges so the trace
-//      will yield hops. Module / Setting / Section / Document
-//      can't, so they're least preferred.
-//   3. Stable on the existing order from GetSymbolsByName when
-//      tied — that order is alphabetic by file_path.
+//  1. Non-scratch + non-test files first.
+//  2. Callable kinds first (Function, Method, Class, Interface,
+//     Type) — these can actually have CALLS edges so the trace
+//     will yield hops. Module / Setting / Section / Document
+//     can't, so they're least preferred.
+//  3. Stable on the existing order from GetSymbolsByName when
+//     tied — that order is alphabetic by file_path.
 func sortTraceCandidates(syms []db.Symbol) {
 	kindRank := func(k string) int {
 		switch k {
@@ -1577,19 +1577,20 @@ func (w *headResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
 // "unknown tool" 404 when a client POSTs to a known GET endpoint
 // (#609). Keep in sync with the GET handlers in ServeHTTP.
 var httpGetOnlyRoutes = map[string]bool{
-	"dashboard":     true,
-	"dashboard.js":  true,
-	"dashboard.css": true,
-	"stats":         true,
-	"sessions":      true,
-	"hook-stats":      true, // v0.37 hook conversion-rate dashboard panel (#628)
-	"tool-call-stats": true, // v0.67 per-tool aggregate panel (#635 substrate)
-	"tool-tier-stats": true, // v0.67 per-tier aggregate panel (#635 panel 2)
+	"dashboard":          true,
+	"dashboard.js":       true,
+	"dashboard.css":      true,
+	"stats":              true,
+	"sessions":           true,
+	"hook-stats":         true, // v0.37 hook conversion-rate dashboard panel (#628)
+	"tool-call-stats":    true, // v0.67 per-tool aggregate panel (#635 substrate)
+	"tool-calls":         true, // per-call savings/accounting rows for dashboard inspection
+	"tool-tier-stats":    true, // v0.67 per-tier aggregate panel (#635 panel 2)
 	"tool-payload-stats": true, // v0.67 per-tool payload-size panel (#635 panel 3 — outlier finder)
-	"openapi.json":    true,
-	"health":          true,
-	"ready":           true, // #660: k8s readiness probe (200 vs 503)
-	"metrics":         true, // #1163: Prometheus exposition endpoint
+	"openapi.json":       true,
+	"health":             true,
+	"ready":              true, // #660: k8s readiness probe (200 vs 503)
+	"metrics":            true, // #1163: Prometheus exposition endpoint
 }
 
 // ServeHTTP makes Server implement http.Handler.
@@ -1943,6 +1944,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"calls":        r0.Calls,
 				"tokens_used":  r0.TokensUsed,
 				"tokens_saved": r0.TokensSaved,
+				"savings_math": buildSavingsMath(r0.TokensUsed, r0.TokensSaved),
 				"started_at":   r0.StartedAt.Format(time.RFC3339),
 				"last_seen":    r0.LastSeen.Format(time.RFC3339),
 			}
@@ -1954,6 +1956,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"calls":        atCalls,
 				"tokens_used":  atUsed,
 				"tokens_saved": atSaved,
+				"savings_math": buildSavingsMath(atUsed, atSaved),
 			}
 		}
 		// Session-scoped project ID, if a root has been detected. The
@@ -2055,6 +2058,59 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"window_seconds": windowSec,
 			"tallies":        tallies,
+		})
+		return
+	}
+	// GET /v1/tool-calls — recent per-call token accounting for one session.
+	// Unlike /v1/tool-call-stats this is deliberately not aggregated: it
+	// exposes the raw call-level rows so users can spot expensive tools,
+	// missing baselines, low-savings calls, and opportunities to tighten
+	// prompts or switch tool choices. Query params:
+	//   session_id — optional; defaults to newest session
+	//   limit      — max rows returned (default 50, max 200)
+	if path == "tool-calls" && r.Method == http.MethodGet {
+		limit := 50
+		if v := r.URL.Query().Get("limit"); v != "" {
+			if n, perr := strconv.Atoi(v); perr == nil && n > 0 && n <= 200 {
+				limit = n
+			}
+		}
+		sessionID := r.URL.Query().Get("session_id")
+		if sessionID == "" {
+			if rows, err := s.store.GetSessions(1); err == nil && len(rows) > 0 {
+				sessionID = rows[0].SessionID
+			}
+		}
+		calls := []map[string]any{}
+		if sessionID != "" {
+			events, err := s.store.RecentToolCallsForSession(sessionID, limit)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+				return
+			}
+			for _, e := range events {
+				row := map[string]any{
+					"session_id":         e.SessionID,
+					"tool":               e.Tool,
+					"complexity_tier":    e.ComplexityTier,
+					"response_bytes":     e.ResponseBytes,
+					"tokens_used":        e.TokensUsed,
+					"tokens_saved":       e.TokensSaved,
+					"tokens_saved_pct":   e.TokensSavedPct,
+					"ts":                 e.TS.Format(time.RFC3339),
+					"request_id":         e.RequestID,
+					"improvement_signal": savingsImprovementSignal(e.TokensUsed, e.TokensSaved),
+				}
+				if e.TokensSaved != nil {
+					row["savings_math"] = buildSavingsMath(e.TokensUsed, *e.TokensSaved)
+				}
+				calls = append(calls, row)
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"session_id": sessionID,
+			"limit":      limit,
+			"calls":      calls,
 		})
 		return
 	}
@@ -2219,14 +2275,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		done, total, startedAtUnix, active := s.indexer.GetProgressDetail(projectID)
 		resp := map[string]any{
-			"project":        projectID,
-			"files_done":     done,
-			"files_total":    total,
-			"active":         active,
-			"started_at":     nil,
-			"elapsed_ms":     nil,
-			"files_per_sec":  nil,
-			"eta_ms":         nil,
+			"project":       projectID,
+			"files_done":    done,
+			"files_total":   total,
+			"active":        active,
+			"started_at":    nil,
+			"elapsed_ms":    nil,
+			"files_per_sec": nil,
+			"eta_ms":        nil,
 		}
 		if startedAtUnix > 0 {
 			startedAt := time.Unix(0, startedAtUnix)
@@ -2268,9 +2324,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		filtered, drops := filterProjects(projects, opts)
 		page, total, hasMore := sliceWindow(filtered, parsePageParams(r, 50, 200))
 		json.NewEncoder(w).Encode(map[string]any{
-			"projects": page,
-			"total":    total,
-			"has_more": hasMore,
+			"projects":     page,
+			"total":        total,
+			"has_more":     hasMore,
 			"filtered_out": drops.DeadPath + drops.Inactive + drops.LowEdges,
 			"filtered_breakdown": map[string]any{
 				"dead_path": drops.DeadPath,
@@ -2587,10 +2643,10 @@ func (s *Server) openAPISpec(r *http.Request) map[string]any {
 		tier := toolComplexityTier(t)
 		paths[prefix+"/v1/"+t] = map[string]any{
 			"post": map[string]any{
-				"operationId":           t,
-				"summary":               summary,
-				"x-pincher-tier":        tier,
-				"x-pincher-idempotent":  toolIsIdempotent(t),
+				"operationId":          t,
+				"summary":              summary,
+				"x-pincher-tier":       tier,
+				"x-pincher-idempotent": toolIsIdempotent(t),
 				"requestBody": map[string]any{
 					"required": true,
 					"content":  map[string]any{"application/json": map[string]any{"schema": requestSchema}},
@@ -2690,6 +2746,30 @@ func (s *Server) openAPISpec(r *http.Request) map[string]any {
 					},
 				},
 			},
+		},
+	}
+	paths[prefix+"/v1/tool-calls"] = map[string]any{
+		"get": map[string]any{
+			"operationId": "toolCalls",
+			"summary":     "Recent per-call token accounting rows",
+			"description": "Returns recent session_tool_calls rows for one session, including tokens_used, optional tokens_saved, auditable savings_math, and improvement_signal. Defaults to the newest session when session_id is omitted.",
+			"parameters": []any{
+				map[string]any{
+					"name":        "session_id",
+					"in":          "query",
+					"required":    false,
+					"schema":      map[string]any{"type": "string"},
+					"description": "Session ID to inspect. Defaults to newest session.",
+				},
+				map[string]any{
+					"name":        "limit",
+					"in":          "query",
+					"required":    false,
+					"schema":      map[string]any{"type": "integer", "default": 50, "maximum": 200},
+					"description": "Maximum rows returned.",
+				},
+			},
+			"responses": map[string]any{"200": map[string]any{"description": "Recent calls"}},
 		},
 	}
 	spec := map[string]any{
@@ -3363,11 +3443,11 @@ func (s *Server) invalidateProjectIDCache() {
 //
 // Tiers (router-routability framing — about response shape, not work cost):
 //   - lite:     small structured response, fits in any model context window;
-//               pure data; safe to consume from a 7B local model.
+//     pure data; safe to consume from a 7B local model.
 //   - standard: medium structured response, agent reasons over it; fine on
-//               most frontier models; may strain small local models.
+//     most frontier models; may strain small local models.
 //   - heavy:    synthesis-style output requiring frontier-model parsing
-//               (e.g. recommendation paragraphs from `guide`).
+//     (e.g. recommendation paragraphs from `guide`).
 //
 // Gate test capability_test.go enforces every registered tool has a
 // classification — no missing entries, no defaults applied silently.
@@ -3391,24 +3471,24 @@ var toolComplexityTiers = map[string]string{
 	"self_test":   "lite",
 
 	// standard — pure-data, medium response (agent reasons over)
-	"context":      "standard",
-	"trace":        "standard",
-	"query":        "standard",
-	"changes":      "standard",
-	"neighborhood": "standard",
-	"dead_code":    "standard",
-	"architecture": "standard",
+	"context":        "standard",
+	"trace":          "standard",
+	"query":          "standard",
+	"changes":        "standard",
+	"neighborhood":   "standard",
+	"dead_code":      "standard",
+	"architecture":   "standard",
 	"branch_overlap": "standard",
-	"fetch":        "standard",
+	"fetch":          "standard",
 
 	// heavy — synthesis-style output requiring frontier parsing
-	"guide":            "heavy",
-	"context_for_task":     "heavy", // #1259: composite of search + N×(context + trace) + changes
-	"investigate_failure":  "heavy", // #1391 v0.81: composite of search × frames + trace × suspects + changes
-	"plan_change":          "heavy", // #1391 v0.82: composite of resolve + trace × symbols + adr list
-	"audit_unused":         "heavy", // #1391 v0.83: composite of dead_code + trace × candidates with confidence classification
-	"onboard_module":       "heavy", // #1391 v0.84: composite of scope-scan + entry-point enumeration + boundary edges
-	"why_empty":            "lite", // #1391 v0.85: stateless catalog lookup — no DB query
+	"guide":               "heavy",
+	"context_for_task":    "heavy", // #1259: composite of search + N×(context + trace) + changes
+	"investigate_failure": "heavy", // #1391 v0.81: composite of search × frames + trace × suspects + changes
+	"plan_change":         "heavy", // #1391 v0.82: composite of resolve + trace × symbols + adr list
+	"audit_unused":        "heavy", // #1391 v0.83: composite of dead_code + trace × candidates with confidence classification
+	"onboard_module":      "heavy", // #1391 v0.84: composite of scope-scan + entry-point enumeration + boundary edges
+	"why_empty":           "lite",  // #1391 v0.85: stateless catalog lookup — no DB query
 }
 
 // toolComplexityTier returns the registered tier for a tool, or the
@@ -3435,10 +3515,10 @@ func toolComplexityTier(tool string) string {
 // "idempotency_declared" so consumers know the data is available.
 var toolIdempotent = map[string]bool{
 	// Idempotent (true) — safe to retry.
-	"search":       true,
-	"symbol":       true,
-	"symbols":      true,
-	"context":          true,
+	"search":              true,
+	"symbol":              true,
+	"symbols":             true,
+	"context":             true,
 	"context_for_task":    true, // #1259
 	"investigate_failure": true, // #1391 v0.81 — read-only composite
 	"plan_change":         true, // #1391 v0.82 — read-only composite
@@ -3446,20 +3526,20 @@ var toolIdempotent = map[string]bool{
 	"onboard_module":      true, // #1391 v0.84 — read-only composite (scope scan + boundary edges)
 	"why_empty":           true, // #1391 v0.85 — stateless catalog lookup
 	"trace":               true,
-	"query":            true,
-	"guide":            true,
-	"changes":          true,
-	"fetch":        true,
-	"architecture": true,
-	"branch_overlap": true,
-	"dead_code":    true,
-	"neighborhood": true,
-	"list":         true,
-	"health":       true,
-	"stats":        true,
-	"schema":       true,
-	"doctor":       true,
-	"self_test":    true, // read-only smoke-test; runs in a temp project that's cleaned before return
+	"query":               true,
+	"guide":               true,
+	"changes":             true,
+	"fetch":               true,
+	"architecture":        true,
+	"branch_overlap":      true,
+	"dead_code":           true,
+	"neighborhood":        true,
+	"list":                true,
+	"health":              true,
+	"stats":               true,
+	"schema":              true,
+	"doctor":              true,
+	"self_test":           true, // read-only smoke-test; runs in a temp project that's cleaned before return
 
 	// Not idempotent (false) — writes/mutations; routers should not blindly retry.
 	"index":       false, // writes symbols + edges
@@ -3699,7 +3779,7 @@ type toolMetadataEntry struct {
 
 // Bool helpers for the optional Annotations fields (the SDK uses
 // pointers so "not set" is distinguishable from "explicitly false").
-func ptrTrue() *bool { v := true; return &v }
+func ptrTrue() *bool  { v := true; return &v }
 func ptrFalse() *bool { v := false; return &v }
 
 // Pre-built annotation presets covering the 4 behavioral classes per #1076:
@@ -3751,31 +3831,31 @@ var toolMetadata = map[string]toolMetadataEntry{
 	"self_test":   {Title: "Admin: install smoke test", Annotations: annotationsReadOnly},
 
 	// Read-shape navigation / retrieval.
-	"search":       {Annotations: annotationsReadOnly},
-	"symbol":       {Annotations: annotationsReadOnly},
-	"symbols":      {Annotations: annotationsReadOnly},
-	"context":      {Title: "Symbol with imports & callees", Annotations: annotationsReadOnly},
-	"query":        {Title: "pinchQL graph query", Annotations: annotationsReadOnly},
-	"trace":        {Annotations: annotationsReadOnly},
-	"changes":      {Annotations: annotationsReadOnly},
-	"architecture": {Annotations: annotationsReadOnly},
-	"branch_overlap": {Title: "Merge-order risk between two branches", Annotations: annotationsReadOnly},
-	"schema":       {Annotations: annotationsReadOnly},
-	"list":         {Annotations: annotationsReadOnly},
-	"neighborhood": {Title: "Same-file symbols", Annotations: annotationsReadOnly},
-	"dead_code":    {Title: "Unreachable symbols", Annotations: annotationsReadOnly},
-	"guide":            {Annotations: annotationsReadOnly},
-	"context_for_task":    {Title: "Composite context for an investigation", Annotations: annotationsReadOnly}, // #1259
-	"investigate_failure": {Title: "Bug-hunt composite from a stack trace", Annotations: annotationsReadOnly}, // #1391 v0.81
-	"plan_change":         {Title: "Pre-edit blast-radius composite", Annotations: annotationsReadOnly},       // #1391 v0.82
+	"search":              {Annotations: annotationsReadOnly},
+	"symbol":              {Annotations: annotationsReadOnly},
+	"symbols":             {Annotations: annotationsReadOnly},
+	"context":             {Title: "Symbol with imports & callees", Annotations: annotationsReadOnly},
+	"query":               {Title: "pinchQL graph query", Annotations: annotationsReadOnly},
+	"trace":               {Annotations: annotationsReadOnly},
+	"changes":             {Annotations: annotationsReadOnly},
+	"architecture":        {Annotations: annotationsReadOnly},
+	"branch_overlap":      {Title: "Merge-order risk between two branches", Annotations: annotationsReadOnly},
+	"schema":              {Annotations: annotationsReadOnly},
+	"list":                {Annotations: annotationsReadOnly},
+	"neighborhood":        {Title: "Same-file symbols", Annotations: annotationsReadOnly},
+	"dead_code":           {Title: "Unreachable symbols", Annotations: annotationsReadOnly},
+	"guide":               {Annotations: annotationsReadOnly},
+	"context_for_task":    {Title: "Composite context for an investigation", Annotations: annotationsReadOnly},           // #1259
+	"investigate_failure": {Title: "Bug-hunt composite from a stack trace", Annotations: annotationsReadOnly},            // #1391 v0.81
+	"plan_change":         {Title: "Pre-edit blast-radius composite", Annotations: annotationsReadOnly},                  // #1391 v0.82
 	"audit_unused":        {Title: "Dead-code composite with deep-trace confirmation", Annotations: annotationsReadOnly}, // #1391 v0.83
-	"onboard_module":      {Title: "New-contributor orientation composite", Annotations: annotationsReadOnly},           // #1391 v0.84
-	"why_empty":           {Title: "Empty-result recovery composite", Annotations: annotationsReadOnly},                 // #1391 v0.85
+	"onboard_module":      {Title: "New-contributor orientation composite", Annotations: annotationsReadOnly},            // #1391 v0.84
+	"why_empty":           {Title: "Empty-result recovery composite", Annotations: annotationsReadOnly},                  // #1391 v0.85
 
 	// Diagnostics (read-only, idempotent).
-	"health":  {Annotations: annotationsReadOnly},
-	"stats":   {Annotations: annotationsReadOnly},
-	"doctor":  {Annotations: annotationsReadOnly},
+	"health": {Annotations: annotationsReadOnly},
+	"stats":  {Annotations: annotationsReadOnly},
+	"doctor": {Annotations: annotationsReadOnly},
 
 	// ADR — action-dependent. Classified as write because the conservative
 	// case (set/delete) mutates; get/list paths still benefit from the
@@ -4528,9 +4608,9 @@ func buildIndexResponseData(result *index.IndexResult, totalSyms, totalEdges int
 		"project":     result.Project,
 		"path":        result.Path,
 		"files":       result.Skipped + result.Files, // total files in the graph (matches health + CLI)
-		"symbols":     totalSyms,                      // DB graph total, not this run's delta
-		"edges":       totalEdges,                     // DB graph total, not this run's delta
-		"reprocessed": result.Files,                   // files actually re-extracted this run
+		"symbols":     totalSyms,                     // DB graph total, not this run's delta
+		"edges":       totalEdges,                    // DB graph total, not this run's delta
+		"reprocessed": result.Files,                  // files actually re-extracted this run
 		"skipped":     result.Skipped,
 		"blocked":     result.Blocked,
 		"deleted":     result.Deleted, // #326: files removed from disk since last run, GC'd this index
@@ -8607,7 +8687,7 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 				// already added" with a doubled "what what's". Reading the
 				// descriptions as standalone noun-phrase summaries reads
 				// cleaner: "try scope=X — what's already added ...".
-				"why":  fmt.Sprintf("try scope=%q — %s", other, scopeDescription(other)),
+				"why": fmt.Sprintf("try scope=%q — %s", other, scopeDescription(other)),
 			})
 		}
 		if len(otherScopesWithChanges) > 0 {
@@ -9492,10 +9572,10 @@ func (s *Server) handleSchema(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 
 	data := map[string]any{
-		"symbols":         symCount,
-		"edges":           edgeCount,
-		"node_kinds":      kindCounts,
-		"edge_kinds":      edgeKindCounts,
+		"symbols":    symCount,
+		"edges":      edgeCount,
+		"node_kinds": kindCounts,
+		"edge_kinds": edgeKindCounts,
 	}
 	// Empty-graph diagnosis. The most common cause is a name-collision
 	// with a stale project — e.g. `schema project="pincher"` resolves
@@ -10621,7 +10701,6 @@ func humanDuration(d time.Duration) string {
 	return fmt.Sprintf("%dh%dm", h, m)
 }
 
-
 // maxFetchBytes caps the HTTP response body read to 512 KB.
 const maxFetchBytes = 512 * 1024
 
@@ -11354,9 +11433,9 @@ var domainConcepts = []struct {
 			"pinchql parser", "pinchql planner", "pinchql pushdown", "pinchql where",
 			"how does pinchql", "how pinchql works", "explain pinchql",
 			"match (a)", "where pushdown", "edge filter"},
-		tool:     "search",
-		args:     `{"query":"runJoinQuery"}`,
-		why:      "pinchQL routing splits between runNodeScan / runJoinQuery / runBFS in internal/cypher/engine.go — Execute() is the dispatcher",
+		tool: "search",
+		args: `{"query":"runJoinQuery"}`,
+		why:  "pinchQL routing splits between runNodeScan / runJoinQuery / runBFS in internal/cypher/engine.go — Execute() is the dispatcher",
 	},
 	{
 		// #616: when the user wants to USE pinchQL (not investigate it),
@@ -11365,9 +11444,9 @@ var domainConcepts = []struct {
 		// from a blank prompt.
 		patterns: []string{"use pinchql", "via pinchql", "with pinchql", "in pinchql",
 			"pinchql query", "pinchql to find", "pinchql to list", "pinchql to count"},
-		tool:     "query",
-		args:     `{"pinchql":"MATCH (n:Function) RETURN n.qualified_name LIMIT 20"}`,
-		why:      "pinchQL is the right tool for structural questions — adapt the template to your filter (n.docstring IS NULL, n.is_test=true, etc.). See `schema` for available properties",
+		tool: "query",
+		args: `{"pinchql":"MATCH (n:Function) RETURN n.qualified_name LIMIT 20"}`,
+		why:  "pinchQL is the right tool for structural questions — adapt the template to your filter (n.docstring IS NULL, n.is_test=true, etc.). See `schema` for available properties",
 	},
 	{
 		patterns: []string{"fts5", "full-text search", "rebuild fts", "search index", "bm25"},
@@ -11389,9 +11468,9 @@ var domainConcepts = []struct {
 		// OWN implementation, not just using the concept.
 		patterns: []string{"traceviacte", "trace internals", "trace bfs",
 			"how does trace", "trace implementation", "trace recursive cte"},
-		tool:     "search",
-		args:     `{"query":"traceViaCTE"}`,
-		why:      "trace BFS uses a recursive CTE in internal/db/db.go (traceViaCTE) — that's the SQL doing the work",
+		tool: "search",
+		args: `{"query":"traceViaCTE"}`,
+		why:  "trace BFS uses a recursive CTE in internal/db/db.go (traceViaCTE) — that's the SQL doing the work",
 	},
 }
 
@@ -11678,14 +11757,14 @@ func taskHintFromString(task string) string {
 		"by": true, "from": true, "as": true, "be": true, "do": true,
 		"can": true, "all": true, "any": true, "some": true,
 		// task verbs (the shape detector handles these; not signal in the hint)
-		"fix":  true, "fixes": true, "fixed": true,
-		"add":  true, "adds":  true, "added": true,
+		"fix": true, "fixes": true, "fixed": true,
+		"add": true, "adds": true, "added": true,
 		"remove": true, "rename": true, "refactor": true,
 		"understand": true, "explain": true, "explore": true,
 		"review": true, "test": true, "tests": true, "implement": true,
 		"build": true, "builds": true, "built": true, "make": true,
-		"use":   true, "uses":  true, "used":  true, "using": true,
-		"find":  true, "show":  true,
+		"use": true, "uses": true, "used": true, "using": true,
+		"find": true, "show": true,
 		"handle": true, "handles": true,
 		// #933: call-family verbs / nouns. "what calls processPayment"
 		// previously hinted "calls processPayment" — the trace
@@ -11708,12 +11787,12 @@ func taskHintFromString(task string) string {
 		"bug": true, "broken": true, "error": true, "errors": true,
 		"regression": true, "feature": true, "features": true,
 		"support": true, "function": true, "functions": true,
-		"method":  true, "methods": true, "code":   true, "files": true,
+		"method": true, "methods": true, "code": true, "files": true,
 		// generic project / scope nouns (#290)
-		"codebase":  true,
-		"repo":      true, "repository": true, "project": true,
-		"file":      true, "module":     true, "package": true,
-		"directory": true, "folder":     true,
+		"codebase": true,
+		"repo":     true, "repository": true, "project": true,
+		"file": true, "module": true, "package": true,
+		"directory": true, "folder": true,
 		// #615: visibility / category nouns. Tasks like "find what calls
 		// a private function" or "list every public method" use these
 		// adjectives to scope a class of symbols, not name a single one.
@@ -11722,13 +11801,13 @@ func taskHintFromString(task string) string {
 		// Drop them as stopwords so the actual subject (or no subject) wins.
 		"private": true, "public": true, "exported": true, "unexported": true,
 		"internal": true, "external": true, "global": true, "local": true,
-		"stub":     true, "stubs":   true, "static":   true, "dynamic":  true,
+		"stub": true, "stubs": true, "static": true, "dynamic": true,
 		// auxiliary verbs + negation. "find symbols that have no test
 		// coverage" used to extract "have no" as the hint (longest non-
 		// stopword run), and the templated search recommendation searched
 		// for the literal phrase "have no" — never the subject of any task.
 		"have": true, "has": true, "had": true, "having": true,
-		"no":   true, "not": true, "without": true,
+		"no": true, "not": true, "without": true,
 		// #1682: comparison / filler words. A task like "add X backoff
 		// to the resolve pass LIKE the watcher has" used to extract
 		// "...pass like" as the longest non-stopword run — the templated
@@ -12666,36 +12745,36 @@ const (
 // fall back to baselineMethodFullFileRead — safer than silent suppression.
 var baselineMethodForTool = map[string]string{
 	// Tools that replace direct file reads.
-	"symbol":       baselineMethodFullFileRead,
-	"symbols":      baselineMethodFullFileRead,
-	"context":          baselineMethodFullFileRead,
+	"symbol":              baselineMethodFullFileRead,
+	"symbols":             baselineMethodFullFileRead,
+	"context":             baselineMethodFullFileRead,
 	"context_for_task":    baselineMethodFullFileRead, // #1259: composite replaces N atomic file reads
 	"investigate_failure": baselineMethodFullFileRead, // #1391 v0.81: composite replaces N atomic search/trace/changes reads
 	"plan_change":         baselineMethodFullFileRead, // #1391 v0.82: composite replaces N atomic resolve/trace/adr reads
 	"audit_unused":        baselineMethodFullFileRead, // #1391 v0.83: composite replaces dead_code + N atomic trace confirmations
 	"onboard_module":      baselineMethodFullFileRead, // #1391 v0.84: composite replaces architecture + N×context + N×trace
 	"why_empty":           baselineMethodFullFileRead, // #1391 v0.85: stateless catalog lookup replaces docs read + N atomic recovery probes
-	"search":       baselineMethodFullFileRead,
-	"query":        baselineMethodFullFileRead,
-	"trace":        baselineMethodFullFileRead,
-	"changes":      baselineMethodFullFileRead,
-	"dead_code":    baselineMethodFullFileRead,
-	"neighborhood": baselineMethodFullFileRead,
+	"search":              baselineMethodFullFileRead,
+	"query":               baselineMethodFullFileRead,
+	"trace":               baselineMethodFullFileRead,
+	"changes":             baselineMethodFullFileRead,
+	"dead_code":           baselineMethodFullFileRead,
+	"neighborhood":        baselineMethodFullFileRead,
 	// Admin / orientation / write-side tools — no Read/Grep alternative.
-	"index":        baselineMethodNone,
-	"architecture": baselineMethodNone,
+	"index":          baselineMethodNone,
+	"architecture":   baselineMethodNone,
 	"branch_overlap": baselineMethodNone,
-	"schema":       baselineMethodNone,
-	"list":         baselineMethodNone,
-	"adr":          baselineMethodNone,
-	"health":       baselineMethodNone,
-	"stats":        baselineMethodNone,
-	"fetch":        baselineMethodNone, // ingests external URL — not a Read replacement
-	"guide":        baselineMethodNone,
-	"init":         baselineMethodNone,
-	"doctor":       baselineMethodNone, // diagnostic report — no Read alternative
-	"rebuild_fts":  baselineMethodNone, // admin: rebuild FTS5 indexes
-	"self_test":    baselineMethodNone, // smoke test — no Read alternative
+	"schema":         baselineMethodNone,
+	"list":           baselineMethodNone,
+	"adr":            baselineMethodNone,
+	"health":         baselineMethodNone,
+	"stats":          baselineMethodNone,
+	"fetch":          baselineMethodNone, // ingests external URL — not a Read replacement
+	"guide":          baselineMethodNone,
+	"init":           baselineMethodNone,
+	"doctor":         baselineMethodNone, // diagnostic report — no Read alternative
+	"rebuild_fts":    baselineMethodNone, // admin: rebuild FTS5 indexes
+	"self_test":      baselineMethodNone, // smoke test — no Read alternative
 }
 
 // humanInt formats an int with thousands separators ("14200" -> "14,200").
@@ -12836,9 +12915,9 @@ func (s *Server) errResultRich(msg string, nextSteps []map[string]string) *mcp.C
 			}
 			meta["warnings"] = []string{warnText}
 			nextSteps = append([]map[string]string{{
-				"tool":  "index",
-				"args":  `{}`,
-				"why":   "wait for the in-flight pass to finish (or call again in a few seconds) — the symbol may resolve once extraction catches up",
+				"tool": "index",
+				"args": `{}`,
+				"why":  "wait for the in-flight pass to finish (or call again in a few seconds) — the symbol may resolve once extraction catches up",
 			}}, nextSteps...)
 		}
 	}
@@ -13605,5 +13684,3 @@ func parseGitDiffFiles(diff string) []string {
 	}
 	return files
 }
-
-
