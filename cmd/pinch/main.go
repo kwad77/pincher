@@ -430,6 +430,7 @@ func printHelpBanner(out io.Writer) {
 	fmt.Fprintln(out, "  pincher project list           List indexed projects (alias: ls)")
 	fmt.Fprintln(out, "  pincher project rm <name>      Remove an indexed project (alias: remove, delete)")
 	fmt.Fprintln(out, "  pincher project prune-stale    Drop projects indexed by an old schema and untouched for N days")
+	fmt.Fprintln(out, "  pincher project prune-dead     Drop projects whose indexed path no longer exists")
 	fmt.Fprintln(out, "  pincher verify                 Re-hash every indexed file and report drift vs stored hash (#1399)")
 	fmt.Fprintln(out, "  pincher completion <shell>     Print a bash/zsh/fish completion script")
 	fmt.Fprintln(out, "  pincher export-graph           Dump the symbol+edge graph (json/graphml/dot)")

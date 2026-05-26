@@ -76,10 +76,10 @@ Rewrites the DB file and truncates the WAL. Heavy operation (file-size proportio
 pincher doctor --json
 
 # Remove projects whose on-disk path is gone:
-mcp__pincher__list prune_dead=true
+pincher project prune-dead --force
 
 # Drop projects indexed by an old schema and untouched for 30+ days:
-pincher project prune-stale
+pincher project prune-stale --force
 
 # Reclaim disk after pruning (SQLite doesn't shrink the file on row deletion):
 pincher vacuum

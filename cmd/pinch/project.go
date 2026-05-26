@@ -36,6 +36,8 @@ func runProjectCLI(args []string) {
 		runProjectRMCLI(args[1:], os.Stdin, os.Stdout, os.Stderr)
 	case "prune-stale":
 		runProjectPruneStaleCLI(args[1:], os.Stdin, os.Stdout, os.Stderr)
+	case "prune-dead":
+		runProjectPruneDeadCLI(args[1:], os.Stdin, os.Stdout, os.Stderr)
 	case "-h", "--help", "help":
 		printProjectUsage(os.Stdout)
 	default:
@@ -52,6 +54,7 @@ func printProjectUsage(out io.Writer) {
 	fmt.Fprintln(out, "  list                List every indexed project (alias: ls)")
 	fmt.Fprintln(out, "  rm <name|id|substr> Remove one project from the index (alias: remove, delete)")
 	fmt.Fprintln(out, "  prune-stale         Drop projects indexed by an old schema and untouched for N days")
+	fmt.Fprintln(out, "  prune-dead          Drop projects whose indexed path no longer exists")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Common flags:")
 	fmt.Fprintln(out, "  --json              Emit structured output instead of human-readable text")
@@ -62,6 +65,9 @@ func printProjectUsage(out io.Writer) {
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "prune-stale flags:")
 	fmt.Fprintln(out, "  --days N            Min idle days since last index (default 30)")
+	fmt.Fprintln(out, "  --force             Skip the Y/n confirmation prompt")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "prune-dead flags:")
 	fmt.Fprintln(out, "  --force             Skip the Y/n confirmation prompt")
 	fmt.Fprintln(out, "  Run `pincher vacuum` afterward to reclaim the freed disk space.")
 }
@@ -454,6 +460,125 @@ func runProjectPruneStaleCLI(args []string, stdin io.Reader, stdout, stderr io.W
 	if len(failures) > 0 {
 		os.Exit(1)
 	}
+}
+
+// ── prune-dead ───────────────────────────────────────────────────────────────
+
+func runProjectPruneDeadCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) {
+	fs := flag.NewFlagSet("project prune-dead", flag.ExitOnError)
+	dataDir := fs.String("data-dir", "", "Override data directory")
+	asJSON := fs.Bool("json", false, "Emit a structured JSON receipt")
+	force := fs.Bool("force", false, "Skip the Y/n confirmation prompt")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: pincher project prune-dead [--force] [--json] [--data-dir DIR]")
+		fmt.Fprintln(stderr, "  Drops every project whose indexed path no longer exists on disk.")
+		fmt.Fprintln(stderr, "  Run `pincher vacuum` afterward to reclaim the freed disk space.")
+		fs.PrintDefaults()
+	}
+	fs.Parse(args)
+
+	fail := func(code int, format string, a ...any) {
+		msg := fmt.Sprintf(format, a...)
+		if *asJSON {
+			enc := json.NewEncoder(stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(map[string]any{"pruned": false, "error": msg})
+		} else {
+			fmt.Fprintln(stderr, "pincher project prune-dead: "+msg)
+		}
+		os.Exit(code)
+	}
+
+	if *asJSON && !*force {
+		fail(2, "--json requires --force (no interactive confirmation in JSON mode)")
+	}
+
+	store, _, err := openProjectStore(*dataDir)
+	if err != nil {
+		fail(1, "%v", err)
+	}
+	defer store.Close()
+
+	projects, err := store.ListProjects()
+	if err != nil {
+		fail(1, "%v", err)
+	}
+
+	var candidates []db.Project
+	for _, p := range projects {
+		if projectPathMissing(p.Path) {
+			candidates = append(candidates, p)
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Name < candidates[j].Name })
+
+	if len(candidates) == 0 {
+		if *asJSON {
+			enc := json.NewEncoder(stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(map[string]any{"pruned": true, "removed": []any{}, "count": 0})
+			return
+		}
+		fmt.Fprintln(stdout, "No dead-path projects to prune.")
+		return
+	}
+
+	if !*force {
+		fmt.Fprintf(stdout, "%d dead-path project(s) eligible for prune:\n\n", len(candidates))
+		for _, p := range candidates {
+			fmt.Fprintf(stdout, "  %-32s  %d symbols  %s\n", p.Name, p.SymCount, p.Path)
+		}
+		fmt.Fprintf(stdout, "\nRemove all %d? [y/N]: ", len(candidates))
+		if !confirmYesFrom(stdin) {
+			fmt.Fprintln(stdout, "Aborted.")
+			return
+		}
+	}
+
+	removed := make([]map[string]any, 0, len(candidates))
+	var failures []string
+	for _, p := range candidates {
+		if delErr := store.DeleteProject(p.ID); delErr != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", p.ID, delErr))
+			continue
+		}
+		removed = append(removed, map[string]any{
+			"id": p.ID, "name": p.Name, "path": p.Path,
+			"symbols": p.SymCount, "edges": p.EdgeCount,
+		})
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		out := map[string]any{"pruned": true, "removed": removed, "count": len(removed)}
+		if len(failures) > 0 {
+			out["failures"] = failures
+		}
+		_ = enc.Encode(out)
+		if len(failures) > 0 {
+			os.Exit(1)
+		}
+		return
+	}
+	fmt.Fprintf(stdout, "Removed %d dead-path project(s).\n", len(removed))
+	for _, f := range failures {
+		fmt.Fprintln(stderr, "  failed: "+f)
+	}
+	if len(removed) > 0 {
+		fmt.Fprintln(stdout, "Run `pincher vacuum` to reclaim the freed disk space.")
+	}
+	if len(failures) > 0 {
+		os.Exit(1)
+	}
+}
+
+func projectPathMissing(path string) bool {
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return os.IsNotExist(err)
 }
 
 // confirmYesFrom reads one line from r and reports whether it starts

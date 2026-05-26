@@ -418,6 +418,81 @@ func TestProjectCLI_PruneStale_NoCandidates(t *testing.T) {
 	}
 }
 
+func TestProjectCLI_PruneDead_RemovesMissingKeepsLive(t *testing.T) {
+	exe := buildPincherBinary(t)
+	dataDir := t.TempDir()
+
+	livePath := filepath.Join(t.TempDir(), "live")
+	if err := os.MkdirAll(livePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deadPath := filepath.Join(t.TempDir(), "missing")
+
+	liveID := seedProject(t, dataDir, "live-proj", livePath)
+	deadID := seedProject(t, dataDir, "dead-proj", deadPath)
+
+	cmd := exec.Command(exe, "project", "prune-dead", "--force", "--json", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prune-dead failed: %v\n%s", err, out)
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal(out, &receipt); err != nil {
+		t.Fatalf("output not valid JSON: %v\n%s", err, out)
+	}
+	if cnt, _ := receipt["count"].(float64); cnt != 1 {
+		t.Errorf("count=%v, want 1", receipt["count"])
+	}
+
+	store, _ := db.Open(dataDir)
+	defer store.Close()
+	if got, _ := store.GetProject(deadID); got != nil {
+		t.Errorf("dead project still exists after prune-dead")
+	}
+	if got, _ := store.GetProject(liveID); got == nil {
+		t.Errorf("live project was pruned")
+	}
+}
+
+func TestProjectCLI_PruneDead_JSONRequiresForce(t *testing.T) {
+	exe := buildPincherBinary(t)
+	dataDir := t.TempDir()
+	cmd := exec.Command(exe, "project", "prune-dead", "--json", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit for --json without --force; got: %s", out)
+	}
+	if !strings.Contains(string(out), "--json requires --force") {
+		t.Errorf("expected '--json requires --force' message, got: %s", out)
+	}
+}
+
+func TestProjectCLI_PruneDead_NoCandidates(t *testing.T) {
+	exe := buildPincherBinary(t)
+	dataDir := t.TempDir()
+	livePath := filepath.Join(t.TempDir(), "live")
+	if err := os.MkdirAll(livePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	seedProject(t, dataDir, "live-proj", livePath)
+
+	cmd := exec.Command(exe, "project", "prune-dead", "--force", "--json", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prune-dead with no candidates should succeed: %v\n%s", err, out)
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal(out, &receipt); err != nil {
+		t.Fatalf("output not valid JSON: %v\n%s", err, out)
+	}
+	if cnt, _ := receipt["count"].(float64); cnt != 0 {
+		t.Errorf("count=%v, want 0", receipt["count"])
+	}
+}
+
 // ── vacuum ───────────────────────────────────────────────────────────────────
 
 func TestVacuumCLI_EmitsJSONReceipt(t *testing.T) {

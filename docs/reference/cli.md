@@ -166,11 +166,16 @@ pincher project rm <name> --force         # skip confirmation
 pincher project rm <name> --json --force  # JSON receipt; --force required in JSON mode
 pincher project prune-stale               # drop projects schema-stale AND idle (default --days 30)
 pincher project prune-stale --days 7 --force
+pincher project prune-dead --force        # drop projects whose path no longer exists
 ```
 
 `<name>` resolves in this order: full project id → exact name (case-insensitive) → substring on name or path. A substring that matches multiple projects errors with a disambiguation list rather than picking one. JSON mode requires `--force` (no interactive prompt is possible in a scripted workflow).
 
 `prune-stale` drops every project that is **both** schema-stale (indexed by an older binary) **and** not re-indexed in `--days` N days (default 30) — pairing the two conditions scopes the prune to genuinely-abandoned projects, not one a developer touched yesterday that just needs a re-index.
+
+`prune-dead` drops projects whose indexed path no longer exists on disk. It is
+the CLI equivalent of the MCP `list prune_dead=true` cleanup path, useful when
+the MCP host is not loading but the local binary still works.
 
 ### `pincher vacuum`
 
@@ -179,7 +184,7 @@ pincher vacuum                            # reclaim DB file space (checkpoint �
 pincher vacuum --json                     # JSON receipt: bytes_before / bytes_after / bytes_reclaimed
 ```
 
-SQLite does not shrink the database file when rows are deleted — `pincher project rm` / `prune-stale` free pages internally but the file stays large. `pincher vacuum` rewrites the file to reclaim that space. It is a deliberate, explicit CLI step (VACUUM holds an exclusive lock for the duration) kept out of the hot MCP path; run it after a prune, when no agent is mid-query.
+SQLite does not shrink the database file when rows are deleted — `pincher project rm` / `prune-stale` / `prune-dead` free pages internally but the file stays large. `pincher vacuum` rewrites the file to reclaim that space. It is a deliberate, explicit CLI step (VACUUM holds an exclusive lock for the duration) kept out of the hot MCP path; run it after a prune, when no agent is mid-query.
 
 ### `pincher bench`
 
