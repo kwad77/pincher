@@ -123,10 +123,20 @@ func caller() string {
 	return processExecutablePath()
 }
 `)
-	writeFile(t, dir, "internal/index/orphan_windows.go", `package index
+	writeFile(t, dir, "internal/index/orphan_windows.go", `//go:build windows
+
+package index
 
 func platformProcessExecutablePath() string {
 	return "windows"
+}
+`)
+	writeFile(t, dir, "internal/index/orphan_unix.go", `//go:build !windows
+
+package index
+
+func platformProcessExecutablePath() string {
+	return "unix"
 }
 `)
 	if _, err := idx.Index(context.Background(), dir, false); err != nil {
@@ -149,15 +159,17 @@ func platformProcessExecutablePath() string {
 	if err != nil {
 		t.Fatalf("GetSymbolsByName: %v", err)
 	}
-	if len(syms) == 0 {
-		t.Fatal("expected platformProcessExecutablePath symbol")
+	if len(syms) != 2 {
+		t.Fatalf("expected both platformProcessExecutablePath build-tag sibling symbols, got %d", len(syms))
 	}
-	results, err := store.TraceViaCTEScoped(pid, syms[0].ID, "inbound", []string{"CALLS"}, 2)
-	if err != nil {
-		t.Fatalf("TraceViaCTEScoped: %v", err)
-	}
-	if len(results) == 0 {
-		t.Fatalf("platformProcessExecutablePath has no inbound CALLS edge from binding pass (#1877)")
+	for _, sym := range syms {
+		results, err := store.TraceViaCTEScoped(pid, sym.ID, "inbound", []string{"CALLS"}, 2)
+		if err != nil {
+			t.Fatalf("TraceViaCTEScoped(%s): %v", sym.ID, err)
+		}
+		if len(results) == 0 {
+			t.Fatalf("%s has no inbound CALLS edge from binding pass (#1877)", sym.ID)
+		}
 	}
 }
 
