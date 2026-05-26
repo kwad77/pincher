@@ -12,6 +12,7 @@ minors.
 - Resolve Markdown inter-doc `REFERENCES` through source-relative target paths plus optional anchors so links like `../adr/0009-phase-0-tool-validation.md#decision` persist to the target Section instead of being dropped before DB insert (#1868). The docs corpus now records 6 Markdown `REFERENCES` edges, and HCL `REFERENCES` stay on their existing direct-persist path.
 - Persist Ansible structural `INCLUDES` and `LOADS` edges instead of dropping their path-shaped targets in the per-file resolver (#1869). The indexer now resolves these as file-level Module edges, supports task/playbook include directives in addition to role lists, and query/trace allowlists recognize both kinds.
 - Give every tool in `docs/reference/tools.md` a stable `#tool-<name>` anchor and add a README deep-link to prove the external link shape for future tool Resource URI mapping (#1369).
+- Add the v0.96 release sign-off document, recording the closed v0.96 issue set, local verification commands, and the remaining v0.97-v1.0 gates (#1714).
 
 ## [0.95.0] — 2026-05-25 — DB contention and probe isolation
 
