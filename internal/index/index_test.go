@@ -1260,6 +1260,7 @@ func TestWatch_CancelledContext(t *testing.T) {
 
 func TestWatch_TriggersReindex(t *testing.T) {
 	idx, store := newTestIndexer(t)
+	idx.watchInterval = 50 * time.Millisecond
 	dir := t.TempDir()
 
 	// Write initial file and index it
@@ -1272,9 +1273,13 @@ func TestWatch_TriggersReindex(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	writeFile(t, dir, "main.go", "package main\nfunc Foo() {}\nfunc Bar() {}\n")
 
-	// Run Watch with a context that cancels quickly after the first tick
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	idx.SetEventHook(func(eventType string, _ map[string]any) {
+		if eventType == "index_complete" {
+			cancel()
+		}
+	})
 
 	done := make(chan struct{})
 	go func() {
@@ -1282,7 +1287,11 @@ func TestWatch_TriggersReindex(t *testing.T) {
 		close(done)
 	}()
 
-	<-done
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Watch did not return after changed file reindex")
+	}
 	// #457 sensitivity: Watch spawns Index in a goroutine and
 	// returns when ctx cancels — but the spawned Index doesn't
 	// honour the cancellation and runs to completion. On Windows,

@@ -22,6 +22,7 @@ import (
 // the serialised contract the maximum observed concurrency is 1.
 func TestWatch_SerializesPerProjectIndex(t *testing.T) {
 	idx, _ := newTestIndexer(t)
+	idx.watchInterval = 50 * time.Millisecond
 
 	// Two projects with one file each. Touched immediately so both
 	// look changed to the watcher's mtime scan.
@@ -43,7 +44,10 @@ func TestWatch_SerializesPerProjectIndex(t *testing.T) {
 	// Instrument concurrency: started++/complete--, track max.
 	var inFlight atomic.Int32
 	var maxInFlight atomic.Int32
+	var completeCount atomic.Int32
 	var seenStartedFor sync.Map // projectID → struct{}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	idx.SetEventHook(func(eventType string, payload map[string]any) {
 		switch eventType {
 		case "index_started":
@@ -59,18 +63,22 @@ func TestWatch_SerializesPerProjectIndex(t *testing.T) {
 			}
 		case "index_complete":
 			inFlight.Add(-1)
+			if completeCount.Add(1) >= 2 {
+				cancel()
+			}
 		}
 	})
 
-	// Run Watch with a context that fires past the 5s ticker.
-	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
-	defer cancel()
 	done := make(chan struct{})
 	go func() {
 		idx.Watch(ctx)
 		close(done)
 	}()
-	<-done
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Watch did not return after serial reindexes")
+	}
 
 	// Wait for any in-flight Index goroutines to settle (they can
 	// outlast Watch's return — same belt-and-suspenders the existing
@@ -102,6 +110,7 @@ func TestWatch_SerializesPerProjectIndex(t *testing.T) {
 // when no goroutine fan-out is in play.
 func TestWatch_SingleProjectStillReindexes(t *testing.T) {
 	idx, _ := newTestIndexer(t)
+	idx.watchInterval = 50 * time.Millisecond
 	dir := t.TempDir()
 	writeFile(t, dir, "x.go", "package x\nfunc X() {}\n")
 	if _, err := idx.Index(context.Background(), dir, false); err != nil {
@@ -111,20 +120,27 @@ func TestWatch_SingleProjectStillReindexes(t *testing.T) {
 	writeFile(t, dir, "x.go", "package x\nfunc X() {}\nfunc X2() {}\n")
 
 	var startCount atomic.Int32
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	idx.SetEventHook(func(eventType string, _ map[string]any) {
-		if eventType == "index_started" {
+		switch eventType {
+		case "index_started":
 			startCount.Add(1)
+		case "index_complete":
+			cancel()
 		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
-	defer cancel()
 	done := make(chan struct{})
 	go func() {
 		idx.Watch(ctx)
 		close(done)
 	}()
-	<-done
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Watch did not return after single-project reindex")
+	}
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {

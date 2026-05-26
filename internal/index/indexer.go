@@ -42,6 +42,8 @@ type IndexProgress struct {
 	StartedAtUnix atomic.Int64
 }
 
+const defaultWatchInterval = 5 * time.Second
+
 // DefaultMaxFileSize bounds per-file memory during indexing. Real source
 // files are well under 200 KB; 4 MB leaves headroom for hand-written test
 // corpora and large generated TypeScript declarations while preventing a
@@ -81,6 +83,11 @@ type Indexer struct {
 	// being read into memory. Zero or negative means "no cap".
 	maxFileSize int64
 
+	// watchInterval is the file-watcher polling cadence. Production uses
+	// defaultWatchInterval; tests lower it to avoid waiting on the
+	// production poll interval.
+	watchInterval time.Duration
+
 	// binaryVersion is stamped on each project at index time so health
 	// can detect when an old indexer's CALLS data needs to be refreshed
 	// against newer resolution rules (#304). Empty until SetBinaryVersion
@@ -99,9 +106,10 @@ type Indexer struct {
 // New creates a new Indexer with the default per-file size cap.
 func New(store *db.Store) *Indexer {
 	return &Indexer{
-		store:       store,
-		active:      make(map[string]bool),
-		maxFileSize: DefaultMaxFileSize,
+		store:         store,
+		active:        make(map[string]bool),
+		maxFileSize:   DefaultMaxFileSize,
+		watchInterval: defaultWatchInterval,
 	}
 }
 
@@ -1984,12 +1992,16 @@ func ReadSymbolSourceCapped(projectRoot string, sym db.Symbol, maxBytes int) (st
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Watch starts a background goroutine that re-indexes projects when files change.
-// Uses polling with a 5-second ticker. If any Index() is currently running
+// Uses polling with defaultWatchInterval. If any Index() is currently running
 // (from any source — Watch itself, the CLI, or another caller), the tick is
 // skipped: the per-project mutex would just queue the work and waste CPU
 // during catch-up.
 func (idx *Indexer) Watch(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Second)
+	interval := idx.watchInterval
+	if interval <= 0 {
+		interval = defaultWatchInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	// #1772: projectID → an incremental reindex has run since the last
