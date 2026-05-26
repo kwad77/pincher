@@ -5,13 +5,12 @@
 All 29 tools are available via `POST /v1/{tool}` with a JSON body. Run alongside MCP stdio — no either/or.
 
 ```bash
-# Start with both transports
-pincher --http :8080 --http-key mysecrettoken
+# Start a loopback-only local gateway with both transports
+pincher --http 127.0.0.1:8080
 
 # Index a repo
 curl -s -X POST http://localhost:8080/v1/index \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer mysecrettoken" \
   -d '{"path": "/path/to/your/project"}' | jq .
 
 # Search with field projection (fewer tokens)
@@ -35,7 +34,7 @@ curl http://localhost:8080/v1/health
 curl http://localhost:8080/v1/openapi.json | jq .
 ```
 
-Responses compress ~65% with `Accept-Encoding: gzip`. Tested clients: curl, Python `requests`, PowerShell `Invoke-WebRequest`. Rate limiting: `--http-rate 60` limits to 60 requests/IP/minute (0 = unlimited).
+Responses compress ~65% with `Accept-Encoding: gzip`. Tested clients: curl, Python `requests`, PowerShell `Invoke-WebRequest`. Rate limiting: `--http-rate 60` limits to 60 requests/IP/minute (0 = unlimited). A non-loopback bind such as `--http :8080` requires `--http-key` / `PINCHER_HTTP_KEY`, or the explicit `--http-allow-open` escape hatch when a trusted reverse proxy handles auth.
 
 ### Additional HTTP endpoints
 

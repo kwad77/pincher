@@ -42,7 +42,7 @@ curl -H "Authorization: Bearer $(grep PINCHER_HTTP_KEY ~/.config/pincher/env | c
 
 | Field | Value | Tunable |
 |---|---|---|
-| `ExecStart` | `/usr/local/bin/pincher --http :8080` | Edit to override binary path / port |
+| `ExecStart` | `%h/.local/bin/pincher --http ${PINCHER_HTTP_ADDR}` | Edit to override binary path / port |
 | `EnvironmentFile` | `-%h/.config/pincher/env` | Leading `-` makes the file optional |
 | `Restart` | `on-failure` | Survives crashes; `always` for stronger guarantees |
 | `RestartSec` | `5s` | Backoff |
@@ -56,7 +56,7 @@ mkdir -p ~/.config/systemd/user/pincher.service.d
 cat > ~/.config/systemd/user/pincher.service.d/override.conf <<'EOF'
 [Service]
 ExecStart=
-ExecStart=/usr/local/bin/pincher --http :9090 --supervised
+ExecStart=/usr/local/bin/pincher --http 127.0.0.1:9090 --supervised
 EOF
 systemctl --user daemon-reload
 systemctl --user restart pincher

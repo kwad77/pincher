@@ -26,13 +26,13 @@
     <array>
         <string>/opt/homebrew/bin/pincher</string>
         <string>--http</string>
-        <string>:8080</string>
+        <string>127.0.0.1:8080</string>
     </array>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PINCHER_HTTP_ADDR</key>
-        <string>:8080</string>
+        <string>127.0.0.1:8080</string>
         <!-- Uncomment and set to require bearer auth on HTTP:
         <key>PINCHER_HTTP_KEY</key>
         <string>replace-with-a-secret</string>

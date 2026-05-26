@@ -53,10 +53,10 @@ class Pincher < Formula
   end
 
   service do
-    run [opt_bin/"pincher", "--http", ":8080"]
+    run [opt_bin/"pincher", "--http", "127.0.0.1:8080"]
     keep_alive true
     log_path var/"log/pincher.log"
     error_log_path var/"log/pincher.err.log"
-    environment_variables PINCHER_HTTP_ADDR: ":8080"
+    environment_variables PINCHER_HTTP_ADDR: "127.0.0.1:8080"
   end
 end

@@ -1,9 +1,9 @@
 # Packaging
 
 Drop-in installers and service templates for running pincherMCP as a
-managed process on each major platform. Everything here is optional — the
-binary is a single static file and works with nothing but `pincher --http :8080`
-at a shell.
+managed process on each major platform. Everything here is optional —
+the binary is a single static file and works with nothing but
+`pincher --http 127.0.0.1:8080` at a shell.
 
 ## Layout
 
@@ -91,11 +91,12 @@ The downloaded `.exe` trips Windows SmartScreen. The dialog says *"Microsoft Def
 **Docker (unchanged from repo root):**
 
 ```bash
+PINCHER_HTTP_KEY=$(openssl rand -hex 16)
 docker run -d --name pincher \
   -v pincher-data:/data \
   -p 8080:8080 \
   -e PINCHER_HTTP_ADDR=:8080 \
-  -e PINCHER_HTTP_KEY=$(openssl rand -hex 16) \
+  -e PINCHER_HTTP_KEY \
   ghcr.io/kwad77/pincher:latest
 ```
 
@@ -106,7 +107,7 @@ so config stays consistent across platforms:
 
 | Variable | Purpose |
 |---|---|
-| `PINCHER_HTTP_ADDR` | HTTP listen address (default `:8080`; use `:0` for OS-picked). |
+| `PINCHER_HTTP_ADDR` | HTTP listen address (native-service default `127.0.0.1:8080`; container examples use `:8080` with `PINCHER_HTTP_KEY`; use `:0` for OS-picked). |
 | `PINCHER_HTTP_KEY` | Bearer token required on every HTTP request. Recommended for non-localhost. |
 | `--data-dir` (flag) | Override the SQLite directory (default is platform-appropriate). |
 

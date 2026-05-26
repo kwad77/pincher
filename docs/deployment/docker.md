@@ -12,11 +12,12 @@ Image: `ghcr.io/kwad77/pinchermcp:latest` (tracks master) or
 ## Quickstart
 
 ```bash
+PINCHER_HTTP_KEY="$(openssl rand -hex 32)"
 docker run -d --name pincher \
   -v pincher-data:/data \
   -p 8080:8080 \
   -e PINCHER_HTTP_ADDR=:8080 \
-  -e PINCHER_HTTP_KEY="$(openssl rand -hex 32)" \
+  -e PINCHER_HTTP_KEY \
   ghcr.io/kwad77/pinchermcp:latest
 ```
 
@@ -27,8 +28,9 @@ curl -H "Authorization: Bearer $PINCHER_HTTP_KEY" \
   http://localhost:8080/v1/health
 ```
 
-The container runs `pincher --http :8080` as the default command. SQLite
-DB + WAL live in the `/data` volume.
+The container listens on `:8080`, so it requires `PINCHER_HTTP_KEY`
+unless you explicitly provide your own trusted-network auth boundary.
+SQLite DB + WAL live in the `/data` volume.
 
 ## Indexing a host directory
 
@@ -36,14 +38,17 @@ Pincher needs read access to the source tree it indexes. Mount the host
 directory read-only and pass its path through the `index` tool:
 
 ```bash
+PINCHER_HTTP_KEY="$(openssl rand -hex 32)"
 docker run -d --name pincher \
   -v pincher-data:/data \
   -v /path/to/your/repo:/workspace:ro \
   -p 8080:8080 \
   -e PINCHER_HTTP_ADDR=:8080 \
+  -e PINCHER_HTTP_KEY \
   ghcr.io/kwad77/pinchermcp:latest
 
 curl -X POST -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $PINCHER_HTTP_KEY" \
   -d '{"path":"/workspace"}' \
   http://localhost:8080/v1/index
 ```
@@ -79,10 +84,12 @@ To make the running container reachable as an MCP server (not just the
 REST gateway), enable the streamable-HTTP transport via env var:
 
 ```bash
+PINCHER_HTTP_KEY="$(openssl rand -hex 32)"
 docker run -d --name pincher \
   -v pincher-data:/data \
   -p 8080:8080 \
   -e PINCHER_HTTP_ADDR=:8080 \
+  -e PINCHER_HTTP_KEY \
   -e PINCHER_MCP_HTTP_PATH=/mcp \
   ghcr.io/kwad77/pinchermcp:latest
 ```

@@ -8,7 +8,7 @@
         "First-run setup:",
         "  pincher init                   # inject usage policy into your CLAUDE.md",
         "  pincher index <repo-path>      # build the index (one-shot CLI mode)",
-        "  pincher --http :8080           # or run as a long-lived HTTP server",
+        "  pincher --http 127.0.0.1:8080 # or run as a long-lived HTTP server",
         "Set PINCHER_AUTO_RESTART_ON_DRIFT=1 in your MCP launch env if running supervised — see docs/deployment for the full guide."
     ],
     "architecture": {

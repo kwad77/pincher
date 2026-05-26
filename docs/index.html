@@ -241,7 +241,7 @@ go build -o pincher ./cmd/pinch/
 ./pincher init --global       # ~/.claude/CLAUDE.md
 
 # Run the HTTP dashboard alongside your MCP client
-./pincher --http :8080
+./pincher --http 127.0.0.1:8080
 
 # Or open the dashboard on demand — auto-starts the server if needed
 ./pincher web
@@ -258,11 +258,12 @@ brew services start pincher</code></pre>
   </div>
 
   <div class="install-pane" id="pane-docker">
-<pre><code>docker run -d --name pincher \
+<pre><code>PINCHER_HTTP_KEY=$(openssl rand -hex 16)
+docker run -d --name pincher \
   -v pincher-data:/data \
   -p 8080:8080 \
   -e PINCHER_HTTP_ADDR=:8080 \
-  -e PINCHER_HTTP_KEY=$(openssl rand -hex 16) \
+  -e PINCHER_HTTP_KEY \
   ghcr.io/kwad77/pinchermcp:latest</code></pre>
   </div>
 

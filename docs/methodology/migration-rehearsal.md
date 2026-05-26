@@ -1,6 +1,12 @@
 # Migration rehearsal — `v0.4` → current
 
-A weekly CI smoke test that catches silent migration regressions before externals see them. Tracked by [#1539](https://github.com/kwad77/pincher/issues/1539) (FILE-U, v0.93); pairs with [#1390](https://github.com/kwad77/pincher/issues/1390) external migration-guide review.
+A weekly CI smoke test that catches silent migration regressions before
+externals see them. Tracked by
+[#1539](https://github.com/kwad77/pincher/issues/1539) (FILE-U, v0.93);
+pairs with [#1390](https://github.com/kwad77/pincher/issues/1390)
+external migration-guide review. The human-facing reviewer checklist
+lives in
+[`../migration/external-review-packet.md`](../migration/external-review-packet.md).
 
 ## What it does
 

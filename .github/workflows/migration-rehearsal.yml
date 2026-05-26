@@ -98,7 +98,7 @@ jobs:
           DATA_DIR: ${{ github.workspace }}/datadir-v04
         run: |
           mkdir -p "${DATA_DIR}"
-          ./baseline/pincher-v0.4.1 --data-dir "${DATA_DIR}" index ./corpus
+          ./baseline/pincher-v0.4.1 index --data-dir "${DATA_DIR}" ./corpus
           ls -la "${DATA_DIR}"
           test -f "${DATA_DIR}/pincher.db" || (echo "::error::v0.4.1 did not create pincher.db at expected location"; exit 1)
           echo "v0.4.1 baseline DB created."
@@ -114,33 +114,55 @@ jobs:
           # Force a re-index that exercises the migrated schema. A
           # successful migration leaves the existing rows queryable
           # AND continues to accept new data.
-          ./pincher-current --data-dir "${DATA_DIR}" index ./corpus
+          ./pincher-current index --data-dir "${DATA_DIR}" ./corpus
+          PROJECT_PATH="$(realpath ./corpus)"
 
           # Verify advertised tools still work against the upgraded DB.
-          # Each is a one-line probe via the HTTP gateway (faster to
-          # script than the MCP stdio transport in CI).
-          ./pincher-current --data-dir "${DATA_DIR}" --http :18080 &
+          # Each is a one-line probe via the HTTP gateway. Run HTTP-only
+          # in CI so an EOF on stdio cannot terminate the server before
+          # the readiness probe connects.
+          ./pincher-current --data-dir "${DATA_DIR}" --http 127.0.0.1:18080 --no-stdio >server.log 2>&1 &
           SERVER_PID=$!
           trap "kill -TERM $SERVER_PID 2>/dev/null || true" EXIT
           # Wait until the server is accepting connections (cap at 30s).
-          until curl -fsSL -m 1 http://127.0.0.1:18080/v1/health >/dev/null 2>&1; do
+          for attempt in $(seq 1 30); do
+            if curl -fsSL -m 1 http://127.0.0.1:18080/v1/health >/dev/null 2>&1; then
+              break
+            fi
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "::error::pincher HTTP server exited before readiness"
+              cat server.log
+              exit 1
+            fi
             sleep 1
           done
+          if ! curl -fsSL -m 1 http://127.0.0.1:18080/v1/health >/dev/null 2>&1; then
+            echo "::error::pincher HTTP server did not become ready after 30s"
+            cat server.log
+            exit 1
+          fi
 
-          # Probe set: health, search (FTS path), symbol (byte-offset
-          # path), schema (introspection path). If any 404s or returns
-          # an error envelope, the migration broke something.
-          for tool in health stats schema; do
+          # Probe set: health/stats (GET surfaces), schema (POST tool),
+          # search (FTS path). If any 404s or returns an error envelope,
+          # the migration broke something.
+          for tool in health stats; do
             echo "Probing /v1/$tool"
             curl -fsSL -m 5 "http://127.0.0.1:18080/v1/$tool" | jq -e '.error // empty' && {
               echo "::error::tool $tool returned an error envelope after migration"
               exit 1
             } || true
           done
+          echo "Probing /v1/schema"
+          curl -fsSL -m 5 -X POST -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg project "$PROJECT_PATH" '{project:$project}')" \
+            http://127.0.0.1:18080/v1/schema | jq -e '.error // empty' && {
+              echo "::error::tool schema returned an error envelope after migration"
+              exit 1
+            } || true
 
           # search expects a body — POST a minimal query.
           curl -fsSL -m 5 -X POST -H 'Content-Type: application/json' \
-            -d '{"query":"main"}' \
+            -d "$(jq -nc --arg project "$PROJECT_PATH" '{query:"main",project:$project}')" \
             http://127.0.0.1:18080/v1/search | jq -e '.results | length > 0' || {
               echo "::error::search returned zero results post-migration — the v0.4 corpus rows did not survive"
               exit 1

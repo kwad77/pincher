@@ -26,7 +26,7 @@ brew services list | grep pincher
 
 `brew services` wires pincher up with the per-platform daemon manager:
 launchd on macOS, systemd on Linux. The service runs
-`pincher --http :8080` against the local SQLite store at
+`pincher --http 127.0.0.1:8080` against the local SQLite store at
 `$HOMEBREW_PREFIX/var/pincher/`.
 
 ## Setting an HTTP auth key
@@ -41,8 +41,11 @@ chmod 600 "$(brew --prefix)/etc/pincher/env"
 brew services restart pincher
 ```
 
-Without the env file, the HTTP gateway runs unauthenticated — fine
-for localhost-only use, **not safe for any network-exposed deployment**.
+Without the env file, the HTTP gateway runs unauthenticated on loopback
+only — fine for localhost use, **not safe for any network-exposed
+deployment**. If you change the service to bind a non-loopback address
+such as `:8080`, pincher requires this key or the explicit
+`--http-allow-open` escape hatch.
 
 ## Verifying
 

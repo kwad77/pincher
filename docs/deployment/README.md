@@ -3,8 +3,8 @@
 Pincher is a single static binary that runs anywhere Go runs. The
 guides in this directory cover the common managed-process shapes:
 container runtime, OS service manager, Kubernetes. Pick whichever
-matches your environment; nothing here is required for a quick `pincher
---http :8080` at a shell.
+matches your environment; nothing here is required for a quick
+`pincher --http 127.0.0.1:8080` at a shell.
 
 | Platform | Guide | When to pick this |
 |---|---|---|
@@ -27,7 +27,7 @@ Are you running an LLM agent locally?
 │         + wire the client via stdio (pincher init --target=<host>)
 └── No  → are you running it in a container?
     ├── Yes → Docker for one machine, Helm for many
-    └── No  → run pincher --http :8080 directly at a shell
+    └── No  → run pincher --http 127.0.0.1:8080 directly at a shell
               (perfectly fine for tinkering; not production)
 ```
 

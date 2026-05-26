@@ -25,7 +25,8 @@ Wants=network-online.target
 Type=simple
 # Override these via `systemctl --user edit pincher` (drop-in override)
 # rather than editing this file directly so upgrades don't stomp your config.
-Environment=PINCHER_HTTP_ADDR=:8080
+Environment=PINCHER_HTTP_ADDR=127.0.0.1:8080
+EnvironmentFile=-%h/.config/pincher/env
 # Uncomment and set if you want bearer-token auth on HTTP:
 # Environment=PINCHER_HTTP_KEY=replace-with-a-secret
 

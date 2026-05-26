@@ -12,7 +12,7 @@
         │ JSON-RPC 2.0 (stdio)
         ▼
 ┌───────────────────────┐          ┌───────────────────────────┐
-│  pincher (MCP process)│          │  pincher --http :8080     │
+│  pincher (MCP process)│          │  pincher --http 127.0.0.1:8080 │
 │                       │          │  (dashboard / REST)       │
 │  • 29 MCP tools       │          │                           │
 │  • idx.Watch()        │          │  • POST /v1/{tool}        │

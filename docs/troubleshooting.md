@@ -116,11 +116,11 @@ Or wait for the auto-drift-re-index to fire on the next file change in that proj
 
 - **Live indexing progress:** `mcp__pincher__index path=... ` returns progress in the response envelope.
 - **Live event stream:** `curl http://localhost:8080/v1/events` (SSE) for `index_started` / `index_complete` / `binary_drift` events as they happen.
-- **Dashboard:** start the HTTP server (`pincher --http :8080`) and open `http://localhost:8080/v1/dashboard`. Auto-refreshes every 30s.
+- **Dashboard:** start the HTTP server (`pincher --http 127.0.0.1:8080`) and open `http://localhost:8080/v1/dashboard`. Auto-refreshes every 30s.
 
 ## "How do I export pincher's metrics for Prometheus scraping?"
 
-Already wired. With `pincher --http :8080` running:
+Already wired. With `pincher --http 127.0.0.1:8080` running:
 
 ```
 http://localhost:8080/v1/metrics
