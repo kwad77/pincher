@@ -4,7 +4,7 @@ Date opened: 2026-05-26
 
 Scope tracker: [#676](https://github.com/kwad77/pincher/issues/676)
 
-Hosted Actions blocker:
+Recovered hosted Actions blocker:
 [#1898](https://github.com/kwad77/pincher/issues/1898)
 
 This is the living sign-off document for the final RC + seven-day hold
@@ -19,9 +19,6 @@ release approval.
 
 - External migration-guide review evidence from at least two distinct
   users, tracked in [#1390](https://github.com/kwad77/pincher/issues/1390).
-- Current migration rehearsal evidence on the latest release-prep descendant.
-- Final perf validation against the current committed baseline and, per
-  `.x9` policy, a bench-baseline refresh decision.
 - Cross-platform release/install smoke against the eventual v0.99 tag.
 - The seven-day no-changes hold after `v0.99.0-rc.1`.
 
@@ -89,11 +86,11 @@ Additional v0.99 local hardening after the last hosted run:
 | [`03a07f6`](https://github.com/kwad77/pincher/commit/03a07f6) | Server perf | Narrows architecture's surprising-connection scan to project-local `CALLS` edges via the existing project/kind edge index instead of loading every edge record; local `EXPLAIN QUERY PLAN`, focused DB/server tests, full `internal/db`, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, workflow lint, and dogfood `pincher doctor` all passed | Pending hosted validation |
 | [`362a738`](https://github.com/kwad77/pincher/commit/362a738) | Project resolution | Makes same-name project resolution prefer the current session project, then the newest indexed live project, while preserving exact-case and live-over-dead precedence; local focused collision tests, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, full coverage at 85.2%, workflow lint, and dogfood `pincher doctor` all passed | Pending hosted validation |
 | [`b7439d0`](https://github.com/kwad77/pincher/commit/b7439d0) | Project resolution | Scopes cached project-name resolutions to the session context that produced them so same-name live-project collisions cannot leak across sessions for the cache TTL; local focused cache/collision tests, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, workflow lint, and dogfood `pincher doctor` all passed | Pending hosted validation |
-| [`cce77f8`](https://github.com/kwad77/pincher/commit/cce77f8) | Project resolution | Makes `symbols(cross_project=true)` read source, staleness state, and file-access savings from each returned symbol's owning project root instead of the session root; focused server tests, focused race tests, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, and dogfood `pincher doctor` all passed | Covered by current-head hosted green run [`9479037`](https://github.com/kwad77/pincher/commit/9479037) |
-| [`3e54cd9`](https://github.com/kwad77/pincher/commit/3e54cd9) | CI validation | Stabilizes the watcher serialization test by measuring the indexer's actual active map instead of inferring in-flight state from success-only completion events; focused watcher test loop, full `internal/index`, full `go test ./... -timeout 240s -parallel 4`, and dogfood `pincher doctor` all passed | Covered by current-head hosted green run [`9479037`](https://github.com/kwad77/pincher/commit/9479037) |
+| [`cce77f8`](https://github.com/kwad77/pincher/commit/cce77f8) | Project resolution | Makes `symbols(cross_project=true)` read source, staleness state, and file-access savings from each returned symbol's owning project root instead of the session root; focused server tests, focused race tests, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, and dogfood `pincher doctor` all passed | Covered by release-prep hosted green run [`731329f`](https://github.com/kwad77/pincher/commit/731329f) |
+| [`3e54cd9`](https://github.com/kwad77/pincher/commit/3e54cd9) | CI validation | Stabilizes the watcher serialization test by measuring the indexer's actual active map instead of inferring in-flight state from success-only completion events; focused watcher test loop, full `internal/index`, full `go test ./... -timeout 240s -parallel 4`, and dogfood `pincher doctor` all passed | Covered by release-prep hosted green run [`731329f`](https://github.com/kwad77/pincher/commit/731329f) |
 
 These commits are useful v0.99 hardening. Push-triggered hosted validation
-passed on current head
+passed on release-prep head
 [`731329f`](https://github.com/kwad77/pincher/commit/731329f): CI
 [`26450244827`](https://github.com/kwad77/pincher/actions/runs/26450244827),
 Host conformance
