@@ -9458,8 +9458,8 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 	// CALLS edges — package pairs joined by just one or two calls. Always
 	// a non-nil slice so JSON consumers can iterate without a null check.
 	surprising := []surprisingConnection{}
-	if allEdges, err := s.store.ListEdgesForProject(projectID); err == nil {
-		surprising = computeSurprisingConnections(allEdges)
+	if callEdges, err := s.store.ListCallEdgesForProject(projectID); err == nil {
+		surprising = computeSurprisingConnections(callEdges)
 	}
 
 	data := map[string]any{

@@ -4432,6 +4432,31 @@ func (s *Store) ListEdgesForProject(projectID string) ([]Edge, error) {
 	return edges, rows.Err()
 }
 
+// ListCallEdgesForProject returns only CALLS edges for lightweight
+// architecture summaries. Export paths that need complete edge records should
+// keep using ListEdgesForProject.
+func (s *Store) ListCallEdgesForProject(projectID string) ([]Edge, error) {
+	rows, err := s.ro.Query(
+		`SELECT from_id, to_id
+		   FROM edges INDEXED BY idx_edge_kind
+		  WHERE project_id=? AND kind='CALLS'`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	edges := []Edge{}
+	for rows.Next() {
+		var e Edge
+		e.ProjectID = projectID
+		e.Kind = "CALLS"
+		if err := rows.Scan(&e.FromID, &e.ToID); err != nil {
+			return nil, err
+		}
+		edges = append(edges, e)
+	}
+	return edges, rows.Err()
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Symbol move tracking — stale ID resolution
 // ─────────────────────────────────────────────────────────────────────────────

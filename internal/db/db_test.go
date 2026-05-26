@@ -564,6 +564,7 @@ var readerRoutedStoreMethods = map[string]bool{
 	"GetSymbolsForFile":              true,
 	"ListSymbolsForProject":          true, // export-graph: pure SELECT, reader pool.
 	"ListEdgesForProject":            true, // export-graph: pure SELECT, reader pool.
+	"ListCallEdgesForProject":        true, // architecture: pure SELECT, reader pool.
 	"GetHotspots":                    true,
 	"GetDeadCode":                    true,
 	"SearchSymbols":                  true,
@@ -2754,6 +2755,32 @@ func TestGetHotspots_TopCalled(t *testing.T) {
 	// Callee has 2 in-edges, so it should be top hotspot
 	if hotspots[0].Name != "Callee" {
 		t.Errorf("top hotspot=%q, want Callee", hotspots[0].Name)
+	}
+}
+
+func TestListCallEdgesForProject_FiltersProjectAndKind(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("calls1"))
+	s.UpsertProject(testProject("calls2"))
+
+	if err := s.BulkUpsertEdges([]Edge{
+		{ProjectID: "calls1", FromID: "calls1::A#Function", ToID: "calls1::B#Function", Kind: "CALLS"},
+		{ProjectID: "calls1", FromID: "calls1::A#Function", ToID: "calls1::v#Variable", Kind: "READS"},
+		{ProjectID: "calls2", FromID: "calls2::A#Function", ToID: "calls2::B#Function", Kind: "CALLS"},
+	}); err != nil {
+		t.Fatalf("upsert edges: %v", err)
+	}
+
+	edges, err := s.ListCallEdgesForProject("calls1")
+	if err != nil {
+		t.Fatalf("ListCallEdgesForProject: %v", err)
+	}
+	if len(edges) != 1 {
+		t.Fatalf("got %d call edges, want 1: %+v", len(edges), edges)
+	}
+	if edges[0].ProjectID != "calls1" || edges[0].Kind != "CALLS" ||
+		edges[0].FromID != "calls1::A#Function" || edges[0].ToID != "calls1::B#Function" {
+		t.Fatalf("unexpected call edge: %+v", edges[0])
 	}
 }
 
