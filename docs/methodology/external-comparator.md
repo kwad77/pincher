@@ -55,7 +55,7 @@ The four task names above are the planned phase-1 suite. Each ships as its own P
 | v0.86-v0.90 | `continue-on-error: true` | Advisory; numbers feed methodology doc |
 | v0.91+ | `false` per FILE-A acceptance | Hard floor — bytes_ratio dropping below the published claim regresses the v1.0 marketing position |
 
-The phase-2 promotion does NOT block release on absolute byte counts — `pincher search` adding 10% more response bytes is fine. It blocks on the **ratio**: if the comparator becomes more efficient (unlikely) or pincher becomes less efficient (the regression we care about), bytes_ratio drops below the published floor and the gate fires.
+The phase-2 promotion does NOT block release on absolute byte counts — the Pincher `search` tool adding 10% more response bytes is fine. It blocks on the **ratio**: if the comparator becomes more efficient (unlikely) or Pincher becomes less efficient (the regression we care about), bytes_ratio drops below the published floor and the gate fires.
 
 ## Why not measure during real agent sessions
 

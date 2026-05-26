@@ -20,11 +20,11 @@ Two reasons:
 ### Section 1 — "What it does"
 
 Concrete capability tour, no marketing adjectives. Pick 3–4 of these and 1-line each with a screenshot or short transcript:
-- `pincher search` — BM25 over symbol corpus.
-- `pincher symbol id:...` — byte-offset O(1) source read.
-- `pincher context id:...` — symbol + its dependencies (`<<context_avg_bytes>>` per call typical).
-- `pincher trace id:... direction:in` — caller graph with risk labels.
-- `pincher investigate_failure error_text:...` — stack-trace → ranked suspects.
+- `search({"query":"..."})` — BM25 over symbol corpus.
+- `symbol({"id":"..."})` — byte-offset O(1) source read.
+- `context({"id":"..."})` — symbol + its dependencies (`<<context_avg_bytes>>` per call typical).
+- `trace({"id":"...","direction":"inbound"})` — caller graph with risk labels.
+- `investigate_failure({"error_text":"..."})` — stack-trace → ranked suspects.
 
 ### Section 2 — "What it costs"
 

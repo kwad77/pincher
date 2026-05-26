@@ -85,7 +85,7 @@ pincher rebuild-fts --quiet          # row count only — pipe-friendly
 pincher rebuild-fts --data-dir /x    # override data directory
 ```
 
-Use this if `pincher search` returns results inconsistent with `pincher query` against the same project. Cost is proportional to symbol count (seconds-to-minutes on large repos). Source files are not re-walked.
+Use this if the `search` MCP/HTTP tool returns results inconsistent with the `query` MCP/HTTP tool against the same project. Cost is proportional to symbol count (seconds-to-minutes on large repos). Source files are not re-walked.
 
 ### `pincher update`
 
