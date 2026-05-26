@@ -99,7 +99,7 @@ jobs:
       matrix:
         include:
           - { label: macos-arm64,   runs-on: macos-latest,     goos: darwin,  goarch: arm64 }
-          - { label: macos-amd64,   runs-on: macos-13,         goos: darwin,  goarch: amd64 }
+          - { label: macos-amd64,   runs-on: macos-15-intel,   goos: darwin,  goarch: amd64 }
           - { label: linux-amd64,   runs-on: ubuntu-latest,    goos: linux,   goarch: amd64 }
           - { label: linux-arm64,   runs-on: ubuntu-24.04-arm, goos: linux,   goarch: arm64 }
           - { label: windows-amd64, runs-on: windows-latest,   goos: windows, goarch: amd64 }
@@ -228,7 +228,7 @@ jobs:
       matrix:
         include:
           - { label: macos-arm64, runs-on: macos-latest }
-          - { label: macos-amd64, runs-on: macos-13 }
+          - { label: macos-amd64, runs-on: macos-15-intel }
     steps:
       - name: brew install + verify
         shell: bash
