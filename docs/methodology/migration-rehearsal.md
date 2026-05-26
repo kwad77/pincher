@@ -16,7 +16,7 @@ lives in
 2. Downloads the `v0.4.1` release tarball — the earliest release with a stable extraction surface.
 3. Creates a small deterministic corpus (Go + YAML + Markdown).
 4. Indexes the corpus with the `v0.4.1` binary, producing a schema-v4 SQLite DB.
-5. Opens the same data directory with the current binary, triggering in-place migration to the current schema (currently v36+).
+5. Opens the same data directory with the current binary, triggering in-place migration to the current schema (currently v37+).
 6. Re-indexes the corpus with the current binary to exercise the migrated schema.
 7. Starts the current binary's HTTP gateway and probes a curated tool set: `health`, `stats`, `schema`, `search`.
 8. Fails the workflow if any probe returns an error envelope or `search` returns zero results (the v0.4-era rows didn't survive the migration).

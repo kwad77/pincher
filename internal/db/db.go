@@ -1693,6 +1693,14 @@ END;`,
 	// landed.
 	`ALTER TABLE projects ADD COLUMN index_state TEXT NOT NULL DEFAULT 'complete';
 	 ALTER TABLE projects ADD COLUMN index_started_at INTEGER NOT NULL DEFAULT 0;`,
+
+	// v36 → v37: project-scoped inbound edge grouping index for hotspots.
+	// GetHotspots groups a project's edges by to_id; the older forced
+	// idx_edge_kind(project_id, kind) plan stays project-scoped but builds
+	// a temp B-tree for GROUP BY. This index walks one project in to_id
+	// order, avoiding that temp grouping structure without changing any
+	// extracted data.
+	`CREATE INDEX IF NOT EXISTS idx_edge_project_to ON edges(project_id, to_id);`,
 }
 
 // schemaMigrationInvalidates classifies each migration in schemaMigrations
@@ -1774,6 +1782,7 @@ var schemaMigrationInvalidates = []MigrationInvalidates{
 	invalidatesNothing, // [32] v33→v34: sessions.queries_zero_expected + queries_zero_unexpected (per-session metric split; pre-migration rows hold zero on both)
 	invalidatesNothing, // [33] v34→v35: edge traversal covering indexes (pure DDL; no extracted data changes)
 	invalidatesNothing, // [34] v35→v36: projects.index_state/index_started_at (metadata-only crash recovery marker)
+	invalidatesNothing, // [35] v36→v37: edge project/to_id grouping index for hotspots (pure DDL; no extracted data changes)
 }
 
 func init() {
@@ -2525,6 +2534,7 @@ CREATE INDEX IF NOT EXISTS idx_edge_to   ON edges(to_id);
 CREATE INDEX IF NOT EXISTS idx_edge_kind ON edges(project_id, kind);
 CREATE INDEX IF NOT EXISTS idx_edge_from_project_kind_to ON edges(from_id, project_id, kind, to_id);
 CREATE INDEX IF NOT EXISTS idx_edge_to_project_kind_from ON edges(to_id, project_id, kind, from_id);
+CREATE INDEX IF NOT EXISTS idx_edge_project_to ON edges(project_id, to_id);
 
 CREATE TABLE IF NOT EXISTS files (
     project_id TEXT    NOT NULL,
@@ -3702,7 +3712,7 @@ func (s *Store) GetHotspots(projectID string, limit int) ([]Symbol, error) {
 		       s.complexity, s.is_exported, s.is_test, s.is_entry_point, s.file_hash,
 		       s.extraction_confidence, s.branch
 		FROM symbols s
-		JOIN (SELECT to_id, COUNT(*) AS cnt FROM edges INDEXED BY idx_edge_kind WHERE project_id=? GROUP BY to_id) e ON s.id=e.to_id
+		JOIN (SELECT to_id, COUNT(*) AS cnt FROM edges INDEXED BY idx_edge_project_to WHERE project_id=? GROUP BY to_id) e ON s.id=e.to_id
 		WHERE s.project_id=?
 		ORDER BY cnt DESC LIMIT ?`, projectID, projectID, limit)
 }

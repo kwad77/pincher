@@ -165,7 +165,7 @@ The migration rehearsal now exercises the intended path:
 1. Download `v0.4.1`.
 2. Index a synthetic corpus with the old binary using the old
    subcommand-first CLI syntax.
-3. Open the same DB with the current binary and migrate to schema v36.
+3. Open the same DB with the current binary and migrate to schema v37.
 4. Re-index the corpus with the current binary.
 5. Probe `health`, `stats`, `schema`, and `search` through loopback HTTP.
 

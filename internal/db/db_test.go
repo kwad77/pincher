@@ -1912,6 +1912,56 @@ func TestGetHotspots(t *testing.T) {
 	}
 }
 
+func TestGetHotspots_UsesProjectToIndexWithoutGroupTempTree(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+	s.BulkUpsertSymbols([]Symbol{
+		testSymbol("a", "A", "Function", "p1", "a.go"),
+		testSymbol("b", "B", "Function", "p1", "b.go"),
+	})
+	s.BulkUpsertEdges([]Edge{
+		{ProjectID: "p1", FromID: "a", ToID: "b", Kind: "CALLS", Confidence: 1.0},
+	})
+
+	rows, err := s.ro.Query(`
+		EXPLAIN QUERY PLAN
+		SELECT s.id
+		FROM symbols s
+		JOIN (
+			SELECT to_id, COUNT(*) AS cnt
+			FROM edges INDEXED BY idx_edge_project_to
+			WHERE project_id=?
+			GROUP BY to_id
+		) e ON s.id=e.to_id
+		WHERE s.project_id=?
+		ORDER BY cnt DESC LIMIT ?`, "p1", "p1", 5)
+	if err != nil {
+		t.Fatalf("EXPLAIN GetHotspots plan: %v", err)
+	}
+	defer rows.Close()
+
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, notused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+			t.Fatalf("scan plan: %v", err)
+		}
+		plan.WriteString(detail)
+		plan.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("plan rows: %v", err)
+	}
+	got := plan.String()
+	if !strings.Contains(got, "idx_edge_project_to") {
+		t.Fatalf("GetHotspots plan did not use idx_edge_project_to:\n%s", got)
+	}
+	if strings.Contains(got, "USE TEMP B-TREE FOR GROUP BY") {
+		t.Fatalf("GetHotspots plan still uses temp GROUP BY tree:\n%s", got)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Utility functions
 // ─────────────────────────────────────────────────────────────────────────────
