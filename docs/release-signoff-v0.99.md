@@ -21,8 +21,8 @@ release approval.
   users, tracked in [#1390](https://github.com/kwad77/pincher/issues/1390).
 - Hosted Actions recovery for post-`b9e298d` commits, tracked in
   [#1898](https://github.com/kwad77/pincher/issues/1898). Push-triggered
-  runs are stale at `b9e298d`, and manual workflow dispatch is returning
-  GitHub API HTTP 500 before runs are created.
+  runs now enqueue again, but `45cbc57` reruns failed during hosted setup
+  before project tests could execute.
 - Final perf validation against the current committed baseline and, per
   `.x9` policy, a bench-baseline refresh decision.
 - Cross-platform release/install smoke against the eventual v0.99 tag.
@@ -86,10 +86,22 @@ Additional v0.99 local hardening after the last hosted run:
 | [`452f9e0`](https://github.com/kwad77/pincher/commit/452f9e0) | Update/install | Replaces the temporary update-version comparator with the existing `golang.org/x/mod/semver` implementation; local `go test ./... -timeout 240s` passed | Pending hosted validation |
 | [`87b2e47`](https://github.com/kwad77/pincher/commit/87b2e47) | CI time | Removes accidental auto-indexing from the streamable HTTP load-test warmup and caps CI server-test parallelism; local `go test ./... -timeout 240s -parallel 4` and full coverage flow passed at 85.3% | Pending hosted validation |
 | [`c2c77db`](https://github.com/kwad77/pincher/commit/c2c77db) | CI time | Makes the watcher poll interval test-configurable so watcher tests do not wait on the 5s production cadence; local `internal/index` dropped from ~36s to ~15s under `-parallel 4`; full coverage flow passed at 85.3% | Pending hosted validation |
+| [`45cbc57`](https://github.com/kwad77/pincher/commit/45cbc57) | Server perf | Avoids full graph stats for ghost warning total checks when project metadata already has symbol/edge totals; local `go test ./... -timeout 240s -parallel 4`, focused server tests, full coverage at 85.3%, workflow lint, and dogfood `pincher doctor` all passed | Pending hosted validation |
 
 These commits are useful v0.99 hardening, but they are **not** final release
 evidence until hosted CI, Host conformance, govulncheck, and Pages enqueue and
 pass again on a descendant commit.
+
+Hosted reruns on 2026-05-26 for
+[`45cbc57`](https://github.com/kwad77/pincher/commit/45cbc57) confirm that run
+enqueue recovered, but setup still failed before release validation could run:
+
+| Workflow | Run | Attempt | Result |
+|---|---|---:|---|
+| CI | [26447506595](https://github.com/kwad77/pincher/actions/runs/26447506595) | 2 | Failed during setup. Most jobs failed downloading `actions/setup-go@v5` from GitHub codeload; the shell-contract job reached checkout and GitHub returned HTTP 403 with `Your account is suspended.` |
+| Host conformance | [26447506597](https://github.com/kwad77/pincher/actions/runs/26447506597) | 2 | Failed during setup downloading `actions/setup-go@v5` from GitHub codeload |
+| govulncheck | [26447506598](https://github.com/kwad77/pincher/actions/runs/26447506598) | 2 | Failed during setup downloading `actions/setup-go@v5` from GitHub codeload |
+| Pages | [26447505809](https://github.com/kwad77/pincher/actions/runs/26447505809) | 1 | Failed during setup downloading `actions/upload-pages-artifact@v3` from GitHub codeload |
 
 Manual dispatch rechecks on 2026-05-26 still fail before run creation:
 
@@ -98,10 +110,11 @@ Manual dispatch rechecks on 2026-05-26 still fail before run creation:
 | `ci.yml` | HTTP 500 `Failed to run workflow dispatch` | `E828:3208B5:1BCAE1A:1BF0249:6A157F79` |
 | `time-to-first-success.yml` | HTTP 500 `Failed to run workflow dispatch` | `E818:1BCBFC:19FD4A9:1A215B8:6A157F79` |
 
-Pushes through
-[`c2c77db`](https://github.com/kwad77/pincher/commit/c2c77db) also failed to
-create new hosted runs; `gh run list` still shows the newest hosted release
-validation at `b9e298d`.
+Earlier pushes through
+[`c2c77db`](https://github.com/kwad77/pincher/commit/c2c77db) failed to create
+new hosted runs, and manual dispatch returned GitHub API HTTP 500. Pushes now
+create hosted runs again, but `gh run list` still shows the newest green hosted
+release validation at `b9e298d`.
 
 The migration rehearsal now exercises the intended path:
 
