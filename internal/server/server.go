@@ -747,6 +747,12 @@ func (s *Server) flushSession() {
 		QueriesZeroUnexpected:   atomic.LoadInt64(&s.statsQueriesZeroUnexpected),
 	}
 	if err := s.store.RecordSessionWithMetrics(s.persistentSessionID, s.sessionStartedAt, calls, tokensUsed, tokensSaved, costAvoided, httpURL, httpPID, s.snapshotCallsByLanguage(), qm); err != nil {
+		if db.IsLockedErr(err) {
+			slog.Debug("pincher.session.flush.deferred",
+				"reason", "database_locked",
+				"hint", "session counters remain in memory and will retry on the next flush")
+			return
+		}
 		slog.Warn("pincher.session.flush.err", "err", err)
 	}
 
@@ -843,9 +849,43 @@ func (s *Server) drainToolCallEvents() {
 	s.toolCallEvents = nil
 	s.toolCallEventsMu.Unlock()
 	if err := s.store.RecordToolCalls(batch); err != nil {
+		if db.IsLockedErr(err) {
+			dropped := s.requeueToolCallEvents(batch)
+			slog.Warn("pincher.tool_call_buffer.flush.deferred",
+				"err", err, "requeued_rows", len(batch)-dropped, "dropped_rows", dropped,
+				"hint", "database writer busy; per-call details will retry on the next flush")
+			return
+		}
 		slog.Warn("pincher.tool_call_buffer.flush.err",
 			"err", err, "dropped_rows", len(batch))
 	}
+}
+
+// requeueToolCallEvents prepends a failed drain batch back into the
+// in-memory buffer after SQLITE_BUSY so advisory per-call dashboard
+// rows survive maintenance-index writer contention. The buffer cap is
+// still enforced; if producers filled it while the DB write was blocked,
+// only the oldest failed rows that fit are retained.
+func (s *Server) requeueToolCallEvents(batch []db.ToolCallEvent) int {
+	if len(batch) == 0 {
+		return 0
+	}
+	s.toolCallEventsMu.Lock()
+	defer s.toolCallEventsMu.Unlock()
+	available := toolCallEventCap - len(s.toolCallEvents)
+	if available <= 0 {
+		return len(batch)
+	}
+	dropped := 0
+	if len(batch) > available {
+		dropped = len(batch) - available
+		batch = batch[:available]
+	}
+	merged := make([]db.ToolCallEvent, 0, len(batch)+len(s.toolCallEvents))
+	merged = append(merged, batch...)
+	merged = append(merged, s.toolCallEvents...)
+	s.toolCallEvents = merged
+	return dropped
 }
 
 // snapshotCallsByLanguage serializes the in-memory per-language call

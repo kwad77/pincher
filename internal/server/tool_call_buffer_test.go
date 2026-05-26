@@ -171,6 +171,45 @@ func TestToolCallBuffer_CapOverflowDropsAndRearms(t *testing.T) {
 	}
 }
 
+func TestToolCallBuffer_RequeueFailedDrainHonorsCap(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	srv.persistentSessionID = "sess-buffer-requeue"
+
+	batch := []db.ToolCallEvent{
+		{SessionID: srv.persistentSessionID, Tool: "search", TS: time.Now(), RequestID: "failed-1"},
+		{SessionID: srv.persistentSessionID, Tool: "symbol", TS: time.Now(), RequestID: "failed-2"},
+	}
+	srv.toolCallEvents = []db.ToolCallEvent{
+		{SessionID: srv.persistentSessionID, Tool: "stats", TS: time.Now(), RequestID: "newer-1"},
+	}
+
+	dropped := srv.requeueToolCallEvents(batch)
+	if dropped != 0 {
+		t.Fatalf("requeue dropped %d rows; want 0", dropped)
+	}
+	if got, want := len(srv.toolCallEvents), 3; got != want {
+		t.Fatalf("buffer len after requeue = %d, want %d", got, want)
+	}
+	if got := srv.toolCallEvents[0].RequestID; got != "failed-1" {
+		t.Errorf("first requeued request = %q, want failed-1", got)
+	}
+	if got := srv.toolCallEvents[2].RequestID; got != "newer-1" {
+		t.Errorf("existing buffered request moved incorrectly: got %q, want newer-1", got)
+	}
+
+	srv.toolCallEvents = make([]db.ToolCallEvent, toolCallEventCap-1)
+	dropped = srv.requeueToolCallEvents(batch)
+	if dropped != 1 {
+		t.Fatalf("cap-limited requeue dropped %d rows; want 1", dropped)
+	}
+	if got, want := len(srv.toolCallEvents), toolCallEventCap; got != want {
+		t.Fatalf("buffer len after cap-limited requeue = %d, want %d", got, want)
+	}
+	if got := srv.toolCallEvents[0].RequestID; got != "failed-1" {
+		t.Errorf("cap-limited requeue kept %q, want failed-1", got)
+	}
+}
+
 // Cross-check: the row that lands carries the complexity tier
 // registered in toolComplexityTiers. Pre-fix a tier-name typo or
 // out-of-sync map would silently miscategorize every call — the

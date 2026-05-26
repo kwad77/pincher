@@ -160,6 +160,13 @@ func isDBLockedErr(err error) bool {
 		strings.Contains(msg, "SQLITE_BUSY")
 }
 
+// IsLockedErr reports whether err is SQLite write-lock contention.
+// Server-side advisory flushes use this to defer noisy/optional writes
+// while a long maintenance index owns the writer.
+func IsLockedErr(err error) bool {
+	return isDBLockedErr(err)
+}
+
 // errorsLockedWrap wraps a SQLITE_BUSY open failure with an actionable,
 // user-facing message while keeping the raw cause inspectable (#1784).
 // CLI subcommands print the result verbatim, so the friendly text must

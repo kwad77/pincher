@@ -23,6 +23,9 @@ func TestIsDBLockedErr_Classification_1784(t *testing.T) {
 		if !isDBLockedErr(e) {
 			t.Errorf("isDBLockedErr(%q) = false; want true", e)
 		}
+		if !IsLockedErr(e) {
+			t.Errorf("IsLockedErr(%q) = false; want true", e)
+		}
 	}
 	notLocked := []error{
 		nil,
@@ -33,6 +36,9 @@ func TestIsDBLockedErr_Classification_1784(t *testing.T) {
 	for _, e := range notLocked {
 		if isDBLockedErr(e) {
 			t.Errorf("isDBLockedErr(%v) = true; want false", e)
+		}
+		if IsLockedErr(e) {
+			t.Errorf("IsLockedErr(%v) = true; want false", e)
 		}
 	}
 }
