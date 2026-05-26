@@ -3985,7 +3985,7 @@ func (s *Store) LoadPendingEdgesByKindAndFiles(projectID, kind string, files []s
 type PendingEdge struct {
 	ProjectID  string
 	FromFile   string
-	Kind       string // CALLS | IMPORTS | READS | WRITES | USES_VAR | REFERENCES
+	Kind       string // CALLS | IMPORTS | READS | WRITES | USES_VAR | REFERENCES | INCLUDES | LOADS
 	FromQN     string
 	ToName     string
 	Confidence float64

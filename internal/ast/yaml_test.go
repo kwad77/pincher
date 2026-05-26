@@ -681,6 +681,28 @@ func TestExtractYAML_AnsibleIncludes_ImportAndInclude(t *testing.T) {
 	}
 }
 
+func TestExtractYAML_AnsibleIncludes_TaskAndPlaybookFiles_1869(t *testing.T) {
+	src := `---
+- import_playbook: ../shared/db.yml
+- hosts: all
+  tasks:
+    - include_tasks: tasks/bootstrap.yml
+    - import_tasks:
+        file: ../common/preflight.yml
+`
+	r := Extract([]byte(src), "YAML", "playbooks/site.yml")
+	got := edgesByName(r.Edges, "INCLUDES")
+	for _, want := range []string{
+		"shared/db.yml",
+		"playbooks/tasks/bootstrap.yml",
+		"common/preflight.yml",
+	} {
+		if !contains(got, want) {
+			t.Errorf("missing INCLUDES edge to %q; got: %v", want, got)
+		}
+	}
+}
+
 // Negative — path filtering: INCLUDES must not fire for non-playbook
 // YAML even when `roles:` appears. A Helm values.yaml or kustomization
 // could legitimately use `roles:` for completely different semantics

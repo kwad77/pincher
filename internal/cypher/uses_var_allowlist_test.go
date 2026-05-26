@@ -67,3 +67,31 @@ func TestExecute_UnknownKindWarning_NamesUSES_VAR(t *testing.T) {
 		t.Errorf("warning text must enumerate USES_VAR as a valid kind so agents learn the kind exists; got: %v", r.Warnings)
 	}
 }
+
+func TestExecute_AnsibleStructuralEdgeKindsRecognized_1869(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	insertSym(t, db, "site", "site", "Module", "YAML")
+	insertSym(t, db, "role", "roles.web.tasks.main", "Module", "YAML")
+	insertSym(t, db, "inventory", "inventory.hosts", "Module", "YAML")
+	insertSym(t, db, "hostvars", "host_vars.web_01", "Module", "YAML")
+	insertEdge(t, db, "site", "role", "INCLUDES")
+	insertEdge(t, db, "inventory", "hostvars", "LOADS")
+
+	e := &Executor{DB: db, MaxRows: 100, ProjectID: "proj1"}
+	for _, kind := range []string{"INCLUDES", "LOADS"} {
+		r, err := e.Execute(context.Background(),
+			`MATCH (a)-[:`+kind+`]->(b) RETURN a.name`)
+		if err != nil {
+			t.Fatalf("Execute %s: %v", kind, err)
+		}
+		for _, w := range r.Warnings {
+			if strings.Contains(w, "edge kind") && strings.Contains(w, kind) {
+				t.Errorf("%s is now a registered kind — must not warn; got: %v", kind, w)
+			}
+		}
+		if r.Total != 1 {
+			t.Errorf("expected %s edge to resolve; got %d rows", kind, r.Total)
+		}
+	}
+}

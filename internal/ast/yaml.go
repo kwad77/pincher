@@ -3,6 +3,7 @@ package ast
 import (
 	"bytes"
 	"fmt"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -212,7 +213,7 @@ func extractYAML(source []byte, relPath string) *FileResult {
 	// distinct file-path conventions so a playbook isn't mistaken for an
 	// inventory and vice versa.
 	if isAnsiblePlaybookFile(relPath) {
-		result.Edges = append(result.Edges, ansibleIncludesEdges(docs, result.Module)...)
+		result.Edges = append(result.Edges, ansibleIncludesEdges(docs, result.Module, relPath)...)
 	}
 	if isAnsibleYAMLInventoryFile(relPath) {
 		result.Edges = append(result.Edges, ansibleLoadsEdges(docs, result.Module)...)
@@ -403,7 +404,7 @@ func isAnsibleYAMLInventoryFile(relPath string) bool {
 
 // ansibleIncludesEdges scans a parsed playbook for the three forms of
 // role inclusion and emits INCLUDES edges to the role's
-// `tasks/main.yml` Module.
+// `tasks/main.yml` Module, plus task/playbook include files.
 //
 // The patterns recognised:
 //
@@ -417,27 +418,43 @@ func isAnsibleYAMLInventoryFile(relPath string) bool {
 //	- import_role: { name: postgres }
 //	- include_role: { name: backup }
 //
-// Edge target: the literal `roles/<name>/tasks/main.yml` relative path.
+// Edge target: the literal role task path or source-relative include path.
 // The indexer's edge-resolution pass will bind it against the global
-// symbol table (modules are keyed by file_path on the YAML extractor
-// side, so the lookup hits whichever role's tasks/main.yml has been
-// indexed). When the role lives at a non-standard path (custom
+// symbol table. When the role lives at a non-standard path (custom
 // `roles_path`), the edge will dangle on the resolution pass — the
 // downstream synthetic-external path (#1340) catches those so the
 // edge persists rather than silently dropping.
-func ansibleIncludesEdges(docs []*yaml.Node, module string) []ExtractedEdge {
+func ansibleIncludesEdges(docs []*yaml.Node, module, fromFile string) []ExtractedEdge {
 	var edges []ExtractedEdge
 
-	emit := func(roleName string) {
-		if roleName == "" {
+	emitPath := func(target string) {
+		if target == "" {
 			return
 		}
 		edges = append(edges, ExtractedEdge{
 			FromQN:     module,
-			ToName:     "roles/" + roleName + "/tasks/main.yml",
+			ToName:     target,
 			Kind:       "INCLUDES",
 			Confidence: 1.0,
 		})
+	}
+
+	emitRole := func(roleName, tasksFrom string) {
+		if roleName == "" {
+			return
+		}
+		taskFile := "main.yml"
+		if tasksFrom != "" {
+			taskFile = tasksFrom
+			if filepath.Ext(taskFile) == "" {
+				taskFile += ".yml"
+			}
+		}
+		emitPath("roles/" + roleName + "/tasks/" + taskFile)
+	}
+
+	emitRelative := func(target string) {
+		emitPath(ansibleRelativeIncludePath(fromFile, target))
 	}
 
 	var walk func(n *yaml.Node)
@@ -465,9 +482,12 @@ func ansibleIncludesEdges(docs []*yaml.Node, module string) []ExtractedEdge {
 						for _, item := range v.Content {
 							switch item.Kind {
 							case yaml.ScalarNode:
-								emit(item.Value)
+								emitRole(item.Value, "")
 							case yaml.MappingNode:
-								emit(ansibleFindMappingScalar(item, "role"))
+								emitRole(
+									ansibleFindMappingScalar(item, "role"),
+									ansibleFindMappingScalar(item, "tasks_from"),
+								)
 							}
 						}
 					}
@@ -478,11 +498,16 @@ func ansibleIncludesEdges(docs []*yaml.Node, module string) []ExtractedEdge {
 					if v != nil {
 						switch v.Kind {
 						case yaml.ScalarNode:
-							emit(v.Value)
+							emitRole(v.Value, "")
 						case yaml.MappingNode:
-							emit(ansibleFindMappingScalar(v, "name"))
+							emitRole(
+								ansibleFindMappingScalar(v, "name"),
+								ansibleFindMappingScalar(v, "tasks_from"),
+							)
 						}
 					}
+				case "import_tasks", "include_tasks", "include", "import_playbook":
+					emitRelative(ansibleFindIncludeFile(v))
 				}
 				walk(v)
 			}
@@ -492,6 +517,40 @@ func ansibleIncludesEdges(docs []*yaml.Node, module string) []ExtractedEdge {
 		walk(d)
 	}
 	return edges
+}
+
+func ansibleFindIncludeFile(n *yaml.Node) string {
+	if n == nil {
+		return ""
+	}
+	switch n.Kind {
+	case yaml.ScalarNode:
+		return n.Value
+	case yaml.MappingNode:
+		for _, key := range []string{"file", "name"} {
+			if v := ansibleFindMappingScalar(n, key); v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+func ansibleRelativeIncludePath(fromFile, target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" || strings.Contains(target, "{{") || strings.HasPrefix(target, "/") {
+		return ""
+	}
+	target = filepath.ToSlash(target)
+	if strings.Contains(target, "://") {
+		return ""
+	}
+	clean := path.Clean(path.Join(path.Dir(filepath.ToSlash(fromFile)), target))
+	clean = strings.TrimPrefix(clean, "/")
+	if clean == "." || clean == "" || strings.HasPrefix(clean, "../") {
+		return ""
+	}
+	return clean
 }
 
 // ansibleLoadsEdges scans a parsed YAML inventory for host entries and
