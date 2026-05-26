@@ -32,7 +32,7 @@ pincher index
 
 ## 3. Wire pincher into Codex
 
-`pincher init --target=codex` writes a `[mcp.pincher]` block to
+`pincher init --target=codex` writes a `[mcp_servers.pincher]` block to
 `~/.codex/config.toml`:
 
 ```bash
@@ -44,13 +44,20 @@ The block lands at the user-config scope (not project) since Codex
 reads MCP servers from `~/.codex/config.toml`:
 
 ```toml
-[mcp.pincher]
-command = "pincher"
-args = []
+# >>> pincher:start (managed by `pincher init --target=codex`) >>>
+[mcp_servers.pincher]
+command = "/home/you/.local/bin/pincher"
+args = ["supervised"]
+
+[mcp_servers.pincher.env]
+PINCHER_DATA_DIR = "/home/you/.local/share/pincherMCP/codex"
+PINCHER_AUTO_RESTART_ON_DRIFT = "1"
+# <<< pincher:end <<<
 ```
 
-If `pincher` isn't on Codex's `PATH`, set the absolute path from
-`which pincher`.
+The generated block uses the binary that ran `pincher init`. If you
+hand-edit the config instead, prefer an absolute path from `which
+pincher`.
 
 Restart Codex so it re-reads the config.
 
@@ -89,9 +96,12 @@ pincher stats
 
 ## Notes for Codex users specifically
 
-- **`notifications/tools/list_changed` IS honored.** Mid-session
-  pincher binary swaps surface new tools live in Codex without a
-  CLI restart.
+- **Supervised mode handles Pincher-side restarts.** The managed block
+  runs `pincher supervised`, so binary swaps and inner-server crashes
+  recover without changing the Codex config. If Codex reports
+  `Transport closed` while `pincher health-check` passes from a shell,
+  restart the Codex session; that failure is on the host-side stdio
+  transport, not the Pincher child process.
 - **Roots auto-discovery.** Codex advertises the `roots` capability
   in its MCP `initialize` handshake. Pincher's session-root detection
   picks the first advertised root automatically (see

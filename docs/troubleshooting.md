@@ -10,6 +10,27 @@ Top recurring friction items from the dogfood log, with remediation. If your iss
 
 **Fix:** reconnect the MCP server in the client (e.g. `/mcp` in Claude Code) so the client re-issues `tools/list`. After v0.55+ the supervised binary auto-detects on-disk drift and respawns; older binaries need manual reconnect.
 
+## "Codex says `Transport closed` but `pincher health-check` passes"
+
+**Symptom:** Codex exposes `mcp__pincher__*` tools, but every call fails
+with `Transport closed`. Running the same configured binary from a shell
+succeeds:
+
+```bash
+PINCHER_DATA_DIR=$HOME/.local/share/pincherMCP/codex pincher health-check
+```
+
+**Cause:** the MCP server is healthy, but the already-running Codex
+process is holding a closed host-side transport. `pincher supervised`
+can respawn the inner server after crashes or binary swaps, but it cannot
+force Codex to reuse a transport Codex has already marked closed.
+
+**Fix:** restart the current Codex session so Codex re-reads
+`~/.codex/config.toml` and opens a fresh stdio transport. If it still
+fails after restart, run `pincher init --target=codex` to refresh the
+managed block, then re-run `pincher health-check` with the configured
+`PINCHER_DATA_DIR` before filing an issue.
+
 ## "Search / trace returns 0 rows on this project but I'm sure the symbol is there"
 
 **Symptom:** `search query="MyFunc"` or `trace name=MyFunc` returns nothing even though the symbol clearly exists in the source.
