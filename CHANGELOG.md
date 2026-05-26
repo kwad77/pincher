@@ -7,6 +7,8 @@ minors.
 
 ## [Unreleased]
 
+## [0.96.0] — 2026-05-26 — Sign-off correctness drain + final polish
+
 ### Fixed
 - Add a project-level index-run marker so a killed/OOMed index pass is retried with a full re-extract on the next run instead of trusting file hashes that may have been stamped before symbols and edges finished landing (#1573). Schema v36 adds `projects.index_state` and `index_started_at`; no manual re-index is required.
 - Resolve Markdown inter-doc `REFERENCES` through source-relative target paths plus optional anchors so links like `../adr/0009-phase-0-tool-validation.md#decision` persist to the target Section instead of being dropped before DB insert (#1868). The docs corpus now records 6 Markdown `REFERENCES` edges, and HCL `REFERENCES` stay on their existing direct-persist path.
