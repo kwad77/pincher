@@ -413,12 +413,14 @@ type contextDiffEntry struct {
 	source   string
 }
 
-// projectIDCacheEntry is the cached resolution of a project arg.
+// projectIDCacheEntry is the cached resolution of a project arg in the
+// session context that produced it.
 // Empty IDs are NOT cached (they signal "not found", which we want
 // to revalidate next call so a freshly-indexed project becomes
 // visible immediately).
 type projectIDCacheEntry struct {
 	id        string
+	sessionID string
 	expiresAt time.Time
 }
 
@@ -3457,7 +3459,7 @@ func (s *Server) lookupProjectIDCache(projectArg string) (string, bool) {
 		return "", false
 	}
 	entry, ok := v.(*projectIDCacheEntry)
-	if !ok || time.Now().After(entry.expiresAt) {
+	if !ok || time.Now().After(entry.expiresAt) || entry.sessionID != s.sessionID {
 		s.projectIDCache.Delete(projectArg)
 		return "", false
 	}
@@ -3474,6 +3476,7 @@ func (s *Server) storeProjectIDCache(projectArg, id string) {
 	}
 	s.projectIDCache.Store(projectArg, &projectIDCacheEntry{
 		id:        id,
+		sessionID: s.sessionID,
 		expiresAt: time.Now().Add(projectIDCacheTTL),
 	})
 }

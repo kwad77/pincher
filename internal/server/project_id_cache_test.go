@@ -98,6 +98,33 @@ func TestProjectIDCache_RespectsTTLExpiry(t *testing.T) {
 	}
 }
 
+func TestProjectIDCache_RespectsSessionContext(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+
+	now := time.Now()
+	store.UpsertProject(db.Project{ID: "p401s-a", Path: t.TempDir(), Name: "p401s-name", IndexedAt: now.Add(-time.Hour)})
+	store.UpsertProject(db.Project{ID: "p401s-b", Path: t.TempDir(), Name: "p401s-name", IndexedAt: now})
+
+	srv.sessionID = "p401s-a"
+	got, err := srv.resolveProjectID("p401s-name")
+	if err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	if got != "p401s-a" {
+		t.Fatalf("first resolve = %q, want p401s-a", got)
+	}
+
+	srv.sessionID = "p401s-b"
+	got, err = srv.resolveProjectID("p401s-name")
+	if err != nil {
+		t.Fatalf("second resolve: %v", err)
+	}
+	if got != "p401s-b" {
+		t.Errorf("second resolve = %q, want p401s-b (cache must not reuse another session's name collision)", got)
+	}
+}
+
 // handleIndex invalidates the cache after a successful re-index.
 // End-to-end via the handler entry point.
 func TestHandleIndex_InvalidatesProjectIDCache(t *testing.T) {
