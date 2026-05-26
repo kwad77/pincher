@@ -147,7 +147,7 @@ func main() {
 		httpAllowOpen = flag.Bool("http-allow-open", false, "Permit a non-loopback HTTP bind without --http-key. Default: refuse (default-deny remote HTTP, #199). Only set when out-of-band auth is in place — reverse proxy, trusted Docker network. Falls back to $PINCHER_HTTP_ALLOW_OPEN=1.")
 		basePath      = flag.String("basepath", "", "External URL prefix when behind a reverse proxy (e.g. /pincher). Both /pincher/v1/* and /v1/* will route. Falls back to $PINCHER_BASEPATH.")
 		trustProxy    = flag.Bool("trust-proxy", false, "Honor X-Forwarded-Prefix / X-Forwarded-Proto / X-Forwarded-Host headers. Only enable when behind a trusted proxy. Falls back to $PINCHER_TRUST_PROXY=1.")
-		slowQueryMS   = flag.Int64("slow-query-ms", 0, "Persist tool calls slower than N ms to the slow_queries table for `pincher doctor` to surface (#42). 0 = disabled (zero overhead).")
+		slowQueryMS   = flag.Int64("slow-query-ms", 0, "Persist tool calls slower than N ms to the slow_queries table for `pincher doctor` to surface (#42). 0 = disabled (zero overhead). Falls back to $PINCHER_SLOW_QUERY_MS.")
 		dbReaders     = flag.Int("db-readers", db.DefaultReaderPoolSize, "Maximum concurrent SQLite read connections. Higher = more parallel tool calls behind a busy server; capped at 32. Falls back to $PINCHER_DB_READERS.")
 		maxFileMB     = flag.Int("max-file-size-mb", int(index.DefaultMaxFileSize/(1024*1024)), "Per-file size cap during indexing (MB). Files larger than this are recorded as `file_too_large` failures and skipped without being read into memory (#111). 0 disables the cap. Falls back to $PINCHER_MAX_FILE_SIZE_MB.")
 		noStdio       = flag.Bool("no-stdio", false, "Don't run the MCP stdio loop. Used by `pincher web` when spawning a detached HTTP-only child on Windows, where the child has no inherited console and the stdio reader would error immediately and tear down the in-flight HTTP server (#232). Requires --http or the process has nothing to do.")
@@ -163,6 +163,12 @@ func main() {
 		printGroupedFlags(out, flag.CommandLine)
 	}
 	flag.Parse()
+	slowQueryFlagSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "slow-query-ms" {
+			slowQueryFlagSet = true
+		}
+	})
 
 	// Env fallbacks for the HTTP knobs so install-time configuration
 	// (Docker -e, systemd EnvironmentFile, launchd, k8s) doesn't need
@@ -185,6 +191,7 @@ func main() {
 	if *mcpHTTPPath == "" {
 		*mcpHTTPPath = os.Getenv("PINCHER_MCP_HTTP_PATH")
 	}
+	*slowQueryMS = slowQueryThresholdWithEnv(*slowQueryMS, slowQueryFlagSet, os.Getenv)
 
 	if *showVersion {
 		fmt.Printf("pincherMCP v%s\n", version)
@@ -377,6 +384,21 @@ func shouldStartBackgroundWatcher(noStdio bool, mcpHTTPPath string) bool {
 		return true
 	}
 	return strings.TrimSpace(mcpHTTPPath) != ""
+}
+
+func slowQueryThresholdWithEnv(current int64, explicit bool, getenv func(string) string) int64 {
+	if explicit {
+		return current
+	}
+	env := strings.TrimSpace(getenv("PINCHER_SLOW_QUERY_MS"))
+	if env == "" {
+		return current
+	}
+	v, err := strconv.ParseInt(env, 10, 64)
+	if err != nil || v < 0 {
+		return current
+	}
+	return v
 }
 
 // isGracefulStdioShutdown reports whether err signals a clean stdio

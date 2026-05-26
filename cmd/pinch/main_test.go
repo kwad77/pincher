@@ -33,6 +33,43 @@ func TestPrintHelpBanner_ListsAllSubcommands(t *testing.T) {
 	}
 }
 
+func TestSlowQueryThresholdWithEnv(t *testing.T) {
+	env := func(v string) func(string) string {
+		return func(key string) string {
+			if key == "PINCHER_SLOW_QUERY_MS" {
+				return v
+			}
+			return ""
+		}
+	}
+
+	tests := []struct {
+		name     string
+		current  int64
+		explicit bool
+		env      string
+		want     int64
+	}{
+		{name: "env fills default", current: 0, env: "75", want: 75},
+		{name: "explicit flag wins", current: 0, explicit: true, env: "75", want: 0},
+		{name: "explicit nonzero wins", current: 25, explicit: true, env: "75", want: 25},
+		{name: "env zero disables", current: 50, env: "0", want: 0},
+		{name: "blank ignored", current: 0, env: "", want: 0},
+		{name: "invalid ignored", current: 10, env: "soon", want: 10},
+		{name: "negative ignored", current: 10, env: "-1", want: 10},
+		{name: "spaces accepted", current: 0, env: " 100 ", want: 100},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := slowQueryThresholdWithEnv(tt.current, tt.explicit, env(tt.env))
+			if got != tt.want {
+				t.Fatalf("slowQueryThresholdWithEnv(%d, explicit=%v, env=%q) = %d, want %d",
+					tt.current, tt.explicit, tt.env, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestIndexCLI_Binary_Plain exercises the runIndexCLI dispatch wrapper
 // end-to-end against a synthetic project. With GOCOVERDIR set
 // externally, the instrumented binary's coverage is folded into the

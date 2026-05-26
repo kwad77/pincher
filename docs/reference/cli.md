@@ -301,7 +301,7 @@ Apply to the no-subcommand form (running as MCP server).
 | `--http-rate` | 0 | — | Max HTTP requests per IP per minute. 0 = unlimited. |
 | `--basepath` | "" | `PINCHER_BASEPATH` | URL prefix behind a reverse proxy (e.g. `/pincher`). |
 | `--trust-proxy` | false | `PINCHER_TRUST_PROXY=1` | Honor X-Forwarded-* headers. Only enable behind a trusted proxy. |
-| `--slow-query-ms` | 0 | — | Persist tool calls slower than N ms to `slow_queries`. 0 = disabled (zero overhead). |
+| `--slow-query-ms` | 0 | `PINCHER_SLOW_QUERY_MS` | Persist tool calls slower than N ms to `slow_queries`. 0 = disabled (zero overhead). |
 | `--db-readers` | 4 | `PINCHER_DB_READERS` | Max concurrent SQLite read connections (1–32). Higher = more parallel tool calls under load. |
 | `--max-file-size-mb` | 4 | `PINCHER_MAX_FILE_SIZE_MB` | Per-file size cap during indexing. Larger files recorded as `file_too_large`, skipped. 0 disables cap. |
 
@@ -319,6 +319,7 @@ Used when the matching flag is empty — convenient for Docker, systemd, launchd
 | `PINCHER_MCP_HTTP_PATH` | `--mcp-http-path` (e.g. `/mcp`; mounts the Streamable-HTTP MCP transport on the HTTP server. Required by aggregators that speak MCP over HTTP — see [`docs/streamable-http.md`](../streamable-http.md) and the [Codex tutorial](../tutorials/codex.md)) |
 | `PINCHER_BASEPATH` | `--basepath` |
 | `PINCHER_TRUST_PROXY` | `--trust-proxy` (set to `1` to enable) |
+| `PINCHER_SLOW_QUERY_MS` | `--slow-query-ms` |
 | `PINCHER_DB_READERS` | `--db-readers` |
 | `PINCHER_MAX_FILE_SIZE_MB` | `--max-file-size-mb` |
 
