@@ -14,6 +14,7 @@ minors.
 - Route inspection-only CLI commands through a read-only database open and add covering edge traversal indexes so busy indexers block fewer project/status and pinchQL reads.
 - Batch-load `plan_change` caller metadata after inbound tracing so file-shaped targets avoid one symbol lookup per traced hop.
 - Batch-load traced hop metadata in `context_for_task` and `investigate_failure` so hotspot traces avoid one symbol lookup per caller/callee row.
+- Batch-load atomic `context` import/callee metadata so direct dependency expansion avoids one symbol lookup per edge.
 - **PR CI runtime trimmed.** Superseded pull-request workflow runs now cancel automatically, and the expensive advisory race detector no longer runs on every PR; it still runs on `master` pushes and manual CI dispatches.
 - Split the Windows data CI shard so server tests run in parallel with index and database tests.
 - Shard Windows CI tests so pull requests stop waiting on one serial Windows package queue.

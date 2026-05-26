@@ -5557,24 +5557,13 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	imports := []map[string]any{}
 	var importPaths []string
 	seen := map[string]bool{sym.ID: true}
+	importIDs := []string{}
 	for _, e := range importEdges {
 		if seen[e.ToID] {
 			continue
 		}
-		imp, err := s.store.GetSymbolScoped(sym.ProjectID, e.ToID)
-		if err != nil || imp == nil {
-			continue
-		}
 		seen[e.ToID] = true
-		impSource, _ := index.ReadSymbolSource(root, *imp)
-		imports = append(imports, map[string]any{
-			"id":        imp.ID,
-			"name":      imp.Name,
-			"kind":      imp.Kind,
-			"file_path": imp.FilePath,
-			"source":    impSource,
-		})
-		importPaths = append(importPaths, imp.FilePath)
+		importIDs = append(importIDs, e.ToID)
 	}
 
 	// Find CALLS edges — the symbol's directly-called helpers (#381).
@@ -5587,15 +5576,42 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	callEdges, _ := s.store.EdgesFromScoped(sym.ProjectID, sym.ID, []string{"CALLS"})
 	callees := []map[string]any{}
 	var calleePaths []string
+	calleeIDs := []string{}
 	for _, e := range callEdges {
 		if seen[e.ToID] {
 			continue
 		}
-		callee, err := s.store.GetSymbolScoped(sym.ProjectID, e.ToID)
-		if err != nil || callee == nil {
+		seen[e.ToID] = true
+		calleeIDs = append(calleeIDs, e.ToID)
+	}
+
+	dependencyIDs := make([]string, 0, len(importIDs)+len(calleeIDs))
+	dependencyIDs = append(dependencyIDs, importIDs...)
+	dependencyIDs = append(dependencyIDs, calleeIDs...)
+	dependencySyms, err := s.store.GetSymbolsByIDs(sym.ProjectID, dependencyIDs)
+	if err != nil {
+		dependencySyms = nil
+	}
+	for _, id := range importIDs {
+		imp := dependencySyms[id]
+		if imp == nil {
 			continue
 		}
-		seen[e.ToID] = true
+		impSource, _ := index.ReadSymbolSource(root, *imp)
+		imports = append(imports, map[string]any{
+			"id":        imp.ID,
+			"name":      imp.Name,
+			"kind":      imp.Kind,
+			"file_path": imp.FilePath,
+			"source":    impSource,
+		})
+		importPaths = append(importPaths, imp.FilePath)
+	}
+	for _, id := range calleeIDs {
+		callee := dependencySyms[id]
+		if callee == nil {
+			continue
+		}
 		calleeSource, _ := index.ReadSymbolSource(root, *callee)
 		callees = append(callees, map[string]any{
 			"id":        callee.ID,
