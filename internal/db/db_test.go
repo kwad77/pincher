@@ -571,7 +571,9 @@ var readerRoutedStoreMethods = map[string]bool{
 	"FTS5Fragmentation":              true, // #1612 v0.87: per-corpus shadow-table COUNT(*)s.
 	"LoadPendingEdgesByKindAndFiles": true, // #1629 v0.87: scoped pending-edges load for incremental resolve.
 	"EdgesFrom":                      true,
+	"EdgesFromScoped":                true,
 	"EdgesTo":                        true,
+	"EdgesToScoped":                  true,
 	"GraphStats":                     true,
 	"AvgConfidenceByKind":            true,
 	"GetProject":                     true,
@@ -2460,6 +2462,88 @@ func TestDeleteSymbolsForFile_RemovesSymbolsAndEdges(t *testing.T) {
 	s.db.QueryRow(`SELECT COUNT(*) FROM edges WHERE from_id=? OR to_id=?`, a.ID, a.ID).Scan(&edgeCount)
 	if edgeCount != 0 {
 		t.Errorf("edges referencing deleted symbol still exist: count=%d", edgeCount)
+	}
+}
+
+func TestDeleteSymbolsForFile_DoesNotDeleteCollidingProjectEdges(t *testing.T) {
+	s := newTestStore(t)
+	for _, pid := range []string{"p1", "p2"} {
+		if err := s.UpsertProject(testProject(pid)); err != nil {
+			t.Fatalf("UpsertProject(%s): %v", pid, err)
+		}
+		if err := s.BulkUpsertSymbols([]Symbol{
+			testSymbol("shared.go::A#Function", "A", "Function", pid, "shared.go"),
+			testSymbol("other.go::B#Function", "B", "Function", pid, "other.go"),
+		}); err != nil {
+			t.Fatalf("BulkUpsertSymbols(%s): %v", pid, err)
+		}
+		if err := s.BulkUpsertEdges([]Edge{{
+			ProjectID:  pid,
+			FromID:     "shared.go::A#Function",
+			ToID:       "other.go::B#Function",
+			Kind:       "CALLS",
+			Confidence: 1.0,
+		}}); err != nil {
+			t.Fatalf("BulkUpsertEdges(%s): %v", pid, err)
+		}
+	}
+
+	if err := s.DeleteSymbolsForFile("p1", "shared.go"); err != nil {
+		t.Fatalf("DeleteSymbolsForFile: %v", err)
+	}
+
+	var p1Edges, p2Edges int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM edges WHERE project_id='p1'`).Scan(&p1Edges); err != nil {
+		t.Fatalf("count p1 edges: %v", err)
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM edges WHERE project_id='p2'`).Scan(&p2Edges); err != nil {
+		t.Fatalf("count p2 edges: %v", err)
+	}
+	if p1Edges != 0 {
+		t.Fatalf("p1 edges referencing deleted symbol survived: %d", p1Edges)
+	}
+	if p2Edges != 1 {
+		t.Fatalf("p2 colliding edge was deleted; got %d edges, want 1", p2Edges)
+	}
+}
+
+func TestEdgesScopedFiltersCollidingProjectEdges(t *testing.T) {
+	s := newTestStore(t)
+	for _, pid := range []string{"p1", "p2"} {
+		if err := s.UpsertProject(testProject(pid)); err != nil {
+			t.Fatalf("UpsertProject(%s): %v", pid, err)
+		}
+		if err := s.BulkUpsertEdges([]Edge{{
+			ProjectID:  pid,
+			FromID:     "shared",
+			ToID:       "target",
+			Kind:       "CALLS",
+			Confidence: 1.0,
+		}}); err != nil {
+			t.Fatalf("BulkUpsertEdges(%s): %v", pid, err)
+		}
+	}
+
+	all, err := s.EdgesFrom("shared", []string{"CALLS"})
+	if err != nil {
+		t.Fatalf("EdgesFrom: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("unscoped EdgesFrom got %d edges, want 2", len(all))
+	}
+	scoped, err := s.EdgesFromScoped("p1", "shared", []string{"CALLS"})
+	if err != nil {
+		t.Fatalf("EdgesFromScoped: %v", err)
+	}
+	if len(scoped) != 1 || scoped[0].ProjectID != "p1" {
+		t.Fatalf("EdgesFromScoped = %+v, want only p1 edge", scoped)
+	}
+	inbound, err := s.EdgesToScoped("p2", "target", []string{"CALLS"})
+	if err != nil {
+		t.Fatalf("EdgesToScoped: %v", err)
+	}
+	if len(inbound) != 1 || inbound[0].ProjectID != "p2" {
+		t.Fatalf("EdgesToScoped = %+v, want only p2 edge", inbound)
 	}
 }
 

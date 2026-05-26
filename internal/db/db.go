@@ -3362,14 +3362,18 @@ func (s *Store) BulkUpsertSymbols(syms []Symbol) error {
 //     failure rolls everything back.
 func (s *Store) DeleteSymbolsForFile(projectID, filePath string) error {
 	return s.withTx(func(tx *sql.Tx) error {
-		// Cascade 1: edges referencing any symbol in this file (either
-		// endpoint). The doubled subquery is necessary because edges has
-		// no project_id column — from_id/to_id ARE the only join keys.
+		// Cascade 1: edges in this project referencing any symbol in this file
+		// (either endpoint). The project_id predicate is load-bearing: symbol IDs
+		// are only unique within a project, so endpoint-only deletes can erase
+		// another project's colliding edge.
 		if _, err := tx.Exec(
 			`DELETE FROM edges
-			   WHERE from_id IN (SELECT id FROM symbols WHERE project_id=? AND file_path=?)
-			      OR to_id   IN (SELECT id FROM symbols WHERE project_id=? AND file_path=?)`,
-			projectID, filePath, projectID, filePath,
+			   WHERE project_id=?
+			     AND (
+			       from_id IN (SELECT id FROM symbols WHERE project_id=? AND file_path=?)
+			       OR to_id IN (SELECT id FROM symbols WHERE project_id=? AND file_path=?)
+			     )`,
+			projectID, projectID, filePath, projectID, filePath,
 		); err != nil {
 			return err
 		}
@@ -4270,19 +4274,35 @@ func (s *Store) LoadPendingEdges(projectID, kind string) ([]PendingEdge, error) 
 	return out, rows.Err()
 }
 
-// EdgesFrom returns all edges originating from a symbol ID.
+// EdgesFrom returns all edges originating from a symbol ID across all projects.
+// Prefer EdgesFromScoped when the caller already has a project context.
 func (s *Store) EdgesFrom(fromID string, kinds []string) ([]Edge, error) {
-	return s.queryEdges("from_id", fromID, kinds)
+	return s.queryEdges("", "from_id", fromID, kinds)
 }
 
-// EdgesTo returns all edges pointing to a symbol ID.
+// EdgesTo returns all edges pointing to a symbol ID across all projects.
+// Prefer EdgesToScoped when the caller already has a project context.
 func (s *Store) EdgesTo(toID string, kinds []string) ([]Edge, error) {
-	return s.queryEdges("to_id", toID, kinds)
+	return s.queryEdges("", "to_id", toID, kinds)
 }
 
-func (s *Store) queryEdges(col, id string, kinds []string) ([]Edge, error) {
+// EdgesFromScoped returns edges originating from a symbol ID within projectID.
+func (s *Store) EdgesFromScoped(projectID, fromID string, kinds []string) ([]Edge, error) {
+	return s.queryEdges(projectID, "from_id", fromID, kinds)
+}
+
+// EdgesToScoped returns edges pointing to a symbol ID within projectID.
+func (s *Store) EdgesToScoped(projectID, toID string, kinds []string) ([]Edge, error) {
+	return s.queryEdges(projectID, "to_id", toID, kinds)
+}
+
+func (s *Store) queryEdges(projectID, col, id string, kinds []string) ([]Edge, error) {
 	q := `SELECT id, project_id, from_id, to_id, kind, confidence, properties FROM edges WHERE ` + col + `=?`
 	args := []any{id}
+	if projectID != "" {
+		q += " AND project_id=?"
+		args = append(args, projectID)
+	}
 	if len(kinds) > 0 {
 		in := ""
 		for i, k := range kinds {

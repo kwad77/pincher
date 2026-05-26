@@ -5551,7 +5551,7 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	}
 
 	// Find IMPORTS edges from this symbol — cross-package dependencies.
-	importEdges, _ := s.store.EdgesFrom(sym.ID, []string{"IMPORTS"})
+	importEdges, _ := s.store.EdgesFromScoped(sym.ProjectID, sym.ID, []string{"IMPORTS"})
 	// #332: zero-len init so JSON shape is stable when the symbol has
 	// no imports (same fix as #328/#330).
 	imports := []map[string]any{}
@@ -5561,7 +5561,7 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		if seen[e.ToID] {
 			continue
 		}
-		imp, err := s.store.GetSymbol(e.ToID)
+		imp, err := s.store.GetSymbolScoped(sym.ProjectID, e.ToID)
 		if err != nil || imp == nil {
 			continue
 		}
@@ -5584,14 +5584,14 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// callees and had to chase each one with a separate tool call. Now
 	// the response includes them in `callees`. De-duplicated against
 	// `imports` so a callee that's also imported only appears once.
-	callEdges, _ := s.store.EdgesFrom(sym.ID, []string{"CALLS"})
+	callEdges, _ := s.store.EdgesFromScoped(sym.ProjectID, sym.ID, []string{"CALLS"})
 	callees := []map[string]any{}
 	var calleePaths []string
 	for _, e := range callEdges {
 		if seen[e.ToID] {
 			continue
 		}
-		callee, err := s.store.GetSymbol(e.ToID)
+		callee, err := s.store.GetSymbolScoped(sym.ProjectID, e.ToID)
 		if err != nil || callee == nil {
 			continue
 		}

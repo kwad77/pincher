@@ -18,7 +18,7 @@ import (
 // exact — no inference. Output pastes straight into Markdown, a
 // GitHub comment, or the Mermaid live editor.
 //
-// Read-only; reuses EdgesFrom / EdgesTo. No schema or MCP change.
+// Read-only; reuses scoped edge lookups. No schema or MCP change.
 
 // callflowNodeCap bounds the diagram so a hub symbol doesn't render a
 // 500-node unreadable graph.
@@ -92,7 +92,7 @@ func callflowCLI(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	nodes, edges, truncated := collectCallflow(store, seedID, dir, d)
+	nodes, edges, truncated := collectCallflow(store, project.ID, seedID, dir, d)
 	mermaid, err := renderCallflowMermaid(store, project.ID, seedID, nodes, edges, truncated)
 	if err != nil {
 		fmt.Fprintf(stderr, "pincher callflow: %v\n", err)
@@ -160,7 +160,7 @@ type callflowEdge struct{ from, to string }
 // collectCallflow runs a bounded BFS over CALLS edges from the seed and
 // returns the reachable node-id set, the deduped edge set, and whether
 // the node cap truncated the walk.
-func collectCallflow(store *db.Store, seedID, direction string, depth int) (map[string]bool, []callflowEdge, bool) {
+func collectCallflow(store *db.Store, projectID, seedID, direction string, depth int) (map[string]bool, []callflowEdge, bool) {
 	nodes := map[string]bool{seedID: true}
 	edgeSet := map[callflowEdge]bool{}
 	truncated := false
@@ -173,7 +173,7 @@ func collectCallflow(store *db.Store, seedID, direction string, depth int) (map[
 		var next []string
 		for _, id := range frontier {
 			if walkCallees {
-				out, err := store.EdgesFrom(id, []string{"CALLS"})
+				out, err := store.EdgesFromScoped(projectID, id, []string{"CALLS"})
 				if err == nil {
 					for _, e := range out {
 						edgeSet[callflowEdge{e.FromID, e.ToID}] = true
@@ -189,7 +189,7 @@ func collectCallflow(store *db.Store, seedID, direction string, depth int) (map[
 				}
 			}
 			if walkCallers {
-				in, err := store.EdgesTo(id, []string{"CALLS"})
+				in, err := store.EdgesToScoped(projectID, id, []string{"CALLS"})
 				if err == nil {
 					for _, e := range in {
 						edgeSet[callflowEdge{e.FromID, e.ToID}] = true

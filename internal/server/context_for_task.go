@@ -188,13 +188,13 @@ func (s *Server) handleContextForTask(ctx context.Context, req *mcp.CallToolRequ
 			// seed as a last resort (the `hubPass` loop) so a corpus
 			// where every match is a hub doesn't fall through to the
 			// empty-seed path. Memoized so each candidate costs at most
-			// one EdgesTo query across all four passes.
+			// one scoped EdgesTo query across all four passes.
 			hubStatus := make(map[string]bool, len(results))
 			isHubSeed := func(id string) bool {
 				if v, ok := hubStatus[id]; ok {
 					return v
 				}
-				callers, err := s.store.EdgesTo(id, []string{"CALLS"})
+				callers, err := s.store.EdgesToScoped(projectID, id, []string{"CALLS"})
 				v := err == nil && len(callers) > hubSeedCallerThreshold
 				hubStatus[id] = v
 				return v
@@ -463,12 +463,12 @@ func (s *Server) handleContextForTask(ctx context.Context, req *mcp.CallToolRequ
 
 	// ── Step 5: composite envelope + meta ─────────────────────────────
 	data := map[string]any{
-		"task":           task,
-		"seed_id":        seedID,
-		"seeds":          seeds,
-		"neighbors":      neighbors,
-		"callers":        callers,
-		"callees":        callees,
+		"task":      task,
+		"seed_id":   seedID,
+		"seeds":     seeds,
+		"neighbors": neighbors,
+		"callers":   callers,
+		"callees":   callees,
 		// *_total are the full pre-truncation union sizes; truncated
 		// flags that callers/callees were capped at maxHops for
 		// transport (the totals survive, the lists do not).

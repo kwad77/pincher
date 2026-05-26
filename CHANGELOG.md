@@ -18,6 +18,7 @@ minors.
 - Shrink ratio-ghost server test fixtures while preserving the same threshold coverage.
 
 ### Fixed
+- Keep edge cleanup and user-facing edge reads project-scoped when symbol IDs collide across indexed projects; a file reindex can no longer delete another project's matching endpoint edge.
 - **Go function-value binding regression guard (#1877).** Added an end-to-end test for top-level package var aliases like `var processExecutablePath = platformProcessExecutablePath`, ensuring the binding-pass CALLS edge keeps platform-dispatch implementations out of high-confidence `dead_code` / `audit_unused` false positives.
 - **Supervised MCP provider/action split (#371).** `pincher supervised` can now keep the long-lived stdio provider stable while delegating tool actions to a separate inner binary, and the subprocess integration tests isolate their data dirs so local dogfood databases cannot lock CI-style test runs.
 - **Init target detection tests are hermetic inside Codex.** Tests that override `HOME` now also neutralize `CODEX_HOME`, so `go test ./...` passes when the repository is exercised from a Codex-managed shell instead of inheriting the real host's global Codex config directory.

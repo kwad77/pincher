@@ -69,7 +69,7 @@ func TestCollectCallflow_BothDirections(t *testing.T) {
 		t.Fatalf("resolveCallflowSeed: %v", err)
 	}
 
-	nodes, edges, truncated := collectCallflow(store, seedID, "both", 2)
+	nodes, edges, truncated := collectCallflow(store, projectID, seedID, "both", 2)
 	if truncated {
 		t.Error("3-node chain should not truncate")
 	}
@@ -116,7 +116,7 @@ func TestCollectCallflow_TruncatesAtNodeCap(t *testing.T) {
 		t.Fatalf("resolveCallflowSeed: %v", err)
 	}
 
-	nodes, edges, truncated := collectCallflow(store, seedID, "callers", 2)
+	nodes, edges, truncated := collectCallflow(store, res.ProjectID, seedID, "callers", 2)
 	if !truncated {
 		t.Errorf("a %d-caller fixture should truncate at the %d-node cap", callflowNodeCap+20, callflowNodeCap)
 	}
@@ -150,7 +150,7 @@ func TestCollectCallflow_CalleesOnly(t *testing.T) {
 	store, projectID := callflowTestStore(t)
 	seedID, _ := resolveCallflowSeed(store, projectID, "funcB")
 
-	nodes, _, _ := collectCallflow(store, seedID, "callees", 2)
+	nodes, _, _ := collectCallflow(store, projectID, seedID, "callees", 2)
 	// callees-only from funcB: funcB, funcC — never funcA.
 	for id := range nodes {
 		if strings.Contains(id, "funcA") {
@@ -162,7 +162,7 @@ func TestCollectCallflow_CalleesOnly(t *testing.T) {
 func TestRenderCallflowMermaid(t *testing.T) {
 	store, projectID := callflowTestStore(t)
 	seedID, _ := resolveCallflowSeed(store, projectID, "funcB")
-	nodes, edges, _ := collectCallflow(store, seedID, "both", 2)
+	nodes, edges, _ := collectCallflow(store, projectID, seedID, "both", 2)
 
 	out, err := renderCallflowMermaid(store, projectID, seedID, nodes, edges, false)
 	if err != nil {
