@@ -28,6 +28,13 @@ minors.
 - **Supervised MCP provider/action split (#371).** `pincher supervised` can now keep the long-lived stdio provider stable while delegating tool actions to a separate inner binary, and the subprocess integration tests isolate their data dirs so local dogfood databases cannot lock CI-style test runs.
 - **Init target detection tests are hermetic inside Codex.** Tests that override `HOME` now also neutralize `CODEX_HOME`, so `go test ./...` passes when the repository is exercised from a Codex-managed shell instead of inheriting the real host's global Codex config directory.
 
+### DOGFOOD
+
+- **Pincher DB read contention** — surfaced during live multi-agent use when inspection commands could stall behind indexing work. Fixed by adding a read-only store open for inspection-only CLI paths plus covering edge traversal indexes.
+- **Cross-project symbol-ID collisions on edge cleanup/read paths** — surfaced while auditing the live multi-project DB; symbol IDs are path/QN/kind and collide across indexed mirrors. Fixed by scoping edge cleanup and user-facing edge reads to project_id.
+- **Composite trace metadata N+1 queries** — surfaced by the tool-by-tool query audit. Fixed in `plan_change`, `context_for_task`, and `investigate_failure` by batch-loading traced symbol metadata and keeping the closest traced depth.
+- **Atomic `context` dependency metadata N+1 queries** — same audit found direct imports/callees fetched one symbol at a time. Fixed by batch-loading dependency symbols before reading source snippets.
+
 ## [0.93.0] — 2026-05-23 — Post-v0.92 polish: install-validation, composite UX, migration-guide forward-port
 
 **Theme — v0.93 closes the gaps that surfaced as soon as v0.92 shipped.** Real-world install paths exposed two release-pipeline races (install-validation cells 404'd while CDN propagation finished; Docker push job runs ~8 min behind everything else) — both fixed at the `workflow_run` trigger layer. The composite-tool surface hardened in two places: `onboard_module` now explains itself when scoped to a library package instead of returning a silent `[]`, and `investigate_failure` no longer BM25-matches unrelated symbols against Go test-framework vocabulary (`compare`, `fetch`, `FAIL` etc. that legitimately appear in failure output but aren't identifier-shaped). The migration guide forward-ports through v0.92 — re-install matrix, schema table, tool count, new-tool appendix — as the prerequisite for the v0.99 external review (#1390). A `golang.org/x/net` bump closes five govulncheck advisories. `CHANGELOG.d/` carries one retroactively-documented entry: the migration-guide modernization PR landed after the v0.92.0 tag cut, so it documents here per the v0.78.1 release-honesty precedent.

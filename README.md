@@ -134,7 +134,7 @@ Aggregate session savings land around **70-90%** on large Go/JS projects, **40-7
 - **[CHANGELOG](CHANGELOG.md)** — release-by-release history. Milestone burndown: <https://github.com/kwad77/pincher/milestones>.
 - **[Migration guide](docs/migration/v0.4-to-v1.0.md)** — v0.4 → v1.0.
 
-Current release: **v0.93** — post-v0.92 polish: install-validation harness now triggers off `workflow_run` so it waits for every artifact path (the Docker push job runs ~8 min behind), the `onboard_module` and `investigate_failure` composites explain themselves on edge inputs instead of returning silent `[]` or BM25-matching Go test-framework vocabulary, and the v0.4 → v1.0 migration guide forward-ports through v0.92. v0.92's headline work — onboarding-friction sweep + graph-tooling suite (`export-graph`, `callflow`, `architecture` surprising-connections, `branch_overlap`, queryable `Rationale` symbols) — remains current. Latest stable: **v0.90**. v1.0 freezes tool schemas and ships schema attestation + a public launch.
+Current release: **v0.94** — stability-run prep for heavier agent dogfood: inspection-only CLI commands open the database read-only, edge traversal gets covering indexes, project-scoped edge cleanup closes cross-project ID-collision leaks, and the graph-heavy `context`, `plan_change`, `context_for_task`, and `investigate_failure` paths batch metadata lookups instead of querying once per traced hop. Latest stable: **v0.90**. v1.0 freezes tool schemas and ships schema attestation + a public launch.
 
 ---
 
