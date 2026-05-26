@@ -4,13 +4,17 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/kwad77/pincher/internal/supervisor"
 )
+
+const supervisedInnerBinaryEnv = "PINCHER_SUPERVISED_INNER_BINARY"
 
 // ensureSessionIDEnv returns env with a PINCHER_SESSION_ID set if the
 // caller hadn't provided one. The supervisor stamps this once per
@@ -38,8 +42,8 @@ func ensureSessionIDEnv(env []string) []string {
 //
 // Note: passes through any args after `supervised` to the inner pincher
 // (`pincher supervised --slow-query-ms 100` runs the inner with that
-// flag). This lets users keep using their existing pincher flags
-// transparently.
+// flag). The supervisor-only `--inner-binary PATH` flag is stripped before
+// forwarding, so a stable provider can supervise a dirty action binary.
 func runSupervisedCLI(args []string) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -47,8 +51,19 @@ func runSupervisedCLI(args []string) {
 		os.Exit(1)
 	}
 
-	sup := supervisor.New(exe)
-	sup.InnerArgs = args
+	innerPath, innerArgs, err := supervisedInnerBinary(args, exe, os.Getenv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pincher supervised: %v\n", err)
+		os.Exit(1)
+	}
+
+	sup := supervisor.New(innerPath)
+	sup.ProviderPath = exe
+	sup.ProviderVersion = version
+	sup.ActionVersionFunc = func(path string) string {
+		return detectPincherBinaryVersion(path, exe, version)
+	}
+	sup.InnerArgs = innerArgs
 	// #420: stamp a stable PINCHER_SESSION_ID so successive inner
 	// processes share one sessions-table row. The inner reads this on
 	// startup and seeds atomic counters from the prior flush, so the
@@ -75,4 +90,69 @@ func runSupervisedCLI(args []string) {
 		fmt.Fprintf(os.Stderr, "pincher supervised: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func supervisedInnerBinary(args []string, defaultPath string, getenv func(string) string) (string, []string, error) {
+	innerPath := strings.TrimSpace(getenv(supervisedInnerBinaryEnv))
+	if innerPath == "" {
+		innerPath = defaultPath
+	}
+
+	innerArgs := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--inner-binary":
+			if i+1 >= len(args) {
+				return "", nil, fmt.Errorf("--inner-binary requires a path")
+			}
+			innerPath = strings.TrimSpace(args[i+1])
+			if innerPath == "" {
+				return "", nil, fmt.Errorf("--inner-binary requires a non-empty path")
+			}
+			i++
+		case strings.HasPrefix(arg, "--inner-binary="):
+			innerPath = strings.TrimSpace(strings.TrimPrefix(arg, "--inner-binary="))
+			if innerPath == "" {
+				return "", nil, fmt.Errorf("--inner-binary requires a non-empty path")
+			}
+		default:
+			innerArgs = append(innerArgs, arg)
+		}
+	}
+	return innerPath, innerArgs, nil
+}
+
+func detectPincherBinaryVersion(binaryPath, providerPath, providerVersion string) string {
+	if sameBinaryPath(binaryPath, providerPath) {
+		return providerVersion
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, binaryPath, "--version").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return normalizePincherVersionOutput(string(out))
+}
+
+func sameBinaryPath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	if errA == nil {
+		a = absA
+	}
+	if errB == nil {
+		b = absB
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+func normalizePincherVersionOutput(out string) string {
+	out = strings.TrimSpace(out)
+	return strings.TrimPrefix(out, "pincherMCP v")
 }

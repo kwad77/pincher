@@ -307,7 +307,11 @@ func TestInitCLI_Binary_TargetAll(t *testing.T) {
 	cmd := exec.Command(bin, "init", "--target", "all", "--data-dir", t.TempDir())
 	cmd.Dir = workdir
 	env := pincherCoverEnv()
-	env = append(env, "HOME="+homeDir, "USERPROFILE="+homeDir)
+	env = append(env,
+		"HOME="+homeDir,
+		"USERPROFILE="+homeDir,
+		"CODEX_HOME="+filepath.Join(homeDir, ".codex"),
+	)
 	cmd.Env = env
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("pincher init --target=all: %v\n%s", err, out)
@@ -343,7 +347,11 @@ func TestInitCLI_Binary_TargetDetect(t *testing.T) {
 	cmd := exec.Command(bin, "init", "--target", "detect", "--data-dir", t.TempDir())
 	cmd.Dir = workdir
 	env := pincherCoverEnv()
-	env = append(env, "HOME="+homeDir, "USERPROFILE="+homeDir)
+	env = append(env,
+		"HOME="+homeDir,
+		"USERPROFILE="+homeDir,
+		"CODEX_HOME="+filepath.Join(homeDir, ".codex"),
+	)
 	cmd.Env = env
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("pincher init --target=detect: %v\n%s", err, out)
@@ -377,4 +385,3 @@ func TestInitCLI_Binary_UnknownTargetExits(t *testing.T) {
 		t.Errorf("expected 'unknown --target' message; got: %s", out)
 	}
 }
-

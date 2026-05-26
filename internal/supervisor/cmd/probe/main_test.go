@@ -84,6 +84,7 @@ func TestRun_EndToEnd_BareMode(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test — skipping in -short")
 	}
+	t.Setenv("PINCHER_DATA_DIR", t.TempDir())
 
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "pincher")
@@ -116,6 +117,7 @@ func TestRun_EndToEnd_SupervisedMode(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test — skipping in -short")
 	}
+	t.Setenv("PINCHER_DATA_DIR", t.TempDir())
 
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "pincher")

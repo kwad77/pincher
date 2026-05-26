@@ -191,10 +191,14 @@ Recommended runtime for agent CLIs (Claude Code, Cursor, Codex). Runs the same M
 
 ```bash
 pincher supervised                                # the canonical agent-CLI entry point
+pincher supervised --inner-binary ./pincher       # stable provider, dirty workspace action binary
+PINCHER_SUPERVISED_INNER_BINARY=./pincher pincher supervised
 PINCHER_AUTO_RESTART_ON_DRIFT=1 pincher           # equivalent for non-supervised hosts
 ```
 
 Auto-restart-on-drift is load-bearing for the dogfood loop: when you `make install` a freshly-built `pincher` over the on-PATH binary, the next MCP call detects the mtime bump, the supervisor exits the inner process, and re-spawns against the new binary — no manual `/mcp` reconnect required. The Windows binary-swap path uses an explicit rename-out trick (per #705) so an in-use `pincher.exe` can be replaced without the "Device or resource busy" error.
+
+`--inner-binary` (or `PINCHER_SUPERVISED_INNER_BINARY`) lets the stdio provider stay on a stable installed release while delegating MCP tool actions to a different pincher binary, which is useful when dogfooding a dirty workspace build without invalidating the host's long-lived MCP session.
 
 Without supervised mode (or the equivalent env var on a non-supervised stdio host), a binary swap lands on disk but the running MCP process keeps serving the old binary until the host is restarted. `pincher health` reports `binary_stale: true` when the swap landed but the running process hasn't picked it up.
 

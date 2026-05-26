@@ -50,8 +50,8 @@ func (b *syncBuffer) String() string {
 // closeStdoutAfterN: number of lines forwarded before the fake closes
 // its stdout (simulating inner exit). 0 = never close.
 type fakeInner struct {
-	stdin  *io.PipeReader  // exposed to supervisor as inner.stdin's READ end (we read what supervisor writes)
-	stdout *io.PipeWriter  // exposed to supervisor as inner.stdout's WRITE end (we write what supervisor reads)
+	stdin  *io.PipeReader // exposed to supervisor as inner.stdin's READ end (we read what supervisor writes)
+	stdout *io.PipeWriter // exposed to supervisor as inner.stdout's WRITE end (we write what supervisor reads)
 
 	stdinW  *io.PipeWriter // we never write here; pipes are paired with the supervisor's view
 	stdoutR *io.PipeReader
@@ -154,7 +154,7 @@ func (f *fakeInner) makeProc() *innerProc {
 type writerCloser struct{ w *io.PipeWriter }
 
 func (wc *writerCloser) Write(p []byte) (int, error) { return wc.w.Write(p) }
-func (wc *writerCloser) Close() error                 { return wc.w.Close() }
+func (wc *writerCloser) Close() error                { return wc.w.Close() }
 
 // TestSupervisor_ForwardsClientToInner: a single line from the client
 // arrives at the inner's stdin verbatim.
@@ -662,6 +662,143 @@ func TestSupervisor_StatusToolReturnsResponse(t *testing.T) {
 	fake.Close()
 	cancel()
 	<-runDone
+}
+
+func TestSupervisor_StatusIncludesProviderAndActionBinary(t *testing.T) {
+	sup := &Supervisor{
+		ProviderPath:        "/opt/pincher-0.90",
+		ProviderVersion:     "0.90.0",
+		BinaryPath:          "/worktree/pincher",
+		ActionBinaryVersion: "0.94.0-dirty",
+	}
+
+	status := sup.Status()
+	if status.SupervisorVersion != "0.90.0" {
+		t.Fatalf("SupervisorVersion = %q", status.SupervisorVersion)
+	}
+	if status.ProviderBinaryPath != "/opt/pincher-0.90" {
+		t.Fatalf("ProviderBinaryPath = %q", status.ProviderBinaryPath)
+	}
+	if status.ActionBinaryPath != "/worktree/pincher" {
+		t.Fatalf("ActionBinaryPath = %q", status.ActionBinaryPath)
+	}
+	if status.ActionBinaryVersion != "0.94.0-dirty" {
+		t.Fatalf("ActionBinaryVersion = %q", status.ActionBinaryVersion)
+	}
+}
+
+func TestSupervisor_RespawnRetriesTransientSpawnFailure(t *testing.T) {
+	clientStdinR, clientStdinW := io.Pipe()
+	var clientStdout syncBuffer
+
+	var fakeMu sync.Mutex
+	var fakes []*fakeInner
+	spawnAttempts := 0
+	versionCalls := 0
+
+	sup := &Supervisor{
+		Stdin:             clientStdinR,
+		Stdout:            &clientStdout,
+		Stderr:            io.Discard,
+		BinaryPath:        "/worktree/pincher",
+		ProbeInterval:     24 * time.Hour,
+		RespawnAttempts:   3,
+		RespawnRetryDelay: 10 * time.Millisecond,
+		ActionVersionFunc: func(string) string {
+			versionCalls++
+			switch versionCalls {
+			case 1:
+				return "initial"
+			case 2:
+				return "failed-attempt"
+			default:
+				return "recovered"
+			}
+		},
+		spawnFn: func() (*innerProc, error) {
+			fakeMu.Lock()
+			defer fakeMu.Unlock()
+			spawnAttempts++
+			if spawnAttempts == 2 {
+				return nil, errors.New("transient spawn failure")
+			}
+			f := newFakeInner(spawnAttempts)
+			fakes = append(fakes, f)
+			return f.makeProc(), nil
+		},
+	}
+
+	currentFake := func() *fakeInner {
+		fakeMu.Lock()
+		defer fakeMu.Unlock()
+		if len(fakes) == 0 {
+			return nil
+		}
+		return fakes[len(fakes)-1]
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- sup.Run(ctx) }()
+
+	waitForReceived(t, currentFake, []byte{}, time.Second)
+	first := currentFake()
+	if first == nil {
+		t.Fatal("initial fake did not spawn")
+	}
+	first.Close()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		fakeMu.Lock()
+		attempts := spawnAttempts
+		count := len(fakes)
+		fakeMu.Unlock()
+		if attempts >= 3 && count >= 2 && sup.Restarts.Load() == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	fakeMu.Lock()
+	attempts := spawnAttempts
+	count := len(fakes)
+	fakeMu.Unlock()
+	if attempts != 3 {
+		t.Fatalf("spawn attempts = %d, want 3", attempts)
+	}
+	if count != 2 {
+		t.Fatalf("fake count = %d, want 2", count)
+	}
+	if got := sup.Restarts.Load(); got != 1 {
+		t.Fatalf("Restarts = %d, want 1", got)
+	}
+	if got := sup.Status().ActionBinaryVersion; got != "recovered" {
+		t.Fatalf("ActionBinaryVersion = %q, want recovered", got)
+	}
+
+	line := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"search","arguments":{"query":"x"}}}` + "\n"
+	if _, err := clientStdinW.Write([]byte(line)); err != nil {
+		t.Fatal(err)
+	}
+	waitForReceived(t, currentFake, []byte(`"name":"search"`), time.Second)
+
+	if err := clientStdinW.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run returned error after recovered respawn: %v", err)
+		}
+	case <-time.After(time.Second):
+		if f := currentFake(); f != nil {
+			f.Close()
+		}
+		cancel()
+		t.Fatal("Run did not return after client stdin closed")
+	}
 }
 
 // TestSupervisor_NonStatusToolPassesThrough: a tools/call for a

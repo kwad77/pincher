@@ -69,6 +69,7 @@ func TestHealthCheckProbe_HappyPath(t *testing.T) {
 		t.Skip("integration test — skipping in -short")
 	}
 	bin := buildPincherBinary(t)
+	t.Setenv("PINCHER_DATA_DIR", t.TempDir())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -99,6 +100,7 @@ func TestHealthCheckProbe_ContextCancelled_ReturnsError(t *testing.T) {
 		t.Skip("integration test — skipping in -short")
 	}
 	bin := buildPincherBinary(t)
+	t.Setenv("PINCHER_DATA_DIR", t.TempDir())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
 	defer cancel()
@@ -118,6 +120,7 @@ func TestRunHealthCheckCLI_Integration(t *testing.T) {
 		t.Skip("integration test")
 	}
 	bin := buildPincherBinary(t)
+	t.Setenv("PINCHER_DATA_DIR", t.TempDir())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

@@ -75,10 +75,12 @@ const (
 	SupervisorStatusToolName = "pincher.supervisor.status"
 
 	// Defaults for liveness/circuit-breaker tunables. Tests override.
-	defaultProbeInterval = 30 * time.Second
-	defaultProbeTimeout  = 5 * time.Second
-	defaultMaxRestarts   = 5
-	defaultRestartWindow = 60 * time.Second
+	defaultProbeInterval     = 30 * time.Second
+	defaultProbeTimeout      = 5 * time.Second
+	defaultMaxRestarts       = 5
+	defaultRestartWindow     = 60 * time.Second
+	defaultRespawnAttempts   = 10
+	defaultRespawnRetryDelay = 250 * time.Millisecond
 
 	// defaultRespawnQuietWindow is the post-respawn window during which
 	// server-initiated notifications from the new inner (e.g.
@@ -95,10 +97,22 @@ const (
 // Supervisor wraps an inner pincher process with auto-respawn semantics.
 // Configure via the public fields, then call Run.
 type Supervisor struct {
+	// ProviderPath / ProviderVersion identify the long-lived supervisor
+	// process that owns the MCP stdio boundary.
+	ProviderPath    string
+	ProviderVersion string
+
 	// BinaryPath is the absolute path to the pincher binary to spawn as
-	// the inner MCP server. Typically the supervisor's own argv[0] when
-	// invoked as `pincher supervised`.
+	// the inner/action MCP server. Defaults to the supervisor's own argv[0],
+	// but supervised mode can point it at a dirty workspace binary while
+	// the provider process stays stable.
 	BinaryPath string
+	// ActionBinaryVersion is the best-effort version of BinaryPath captured
+	// at supervisor startup. Empty when the version probe failed.
+	ActionBinaryVersion string
+	// ActionVersionFunc optionally probes BinaryPath and returns its version.
+	// The CLI wires this to `pincher --version`; tests usually leave it nil.
+	ActionVersionFunc func(binaryPath string) string
 
 	// InnerArgs are passed verbatim to the inner pincher invocation.
 	// Empty means "default MCP server mode" — pincher's main() with no
@@ -133,9 +147,13 @@ type Supervisor struct {
 	// RespawnQuietWindow tunes the post-respawn drop window for
 	// server-initiated notifications. Zero uses the default.
 	RespawnQuietWindow time.Duration
+	// RespawnAttempts / RespawnRetryDelay tune transient spawn/replay
+	// failures during respawn. Zero values mean "use the defaults".
+	RespawnAttempts   int
+	RespawnRetryDelay time.Duration
 
-	mu              sync.RWMutex
-	inner           *innerProc
+	mu    sync.RWMutex
+	inner *innerProc
 	// initParams holds the most-recently-captured `params` payload
 	// from a client `initialize` request. We store params (not the
 	// whole line) because on respawn we synthesize a fresh request
@@ -223,22 +241,25 @@ type Supervisor struct {
 // `pincher.supervisor.status` MCP tool. Stable JSON shape (renaming or
 // removing fields is a breaking change for any agent that parses it).
 type SupervisorStatus struct {
-	Alive             bool   `json:"alive"`
-	UptimeSec         int64  `json:"uptime_sec"`
-	Restarts          int32  `json:"restarts"`
-	ProbesSent        int64  `json:"probes_sent"`
-	ProbesAnswered    int64  `json:"probes_answered"`
-	ProbesTimedOut    int64  `json:"probes_timed_out"`
-	LastRestartReason string `json:"last_restart_reason,omitempty"`
-	SupervisorVersion string `json:"supervisor_version,omitempty"`
+	Alive               bool   `json:"alive"`
+	UptimeSec           int64  `json:"uptime_sec"`
+	Restarts            int32  `json:"restarts"`
+	ProbesSent          int64  `json:"probes_sent"`
+	ProbesAnswered      int64  `json:"probes_answered"`
+	ProbesTimedOut      int64  `json:"probes_timed_out"`
+	LastRestartReason   string `json:"last_restart_reason,omitempty"`
+	SupervisorVersion   string `json:"supervisor_version,omitempty"`
+	ProviderBinaryPath  string `json:"provider_binary_path,omitempty"`
+	ActionBinaryPath    string `json:"action_binary_path,omitempty"`
+	ActionBinaryVersion string `json:"action_binary_version,omitempty"`
 
 	// #429: tools/list_changed delivery accounting. Lets an agent
 	// (or a developer reading status) confirm the supervisor IS
 	// emitting the notification — even when the client doesn't
 	// honour it (current Claude Code behaviour as of writing).
-	ToolsListChangedEmitted     int64  `json:"tools_list_changed_emitted"`
-	ToolsListChangedEmitFailed  int64  `json:"tools_list_changed_emit_failed,omitempty"`
-	LastToolsListChangedEmitAt  string `json:"last_tools_list_changed_emit_at,omitempty"`
+	ToolsListChangedEmitted    int64  `json:"tools_list_changed_emitted"`
+	ToolsListChangedEmitFailed int64  `json:"tools_list_changed_emit_failed,omitempty"`
+	LastToolsListChangedEmitAt string `json:"last_tools_list_changed_emit_at,omitempty"`
 }
 
 // probeState is the pendingProbe payload — the time the probe went
@@ -303,12 +324,16 @@ func (s *Supervisor) Run(ctx context.Context) error {
 
 	s.startedAt = time.Now()
 
+	actionVersion := s.detectActionBinaryVersion()
 	p, err := s.spawnFn()
 	if err != nil {
 		return fmt.Errorf("initial spawn: %w", err)
 	}
 	s.mu.Lock()
 	s.inner = p
+	if s.ActionVersionFunc != nil {
+		s.ActionBinaryVersion = actionVersion
+	}
 	s.mu.Unlock()
 
 	clientDone := make(chan error, 1)
@@ -340,8 +365,8 @@ func (s *Supervisor) Run(ctx context.Context) error {
 		runErr = ctx.Err()
 	}
 
-	cancel()           // signal pumps to stop respawning / reading
-	s.shutdownInner()  // close inner pipes so any in-flight Copy / Read returns
+	cancel()          // signal pumps to stop respawning / reading
+	s.shutdownInner() // close inner pipes so any in-flight Copy / Read returns
 
 	// pumpClientToInner is blocked on Read(client.Stdin) — context
 	// cancellation alone won't unblock that. If the caller's Stdin
@@ -476,7 +501,7 @@ func (s *Supervisor) pumpInnerToClient(ctx context.Context) error {
 		s.lastRestartReason = reason
 		s.restartHistoryMu.Unlock()
 
-		if err := s.respawn(); err != nil {
+		if err := s.respawnWithRetry(ctx); err != nil {
 			return fmt.Errorf("respawn after inner exit: %w", err)
 		}
 		s.Restarts.Add(1)
@@ -489,6 +514,52 @@ func (s *Supervisor) pumpInnerToClient(ctx context.Context) error {
 			return err
 		}
 	}
+}
+
+func (s *Supervisor) respawnWithRetry(ctx context.Context) error {
+	attempts := s.RespawnAttempts
+	if attempts <= 0 {
+		attempts = defaultRespawnAttempts
+	}
+	delay := s.RespawnRetryDelay
+	if delay <= 0 {
+		delay = defaultRespawnRetryDelay
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := s.respawn(); err != nil {
+			lastErr = err
+			s.restartHistoryMu.Lock()
+			s.lastRestartReason = fmt.Sprintf("respawn failed (attempt %d/%d): %v", attempt, attempts, err)
+			s.restartHistoryMu.Unlock()
+			slog.Warn("supervisor.respawn.failed",
+				"attempt", attempt,
+				"max_attempts", attempts,
+				"err", err)
+		} else {
+			if attempt > 1 {
+				s.restartHistoryMu.Lock()
+				s.lastRestartReason = fmt.Sprintf("respawn recovered after %d attempts", attempt)
+				s.restartHistoryMu.Unlock()
+				slog.Info("supervisor.respawn.recovered", "attempt", attempt)
+			}
+			return nil
+		}
+
+		if attempt == attempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return fmt.Errorf("failed after %d attempts: %w", attempts, lastErr)
 }
 
 // forwardInnerStdoutWithProbeFilter reads inner stdout line-by-line.
@@ -776,6 +847,8 @@ func (s *Supervisor) writeToInner(line []byte) error {
 // notifications) reach the client mid-session and look like
 // unexpected state changes. S1.5 / #371.
 func (s *Supervisor) respawn() error {
+	actionVersion := s.detectActionBinaryVersion()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -825,6 +898,9 @@ func (s *Supervisor) respawn() error {
 	}
 
 	s.inner = p
+	if s.ActionVersionFunc != nil {
+		s.ActionBinaryVersion = actionVersion
+	}
 
 	// #407: notify the client that the tool surface MAY have changed.
 	// The new inner is potentially a different binary version (typical
@@ -861,6 +937,13 @@ func (s *Supervisor) respawn() error {
 	return nil
 }
 
+func (s *Supervisor) detectActionBinaryVersion() string {
+	if s.ActionVersionFunc == nil {
+		return ""
+	}
+	return s.ActionVersionFunc(s.BinaryPath)
+}
+
 // Status returns a snapshot of the supervisor's runtime stats.
 // Atomic-loaded counters mean this is safe to call concurrently with
 // the pumps. Used both by the MCP status tool and by tests.
@@ -876,6 +959,10 @@ func (s *Supervisor) Status() SupervisorStatus {
 
 	s.mu.RLock()
 	alive := s.inner != nil
+	providerPath := s.ProviderPath
+	providerVersion := s.ProviderVersion
+	actionPath := s.BinaryPath
+	actionVersion := s.ActionBinaryVersion
 	s.mu.RUnlock()
 
 	var lastEmitAt string
@@ -891,6 +978,10 @@ func (s *Supervisor) Status() SupervisorStatus {
 		ProbesAnswered:             s.ProbesAnswered.Load(),
 		ProbesTimedOut:             s.ProbesTimedOut.Load(),
 		LastRestartReason:          reason,
+		SupervisorVersion:          providerVersion,
+		ProviderBinaryPath:         providerPath,
+		ActionBinaryPath:           actionPath,
+		ActionBinaryVersion:        actionVersion,
 		ToolsListChangedEmitted:    s.ToolsListChangedEmitted.Load(),
 		ToolsListChangedEmitFailed: s.ToolsListChangedEmitFailed.Load(),
 		LastToolsListChangedEmitAt: lastEmitAt,
