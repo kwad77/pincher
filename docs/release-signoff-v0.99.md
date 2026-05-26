@@ -87,6 +87,7 @@ Additional v0.99 local hardening after the last hosted run:
 | [`87b2e47`](https://github.com/kwad77/pincher/commit/87b2e47) | CI time | Removes accidental auto-indexing from the streamable HTTP load-test warmup and caps CI server-test parallelism; local `go test ./... -timeout 240s -parallel 4` and full coverage flow passed at 85.3% | Pending hosted validation |
 | [`c2c77db`](https://github.com/kwad77/pincher/commit/c2c77db) | CI time | Makes the watcher poll interval test-configurable so watcher tests do not wait on the 5s production cadence; local `internal/index` dropped from ~36s to ~15s under `-parallel 4`; full coverage flow passed at 85.3% | Pending hosted validation |
 | [`45cbc57`](https://github.com/kwad77/pincher/commit/45cbc57) | Server perf | Avoids full graph stats for ghost warning total checks when project metadata already has symbol/edge totals; local `go test ./... -timeout 240s -parallel 4`, focused server tests, full coverage at 85.3%, workflow lint, and dogfood `pincher doctor` all passed | Pending hosted validation |
+| [`6bee752`](https://github.com/kwad77/pincher/commit/6bee752) | Server perf | Uses cached project totals for edge-coverage diagnostics instead of full graph stats; local focused edge/dead-code tests, full `internal/server`, `go test ./... -timeout 240s -parallel 4`, workflow lint, and dogfood `pincher doctor` all passed | Pending hosted validation |
 
 These commits are useful v0.99 hardening, but they are **not** final release
 evidence until hosted CI, Host conformance, govulncheck, and Pages enqueue and
