@@ -1,25 +1,57 @@
-# v1.0 r/golang post — skeleton (post day-of-tag)
+# v1.0 r/golang post draft
 
-Placeholder for [#1538](https://github.com/kwad77/pincher/issues/1538) (FILE-T).
+Draft for [#1538](https://github.com/kwad77/pincher/issues/1538). Post after
+the v1.0 announcement and demo links are public.
 
-A self-text Reddit submission for r/golang, posted day-of-v1.0-tag.
+## Title Options
 
-## Target shape
+- Pincher 1.0: local code intelligence for Go-heavy agent workflows
+- Pincher 1.0: a local MCP code-intelligence server for agents
+- Pincher 1.0: SQLite-backed symbol search, call graphs, and context for agents
 
-- **Title** — `pincher 1.0: <one-line value prop>` (no clickbait, no "I built").
-- **Opening** — what pincher is (1 sentence), what just shipped (1 sentence), link to blog.
-- **The technical interesting bit** — Go-specific deep dive: the SQLite-WAL bounding work, the AST extractor architecture, the `buildmode=plugin` deferral rationale (#1540 → ADR-0003). r/golang wants substance, not a marketing post.
-- **Open invitation** — issues link, contribute link.
-- **NOT** — links to Twitter, dollar-figures, comparisons against named alternatives.
+## Draft
 
-## Tone
+Pincher 1.0 is out: a local code-intelligence server for coding agents. It
+indexes a repository into symbols, edges, byte ranges, and FTS5 corpora, then
+exposes that through MCP tools and a CLI.
 
-Technical-peer voice. Per `feedback_repositioning_tone.md`: forward-looking, no "we were wrong before." Honest about what's NOT in v1.0 (deferred plugin API, team mode).
+The Go-specific part that may be interesting here is the shape of the system:
 
-## When this file becomes content
+- Go gets AST-backed extraction.
+- Other languages are tiered explicitly instead of pretending every extractor
+  has the same confidence.
+- SQLite is the local store, with project-scoped symbol/edge tables and FTS5
+  routing for code, config, and docs corpora.
+- The v1.0 surface is deliberately local and single-user: one binary, local MCP
+  server, local SQLite DB.
 
-v0.97 release-prep: lock the technical-interesting-bit selection. v1.0 tag day: post.
+The main workflow is not "replace reading code." It is "ask narrower questions
+before reading code":
 
-## Don't do this in this PR
+- find this symbol;
+- show the focused source and dependencies;
+- show inbound callers before a change;
+- rank likely suspects from a failing test output;
+- summarize a module boundary for onboarding.
 
-Write the post. The technical-deep-dive can only be locked once the v1.0 surface itself is locked.
+For 1.0, the compatibility contract is the point. The frozen surface is written
+down in an ADR, and deferred surfaces are explicit: plugin extractors, shared
+team indexes, and additional MCP protocol capabilities are 1.x work rather than
+being frozen early.
+
+Links:
+
+- Announcement: `<<blog_url>>`
+- Release: `<<release_url>>`
+- Frozen surface ADR: `<<adr_0002_url>>`
+- Migration guide: `<<migration_guide_url>>`
+- Demo: `<<fresh_clone_demo_url>>`
+
+Questions and bug reports are welcome in GitHub issues: `<<issues_url>>`
+
+## Publish-Time Checks
+
+- Replace every `<<...>>` slot.
+- Keep the technical angle concrete; do not turn it into launch-copy adjectives.
+- Do not include dollar figures or named-product comparisons.
+- Mention deferred plugin/team-index scope if the comments ask about it.

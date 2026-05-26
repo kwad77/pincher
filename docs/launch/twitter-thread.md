@@ -1,30 +1,55 @@
-# v1.0 Twitter / X thread — skeleton (post day-of-tag)
+# v1.0 Twitter / X thread draft
 
-Placeholder for [#1538](https://github.com/kwad77/pincher/issues/1538) (FILE-T).
+Draft for [#1538](https://github.com/kwad77/pincher/issues/1538). Post after
+the v1.0 release, announcement post, and demo links are public.
 
-5–8 tweet thread that points at the blog post + demo. Authored at v0.97 release-prep, posted day-of-v1.0-tag.
+## Thread
 
-## Target shape
+1. Pincher 1.0 is out: local code intelligence for coding agents.
 
-- **Tweet 1** — what + link to blog. Tagline only. Hook with one number from the methodology gates (`<<bytes_ratio>>×` less context disk to find code).
-- **Tweet 2** — demo video embed.
-- **Tweet 3** — frozen-surface single-fact (semver, ADR-0002 link).
-- **Tweet 4** — host coverage matrix (one line + screenshot).
-- **Tweet 5** — supply-chain stack (signed releases, govulncheck, threat model).
-- **Tweet 6** — single best dogfood-found bug story (humble + concrete).
-- **Tweet 7** — install snippet (Homebrew / Scoop / Docker).
-- **Tweet 8 (optional)** — acknowledgements.
+   It indexes symbols, relationships, source byte ranges, and search corpora so
+   agents can ask targeted questions before reading whole files.
 
-Each tweet ≤270 chars to leave room for replies + retweets that adopt thread structure.
+   Blog: `<<blog_url>>`
 
-## Tone
+2. The 1.0 promise is stability. Tool schemas, the `_meta` envelope conventions,
+   host setup docs, CLI workflows, and migration behavior are documented and
+   versioned.
 
-Concrete. One verifiable claim per tweet. No emoji clutter (per `feedback_repositioning_tone.md` (memory) on forward-looking copy; emojis age poorly).
+   Frozen surface ADR: `<<adr_0002_url>>`
 
-## When this file becomes content
+3. The basic loop is small:
 
-v0.97 release-prep: write final copy against measured numbers. Post day-of-tag at ~9am ET (highest engagement window for dev-tools accounts).
+   install -> setup host -> index repo -> ask `search`, `context`, `trace`, or a
+   composite tool before broad file reads.
 
-## Don't do this in this PR
+   Fresh-clone demo: `<<fresh_clone_demo_url>>`
 
-Write any tweet copy. Pre-author tweets get stale; the blog post + demo + measured numbers don't exist yet.
+4. The edit loop is where it matters:
+
+   `plan_change` before editing, focused context while editing,
+   `investigate_failure` when a test fails.
+
+   Edit-confidence demo: `<<edit_confidence_demo_url>>`
+
+5. Pincher stays local by design: one binary, local MCP server, local SQLite
+   store. No hosted index required for the v1.0 workflow.
+
+6. What is not in 1.0: plugin extractors, shared team indexes, and new MCP
+   protocol capabilities like resources/completions/icons. Those stay in 1.x
+   work so the 1.0 surface can be stable.
+
+7. Install paths and host walkthroughs are in the README:
+
+   `<<readme_url>>`
+
+8. Issues and feedback:
+
+   `<<issues_url>>`
+
+## Publish-Time Checks
+
+- Replace every `<<...>>` slot.
+- Keep each post under the platform character limit after URLs are shortened.
+- Do not add dollar figures or named-product comparisons.
+- Include the demo videos only after they are public.
