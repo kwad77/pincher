@@ -3381,25 +3381,41 @@ func (s *Server) resolveProjectID(projectArg string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	preferProject := func(current, candidate *db.Project) *db.Project {
+		if candidate == nil {
+			return current
+		}
+		if current == nil {
+			return candidate
+		}
+		if s.sessionID != "" {
+			if candidate.ID == s.sessionID && current.ID != s.sessionID {
+				return candidate
+			}
+			if current.ID == s.sessionID && candidate.ID != s.sessionID {
+				return current
+			}
+		}
+		if candidate.IndexedAt.After(current.IndexedAt) {
+			return candidate
+		}
+		return current
+	}
 	var exactLive, exactDead, foldLive, foldDead *db.Project
 	for i := range all {
 		proj := &all[i]
 		switch {
 		case proj.Name == projectArg:
 			if _, statErr := os.Stat(proj.Path); statErr == nil {
-				if exactLive == nil {
-					exactLive = proj
-				}
-			} else if exactDead == nil {
-				exactDead = proj
+				exactLive = preferProject(exactLive, proj)
+			} else {
+				exactDead = preferProject(exactDead, proj)
 			}
 		case strings.EqualFold(proj.Name, projectArg):
 			if _, statErr := os.Stat(proj.Path); statErr == nil {
-				if foldLive == nil {
-					foldLive = proj
-				}
-			} else if foldDead == nil {
-				foldDead = proj
+				foldLive = preferProject(foldLive, proj)
+			} else {
+				foldDead = preferProject(foldDead, proj)
 			}
 		}
 	}

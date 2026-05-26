@@ -65,3 +65,48 @@ func TestResolveProjectID_DeadOnlyStillResolves(t *testing.T) {
 		t.Errorf("resolveProjectID(\"lonely\") = %q, want id-dead-only", got)
 	}
 }
+
+func TestResolveProjectID_LiveCollisionPrefersSessionProject(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+
+	olderLive := t.TempDir()
+	sessionLive := t.TempDir()
+	store.UpsertProject(db.Project{
+		ID: "id-older-live", Path: olderLive, Name: "twin-live", IndexedAt: time.Now().AddDate(0, 0, -7),
+	})
+	store.UpsertProject(db.Project{
+		ID: "id-session-live", Path: sessionLive, Name: "twin-live", IndexedAt: time.Now().AddDate(0, 0, -1),
+	})
+	srv.sessionID = "id-session-live"
+
+	got, err := srv.resolveProjectID("twin-live")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != "id-session-live" {
+		t.Errorf("resolveProjectID(\"twin-live\") = %q, want id-session-live (session project should win live name collisions)", got)
+	}
+}
+
+func TestResolveProjectID_LiveCollisionPrefersNewestIndexed(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+
+	oldLive := t.TempDir()
+	newLive := t.TempDir()
+	store.UpsertProject(db.Project{
+		ID: "id-old-live", Path: oldLive, Name: "twin-newest", IndexedAt: time.Now().AddDate(0, 0, -7),
+	})
+	store.UpsertProject(db.Project{
+		ID: "id-new-live", Path: newLive, Name: "twin-newest", IndexedAt: time.Now(),
+	})
+
+	got, err := srv.resolveProjectID("twin-newest")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != "id-new-live" {
+		t.Errorf("resolveProjectID(\"twin-newest\") = %q, want id-new-live (newest indexed live project should win same-name collisions)", got)
+	}
+}
