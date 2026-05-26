@@ -7,6 +7,8 @@ minors.
 
 ## [Unreleased]
 
+## [0.97.0] — 2026-05-26 — Launch prep + CI release-time cleanup
+
 ### Changed
 - Move the full `go test -race ./internal/...` pass out of release-blocking CI and into a standalone scheduled/manual Race detector workflow so advisory work remains visible without holding master/tag status open (#1895).
 - Draft v1.0 launch artifacts for the v0.97 prep slice: announcement post, two demo recording scripts, launch checklist, and a v1.0 changelog hero (#1538).
