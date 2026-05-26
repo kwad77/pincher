@@ -48,17 +48,11 @@ func runStatsCLI(args []string) {
 	}
 	fs.Parse(args)
 
-	dir := *dataDir
-	if dir == "" {
-		var err error
-		dir, err = db.DataDir()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "pincher: failed to determine data directory: %v\n", err)
-			os.Exit(1)
-		}
+	openStore := openStoreReadOnlyOrCreate
+	if *reset {
+		openStore = openProjectStore
 	}
-
-	store, err := db.Open(dir)
+	store, dir, err := openStore(*dataDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pincher: failed to open database: %v\n", err)
 		os.Exit(1)
@@ -110,10 +104,10 @@ func runStatsReset(store *db.Store, dir string, asJSON bool) {
 
 // StatsReport is the structured form `pincher stats --json` emits.
 type StatsReport struct {
-	DataDir   string         `json:"data_dir"`
-	DBSizeKB  int64          `json:"db_size_kb"`
-	AllTime   AllTimeSavings `json:"all_time"`
-	Projects  []ProjectStats `json:"projects"`
+	DataDir  string         `json:"data_dir"`
+	DBSizeKB int64          `json:"db_size_kb"`
+	AllTime  AllTimeSavings `json:"all_time"`
+	Projects []ProjectStats `json:"projects"`
 }
 
 // AllTimeSavings is the sum across every persisted session row.
@@ -191,12 +185,12 @@ type QueryMetricsReport struct {
 
 // ProjectStats is a per-project file/symbol/edge breakdown.
 type ProjectStats struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Path     string `json:"path"`
-	Files    int    `json:"files"`
-	Symbols  int    `json:"symbols"`
-	Edges    int    `json:"edges"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	Files   int    `json:"files"`
+	Symbols int    `json:"symbols"`
+	Edges   int    `json:"edges"`
 	// SchemaVersionAtIndex is the schema version current when this
 	// project was last indexed (#236). Pointer-to-int so we can
 	// distinguish nil ("indexed before the column existed — pre-v15")

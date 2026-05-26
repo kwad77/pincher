@@ -1,9 +1,10 @@
 // Package db manages the SQLite store for pincherMCP.
 //
 // Design: every symbol row serves three purposes simultaneously:
-//   (1) Byte-offset O(1) source retrieval  (start_byte / end_byte)
-//   (2) Knowledge graph node               (kind, edges table)
-//   (3) FTS5 BM25 full-text search         (symbols_fts virtual table)
+//
+//	(1) Byte-offset O(1) source retrieval  (start_byte / end_byte)
+//	(2) Knowledge graph node               (kind, edges table)
+//	(3) FTS5 BM25 full-text search         (symbols_fts virtual table)
 //
 // All three indexes are populated in a single AST parse pass.
 package db
@@ -311,6 +312,25 @@ func OpenWithReaders(dir string, readers int) (*Store, error) {
 	return s, nil
 }
 
+// OpenReadOnly opens an existing pincher database without running migrations
+// or touching the writer connection. Use this for inspection-only CLI paths
+// that must keep working while a separate pincher process is indexing.
+//
+// The returned Store routes reads through the normal reader pool. Write methods
+// fail at SQLite's mode=ro boundary rather than silently mutating state.
+func OpenReadOnly(dir string) (*Store, error) {
+	path := filepath.Join(dir, "pincher.db")
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	s := &Store{Path: path}
+	if err := s.attachReaderPool(path, DefaultReaderPoolSize); err != nil {
+		return nil, err
+	}
+	s.db = s.ro
+	return s, nil
+}
+
 // SetReaderPoolSize re-tunes the reader pool's MaxOpenConns at runtime.
 // readers is clamped to [MinReaderPoolSize, MaxReaderPoolSize]; pass 0
 // to fall back to DefaultReaderPoolSize.
@@ -415,9 +435,14 @@ func (s *Store) Close() error {
 		if err := s.ro.Close(); err != nil {
 			firstErr = err
 		}
+		if s.ro == s.db {
+			return firstErr
+		}
 	}
-	if err := s.db.Close(); err != nil && firstErr == nil {
-		firstErr = err
+	if s.db != nil {
+		if err := s.db.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 	return firstErr
 }
@@ -616,11 +641,11 @@ func (s *Store) RebuildFTS() (rows int64, err error) {
 // values above ~10x indicate accumulated micro-segments worth
 // merging via `rebuild_fts`. See #1612.
 type FTS5CorpusFragmentation struct {
-	Corpus     string // "code" / "config" / "docs"
-	IdxRows    int64
-	DataRows   int64
-	Ratio      float64 // data_rows / idx_rows, 0 when idx_rows == 0
-	NeedsRebuild bool  // ratio crossed the advisory threshold
+	Corpus       string // "code" / "config" / "docs"
+	IdxRows      int64
+	DataRows     int64
+	Ratio        float64 // data_rows / idx_rows, 0 when idx_rows == 0
+	NeedsRebuild bool    // ratio crossed the advisory threshold
 }
 
 // FTS5FragmentationThreshold is the ratio above which `pincher doctor`
@@ -1642,6 +1667,15 @@ END;`,
 	// the SECOND time". Closes #1494 half 1 / #1632.
 	`ALTER TABLE sessions ADD COLUMN queries_zero_expected   INTEGER NOT NULL DEFAULT 0;
 	 ALTER TABLE sessions ADD COLUMN queries_zero_unexpected INTEGER NOT NULL DEFAULT 0;`,
+
+	// v34 → v35: project-scoped covering indexes for graph traversal.
+	// Existing idx_edge_to(to_id) made inbound BFS filter project_id and
+	// kind after lookup, which is noisy in a multi-project store with
+	// colliding symbol IDs. Keep the traversal endpoint first so SQLite
+	// uses the CTE row as the leading search key, then applies project and
+	// kind inside the same covering index lookup.
+	`CREATE INDEX IF NOT EXISTS idx_edge_from_project_kind_to ON edges(from_id, project_id, kind, to_id);
+	 CREATE INDEX IF NOT EXISTS idx_edge_to_project_kind_from ON edges(to_id, project_id, kind, from_id);`,
 }
 
 // schemaMigrationInvalidates classifies each migration in schemaMigrations
@@ -1661,22 +1695,22 @@ END;`,
 //
 //   - **All** (5 entries): migrations whose data shape requires
 //     re-extraction:
-//       v18→v19 (pending_edges table) — cross-file edge resolution
-//         model switched from in-memory to persisted. Pre-v19 projects
-//         have empty pending_edges; resolveCalls/Imports/Reads operate
-//         on the empty pool until a re-extract repopulates.
-//       v19→v20 (edges.source) — migration comment explicitly says
-//         "recommended migration is one final `pincher index --force`
-//         after upgrading to v0.18."
-//       v21→v22 (pending_edges.receiver_type + struct_fields) — the
-//         #423/#493 receiver-type resolver depends on these being
-//         populated by re-extraction of Go files.
-//       v25→v26 (pending_edges.base_type) — the #565 binding pass
-//         (resolveReads) consults it to tell a struct-field read
-//         from a function-value reference.
-//       v30→v31 (branch column on symbols/edges/files/pending_edges)
-//         — queries that filter by branch miss pre-migration rows
-//         whose branch field is the empty-sentinel default.
+//     v18→v19 (pending_edges table) — cross-file edge resolution
+//     model switched from in-memory to persisted. Pre-v19 projects
+//     have empty pending_edges; resolveCalls/Imports/Reads operate
+//     on the empty pool until a re-extract repopulates.
+//     v19→v20 (edges.source) — migration comment explicitly says
+//     "recommended migration is one final `pincher index --force`
+//     after upgrading to v0.18."
+//     v21→v22 (pending_edges.receiver_type + struct_fields) — the
+//     #423/#493 receiver-type resolver depends on these being
+//     populated by re-extraction of Go files.
+//     v25→v26 (pending_edges.base_type) — the #565 binding pass
+//     (resolveReads) consults it to tell a struct-field read
+//     from a function-value reference.
+//     v30→v31 (branch column on symbols/edges/files/pending_edges)
+//     — queries that filter by branch miss pre-migration rows
+//     whose branch field is the empty-sentinel default.
 //
 // The classification feeds doctor visibility today; future work
 // (#1497 follow-up) gates binaryDriftForce on the union of
@@ -1721,6 +1755,7 @@ var schemaMigrationInvalidates = []MigrationInvalidates{
 	invalidatesNothing, // [30] v31→v32: projects.current_branch (metadata, stamped on next index)
 	invalidatesNothing, // [31] v32→v33: extraction_failures.binary_version_at_failure (metadata on diagnostic table)
 	invalidatesNothing, // [32] v33→v34: sessions.queries_zero_expected + queries_zero_unexpected (per-session metric split; pre-migration rows hold zero on both)
+	invalidatesNothing, // [33] v34→v35: edge traversal covering indexes (pure DDL; no extracted data changes)
 }
 
 func init() {
@@ -2470,6 +2505,8 @@ CREATE TABLE IF NOT EXISTS edges (
 CREATE INDEX IF NOT EXISTS idx_edge_from ON edges(from_id);
 CREATE INDEX IF NOT EXISTS idx_edge_to   ON edges(to_id);
 CREATE INDEX IF NOT EXISTS idx_edge_kind ON edges(project_id, kind);
+CREATE INDEX IF NOT EXISTS idx_edge_from_project_kind_to ON edges(from_id, project_id, kind, to_id);
+CREATE INDEX IF NOT EXISTS idx_edge_to_project_kind_from ON edges(to_id, project_id, kind, from_id);
 
 CREATE TABLE IF NOT EXISTS files (
     project_id TEXT    NOT NULL,
@@ -2494,27 +2531,27 @@ CREATE TABLE IF NOT EXISTS adrs (
 
 // Symbol is a code entity extracted by the AST indexer.
 type Symbol struct {
-	ID            string
-	ProjectID     string
-	FilePath      string
-	Name          string
-	QualifiedName string
-	Kind          string // Function|Method|Class|Interface|Enum|Type|Variable|Module
-	Language      string
-	StartByte     int
-	EndByte       int
-	StartLine     int
-	EndLine       int
-	Signature     string
-	ReturnType    string
-	Docstring     string
-	Parent        string
-	Complexity             int
-	IsExported             bool
-	IsTest                 bool
-	IsEntryPoint           bool
-	FileHash               string
-	ExtractionConfidence   float64 // 1.0 = AST-exact (Go); <1.0 = regex-approximate
+	ID                   string
+	ProjectID            string
+	FilePath             string
+	Name                 string
+	QualifiedName        string
+	Kind                 string // Function|Method|Class|Interface|Enum|Type|Variable|Module
+	Language             string
+	StartByte            int
+	EndByte              int
+	StartLine            int
+	EndLine              int
+	Signature            string
+	ReturnType           string
+	Docstring            string
+	Parent               string
+	Complexity           int
+	IsExported           bool
+	IsTest               bool
+	IsEntryPoint         bool
+	FileHash             string
+	ExtractionConfidence float64 // 1.0 = AST-exact (Go); <1.0 = regex-approximate
 	// Branch is the git branch the symbol was extracted on, captured
 	// from `git rev-parse --abbrev-ref HEAD` at index time. Empty
 	// when the project root isn't a git working tree, when the
@@ -2523,7 +2560,7 @@ type Symbol struct {
 	// that case — Phase 2's call). #1303 Phase 1: column exists but
 	// the indexer doesn't populate it yet; all rows carry '' until
 	// Phase 2 lands.
-	Branch                 string
+	Branch string
 }
 
 // MakeSymbolID produces the stable, human-readable symbol ID.
@@ -2971,7 +3008,7 @@ func CurrentSchemaVersion() int {
 // LanguageCoverage describes extraction quality for one language.
 type LanguageCoverage struct {
 	Language   string  `json:"language"`
-	Parser     string  `json:"parser"`   // "AST" or "Regex"
+	Parser     string  `json:"parser"`     // "AST" or "Regex"
 	Confidence float64 `json:"confidence"` // avg extraction_confidence for this language
 	Symbols    int     `json:"symbols"`
 	// ByKind breaks the language's coverage down per symbol kind so the
@@ -4075,8 +4112,8 @@ func (s *Store) ReplaceInterfaceMethodsForFile(projectID, filePath string, metho
 // skips unchanged files.
 type FileExtractionCommit struct {
 	ProjectID        string
-	FilePath         string  // path relative to project root, forward-slash
-	FileHash         string  // xxh3 of file bytes; written unconditionally
+	FilePath         string // path relative to project root, forward-slash
+	FileHash         string // xxh3 of file bytes; written unconditionally
 	PendingEdges     []PendingEdge
 	StructFields     []StructField
 	InterfaceMethods []InterfaceMethod
@@ -4587,8 +4624,8 @@ func (s *Store) AvgConfidenceByKind(projectID string) (map[string]float64, error
 //   - "byte_range_negative"   — sanity heuristic: a symbol's end_byte <= start_byte
 //   - "qualified_name_collision" — sanity heuristic: same QN twice in a file
 //   - "file_too_large"        — file size exceeds the indexer's per-file cap (#111).
-//                                Skipped before read so memory stays bounded; details
-//                                holds the size in bytes and the configured cap.
+//     Skipped before read so memory stays bounded; details
+//     holds the size in bytes and the configured cap.
 //
 // New reasons can be added by future PRs (e.g. "byte_range_oversized" once
 // parent-tracking lands, "confidence_outlier" once #34 ships).
@@ -4637,7 +4674,7 @@ func (s *Store) RecordExtractionFailure(projectID, filePath, language, reason, d
 // indexer write so doctor can later distinguish stale failures
 // (older binary, fixed-since) from recurring failures (current
 // binary still fails on these files). Empty binaryVersion is
-// permitted — the column accepts NULL/'' for legacy callers.
+// permitted — the column accepts NULL/” for legacy callers.
 //
 // Idempotent on (project_id, file_path, reason): re-recording the
 // same failure updates details, last_seen_at, AND
@@ -5430,7 +5467,7 @@ type ToolCallTierTallyRow struct {
 // by complexity_tier instead of tool. Same window-cutoff semantics,
 // same NULL-pct exclusion logic. Reader-routed.
 //
-// Empty-tier rows (where complexity_tier was '' at insert time) are
+// Empty-tier rows (where complexity_tier was ” at insert time) are
 // filtered — those slipped in pre-#1191 before the tier was always
 // stamped, and surfacing them as "" in a dashboard is just noise.
 func (s *Store) ToolCallStatsByTier(windowSeconds int64) ([]ToolCallTierTallyRow, error) {
@@ -5658,15 +5695,15 @@ type QueryMetrics struct {
 // when nil; dashboard SQL filters with `WHERE tokens_saved IS NOT NULL`
 // to avoid distorting medians with non-applicable rows.
 type ToolCallEvent struct {
-	SessionID       string
-	Tool            string
-	ComplexityTier  string
-	ResponseBytes   int64
-	TokensUsed      int64
-	TokensSaved     *int64
-	TokensSavedPct  *float64
-	TS              time.Time
-	RequestID       string
+	SessionID      string
+	Tool           string
+	ComplexityTier string
+	ResponseBytes  int64
+	TokensUsed     int64
+	TokensSaved    *int64
+	TokensSavedPct *float64
+	TS             time.Time
+	RequestID      string
 }
 
 // SessionRow holds per-session stats for historical display.

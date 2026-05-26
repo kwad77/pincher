@@ -98,14 +98,14 @@ func TestEmptyReason_ConstantsAreRegistered(t *testing.T) {
 func TestApplyLiteMeta_PreservesEmptyReason(t *testing.T) {
 	t.Parallel()
 	meta := map[string]any{
-		"empty_reason":      EmptyReasonNoProjectIndexed,
-		"diagnosis":         "stamped together with the enum",
-		"capabilities":      []string{"schema_v34"},
-		"baseline_method":   "full_file_read",
-		"complexity_tier":   "lite",
-		"tokens_used":       100,
-		"tokens_saved":      200,
-		"tokens_saved_pct":  50.0,
+		"empty_reason":     EmptyReasonNoProjectIndexed,
+		"diagnosis":        "stamped together with the enum",
+		"capabilities":     []string{"schema_v35"},
+		"baseline_method":  "full_file_read",
+		"complexity_tier":  "lite",
+		"tokens_used":      100,
+		"tokens_saved":     200,
+		"tokens_saved_pct": 50.0,
 	}
 	applyLiteMeta(meta)
 	if got := meta["empty_reason"]; got != EmptyReasonNoProjectIndexed {

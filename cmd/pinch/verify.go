@@ -52,17 +52,7 @@ func runVerifyCLI(args []string) {
 	}
 	fs.Parse(args)
 
-	dir := *dataDir
-	if dir == "" {
-		var err error
-		dir, err = db.DataDir()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "pincher: failed to determine data directory: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
-	store, err := db.Open(dir)
+	store, _, err := openStoreReadOnlyOrCreate(*dataDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pincher: failed to open database: %v\n", err)
 		os.Exit(1)

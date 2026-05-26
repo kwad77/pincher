@@ -134,7 +134,7 @@ Project-scoped paths — `search`, `symbol`/`symbols` when `project=` is passed,
 
 ## Schema
 
-Schema is versioned via the `schema_version` table. Current version: **v34**. Migrations apply automatically on startup — no data loss, no manual steps. To add a migration: append a SQL string to `schemaMigrations` in `db.go`; the version number is auto-derived from the slice length.
+Schema is versioned via the `schema_version` table. Current version: **v35**. Migrations apply automatically on startup — no data loss, no manual steps. To add a migration: append a SQL string to `schemaMigrations` in `db.go`; the version number is auto-derived from the slice length.
 
 Migration history:
 
@@ -174,6 +174,7 @@ Migration history:
 | v31→v32 | `projects.current_branch` — git branch the project was last indexed against (#1303 Phase 2a). Doctor surfaces a branch-drift advisory when the on-disk branch differs. Wire format JSON tag is `last_indexed_branch` (#1388). |
 | v32→v33 | `extraction_failures.binary_version_at_failure` — pincher binary version that recorded the row. Doctor surfaces the value so readers can distinguish "fixed-since-this-binary" rows from "still recurring on the running binary" without cross-referencing CHANGELOG by hand (#1421). |
 | v33→v34 | `sessions.queries_zero_expected` + `queries_zero_unexpected` — split `queries_zero_result` into audit-shape (pinchQL with a property predicate, empty rows are healthy) vs caller-surprised (search / trace / neighborhood, empty rows are usage-killers). New `zero_unexpected_rate` is the actionable metric — the rate at which pincher returns empty when the agent expected results. Closes #1494 half 1 / #1632. |
+| v34→v35 | `idx_edge_from_project_kind_to` + `idx_edge_to_project_kind_from` — covering edge traversal indexes for outbound/inbound pinchQL BFS. Keeps project and kind filtering inside the endpoint lookup so multi-project stores with colliding symbol IDs do less read amplification. |
 
 ---
 

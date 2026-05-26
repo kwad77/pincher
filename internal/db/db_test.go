@@ -159,8 +159,8 @@ func TestOpen_DSNPragmasApplied(t *testing.T) {
 		want   string
 	}{
 		{"journal_mode", "wal"},
-		{"synchronous", "1"},   // NORMAL = 1
-		{"foreign_keys", "1"},  // ON
+		{"synchronous", "1"},  // NORMAL = 1
+		{"foreign_keys", "1"}, // ON
 		{"busy_timeout", "5000"},
 		{"cache_size", "-65536"},
 	}
@@ -374,6 +374,82 @@ func TestStore_ReadsViaReaderPool_WhileWriteInProgress(t *testing.T) {
 	}
 }
 
+// TestOpenReadOnly_SkipsWriterMigrationLock covers inspection-only CLI
+// commands such as `project list`: they should not run migrate() or acquire
+// the writer connection just to read status while another pincher process is
+// indexing.
+func TestOpenReadOnly_SkipsWriterMigrationLock(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+	if err := s.UpsertProject(testProject("readonly-during-write")); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO projects(id,path,name,indexed_at) VALUES('blocking','/b','b',0)`); err != nil {
+		t.Fatalf("write inside tx: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		ro, err := OpenReadOnly(dir)
+		if err != nil {
+			done <- err
+			return
+		}
+		defer ro.Close()
+		projects, err := ro.ListProjects()
+		if err != nil {
+			done <- err
+			return
+		}
+		for _, p := range projects {
+			if p.ID == "readonly-during-write" {
+				done <- nil
+				return
+			}
+		}
+		done <- fmt.Errorf("seed project missing from read-only list")
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("OpenReadOnly/ListProjects while writer tx held: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("OpenReadOnly/ListProjects blocked >2s while writer tx held")
+	}
+}
+
+func TestStore_OpenReadOnlyRejectsWrites(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	s.Close()
+
+	ro, err := OpenReadOnly(dir)
+	if err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	defer ro.Close()
+	if err := ro.UpsertProject(testProject("must-fail")); err == nil {
+		t.Fatal("UpsertProject via OpenReadOnly succeeded; want readonly failure")
+	} else if !strings.Contains(strings.ToLower(err.Error()), "readonly") {
+		t.Fatalf("UpsertProject via OpenReadOnly error = %v; want readonly", err)
+	}
+}
+
 // TestStore_CloseClosesBothPools verifies the lifecycle: Close() must
 // release BOTH pools, not just the writer. A leaked reader-pool
 // connection would prevent the SQLite file from being released and
@@ -480,67 +556,67 @@ func TestStore_SetReaderPoolSize_RuntimeAdjust(t *testing.T) {
 // toward writer-routing is safe; toward reader-routing requires care.
 var readerRoutedStoreMethods = map[string]bool{
 	// Pure SELECTs (use s.ro).
-	"GetSymbol":               true,
-	"GetSymbolsByIDs":         true,
-	"GetSymbolsByName":        true,
-	"GetSymbolsByQN":          true,
-	"LoadAllSymbolsByQN":      true, // #1338: bulk pre-load for cold-path resolve. Pure SELECT, reader-routed.
-	"GetSymbolsForFile":       true,
-	"ListSymbolsForProject":   true, // export-graph: pure SELECT, reader pool.
-	"ListEdgesForProject":     true, // export-graph: pure SELECT, reader pool.
-	"GetHotspots":             true,
-	"GetDeadCode":             true,
-	"SearchSymbols":           true,
-	"SearchSymbolsByCorpus":   true,
-	"FTS5Fragmentation":       true, // #1612 v0.87: per-corpus shadow-table COUNT(*)s.
+	"GetSymbol":                      true,
+	"GetSymbolsByIDs":                true,
+	"GetSymbolsByName":               true,
+	"GetSymbolsByQN":                 true,
+	"LoadAllSymbolsByQN":             true, // #1338: bulk pre-load for cold-path resolve. Pure SELECT, reader-routed.
+	"GetSymbolsForFile":              true,
+	"ListSymbolsForProject":          true, // export-graph: pure SELECT, reader pool.
+	"ListEdgesForProject":            true, // export-graph: pure SELECT, reader pool.
+	"GetHotspots":                    true,
+	"GetDeadCode":                    true,
+	"SearchSymbols":                  true,
+	"SearchSymbolsByCorpus":          true,
+	"FTS5Fragmentation":              true, // #1612 v0.87: per-corpus shadow-table COUNT(*)s.
 	"LoadPendingEdgesByKindAndFiles": true, // #1629 v0.87: scoped pending-edges load for incremental resolve.
-	"EdgesFrom":               true,
-	"EdgesTo":                 true,
-	"GraphStats":              true,
-	"AvgConfidenceByKind":     true,
-	"GetProject":              true,
-	"ListProjects":            true,
-	"ProjectsContainingPath":  true,
-	"GetADR":                  true,
-	"ListADRs":                true,
-	"GetFileHash":             true,
-	"ListFilesForProject":     true,
-	"ListFilesWithHashesForProject": true,
-	"ListSymbolFilePaths":     true,
-	"SymbolCountsByFile":      true, // #1231 parity check (pure SELECT, reader pool)
-	"FilesWithEdgesToFile":    true,
-	"LoadPendingEdges":        true,
-	"LoadStructFields":        true,
-	"LoadInterfaceMethods":    true,
+	"EdgesFrom":                      true,
+	"EdgesTo":                        true,
+	"GraphStats":                     true,
+	"AvgConfidenceByKind":            true,
+	"GetProject":                     true,
+	"ListProjects":                   true,
+	"ProjectsContainingPath":         true,
+	"GetADR":                         true,
+	"ListADRs":                       true,
+	"GetFileHash":                    true,
+	"ListFilesForProject":            true,
+	"ListFilesWithHashesForProject":  true,
+	"ListSymbolFilePaths":            true,
+	"SymbolCountsByFile":             true, // #1231 parity check (pure SELECT, reader pool)
+	"FilesWithEdgesToFile":           true,
+	"LoadPendingEdges":               true,
+	"LoadStructFields":               true,
+	"LoadInterfaceMethods":           true,
 	"ListExtractionFailures":         true,
 	"ListRecentExtractionFailuresAcrossProjects":  true, // #1205 doctor cross-project query
 	"CountRecentExtractionFailuresAcrossProjects": true, // #1205 doctor truncation-count
 	"EstimateProjectBytes":                        true, // #1220 doctor per-project byte estimate (pure SELECT)
 	"ExtractionFailureCountsByReason":             true,
-	"ListSlowQueries":         true,
+	"ListSlowQueries":                             true,
 	// HealthCheck is pure SELECT — previously misclassified under writer
 	// "for transactional consistency" but there is no write path. Moved
 	// to reader so health probes don't block on indexer write contention.
-	"HealthCheck":             true,
+	"HealthCheck":               true,
 	"GetAllTimeSavings":         true,
 	"GetAllTimeCallsByLanguage": true,
 	"GetAllTimeQueryMetrics":    true,
 	"GetSessions":               true,
 	"GetSessionByID":            true,
 	"GetLatestHTTPSession":      true,
-	"ResolveStaleID":          true,
-	"TraceViaCTE":             true,
-	"TraceViaCTEScoped":       true,
-	"TraceViaClosure":         true, // #652 phase 1
-	"ClosureRowCount":         true, // #652 phase 1
-	"GetSymbolScoped":         true,
+	"ResolveStaleID":            true,
+	"TraceViaCTE":               true,
+	"TraceViaCTEScoped":         true,
+	"TraceViaClosure":           true, // #652 phase 1
+	"ClosureRowCount":           true, // #652 phase 1
+	"GetSymbolScoped":           true,
 	// v0.36 hook telemetry helpers (#626).
-	"IsFileIndexed":           true,
-	"CountSymbolsInFile":      true,
-	"LargestSymbolInFile":     true,
-	"HookConversionRate7d":    true,
-	"HookOverrideRate7d":      true,
-	"HookCountsByTool7d":      true,
+	"IsFileIndexed":        true,
+	"CountSymbolsInFile":   true,
+	"LargestSymbolInFile":  true,
+	"HookConversionRate7d": true,
+	"HookOverrideRate7d":   true,
+	"HookCountsByTool7d":   true,
 	// Accessors that return the underlying *sql.DB. RO() returns the
 	// reader pool by definition; DB() returns the writer (semantic
 	// belongs to writer-routed since callers may write through it).
@@ -570,42 +646,42 @@ var readerRoutedStoreMethods = map[string]bool{
 
 var writerRoutedStoreMethods = map[string]bool{
 	// Mutations (use s.db).
-	"UpsertProject":            true,
-	"UpsertProjectMeta":        true,
-	"UpdateProjectCounts":      true,
-	"DeleteProject":            true,
-	"DeleteEmptyProjects":      true,
-	"BulkUpsertSymbols":        true,
-	"DeleteSymbolsForFile":     true,
-	"BulkUpsertEdges":            true,
-	"ReplaceEdgesByKindSource":   true, // #1772: atomic delete+reinsert of a (kind,source) edge set.
-	"DeleteEdgesByKindAndSource":                true,
+	"UpsertProject":                              true,
+	"UpsertProjectMeta":                          true,
+	"UpdateProjectCounts":                        true,
+	"DeleteProject":                              true,
+	"DeleteEmptyProjects":                        true,
+	"BulkUpsertSymbols":                          true,
+	"DeleteSymbolsForFile":                       true,
+	"BulkUpsertEdges":                            true,
+	"ReplaceEdgesByKindSource":                   true, // #1772: atomic delete+reinsert of a (kind,source) edge set.
+	"DeleteEdgesByKindAndSource":                 true,
 	"DeleteResolvePassEdgesByKindForSourceFiles": true, // #1629 v0.87: scoped resolve_pass delete for incremental resolve.
 	"DeleteEdgesByKindAndSourceForSourceFiles":   true, // #1629 v0.87 slice 2: generalized scoped delete (any source value).
-	"MaybeFireCelebration":       true,
-	"ReplacePendingEdgesForFile":      true,
-	"DeletePendingEdgesForFile":       true,
-	"ReplaceStructFieldsForFile":      true,
-	"ReplaceInterfaceMethodsForFile":  true,
-	"CommitFileExtraction":            true,
-	"RecordSymbolMove":         true,
-	"DetectAndRecordMoves":     true,
-	"SetFileHash":              true,
-	"DeleteFileHash":           true,
-	"ClearFileHashesByLanguage": true,
-	"SetADR":                   true,
-	"DeleteADR":                true,
-	"RecordSession":            true,
-	"RecordSessionWithMetrics": true,
-	"ResetSessions":            true,
-	"RecordExtractionFailure":           true,
-	"RecordExtractionFailureWithBinary": true, // #1421 binary_version_at_failure carrier
-	"ClearExtractionFailures":           true,
-	"PruneExtractionFailuresForFile":  true,
-	"PruneStaleExtractionFailures":    true,
-	"RecordSlowQuery":          true,
+	"MaybeFireCelebration":                       true,
+	"ReplacePendingEdgesForFile":                 true,
+	"DeletePendingEdgesForFile":                  true,
+	"ReplaceStructFieldsForFile":                 true,
+	"ReplaceInterfaceMethodsForFile":             true,
+	"CommitFileExtraction":                       true,
+	"RecordSymbolMove":                           true,
+	"DetectAndRecordMoves":                       true,
+	"SetFileHash":                                true,
+	"DeleteFileHash":                             true,
+	"ClearFileHashesByLanguage":                  true,
+	"SetADR":                                     true,
+	"DeleteADR":                                  true,
+	"RecordSession":                              true,
+	"RecordSessionWithMetrics":                   true,
+	"ResetSessions":                              true,
+	"RecordExtractionFailure":                    true,
+	"RecordExtractionFailureWithBinary":          true, // #1421 binary_version_at_failure carrier
+	"ClearExtractionFailures":                    true,
+	"PruneExtractionFailuresForFile":             true,
+	"PruneStaleExtractionFailures":               true,
+	"RecordSlowQuery":                            true,
 	// v0.36 hook telemetry writers (#626).
-	"LogHookInvocation":               true,
+	"LogHookInvocation":                true,
 	"ResolveHookInvocationsForSession": true,
 	// Mixed read+write — kept on writer for transactional consistency.
 	"BuildClosure": true, // #652 phase 1 — DELETE + INSERT in a tx
@@ -2100,7 +2176,6 @@ func TestGraphStats_EmptyProject(t *testing.T) {
 		t.Error("expected empty kind maps for empty project")
 	}
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TraceViaCTE

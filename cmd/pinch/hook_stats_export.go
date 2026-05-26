@@ -59,17 +59,7 @@ func runHookStatsCLI(args []string) {
 		os.Exit(2)
 	}
 
-	dir := *dataDir
-	if dir == "" {
-		var err error
-		dir, err = db.DataDir()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "pincher: failed to determine data directory: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
-	store, err := db.Open(dir)
+	store, _, err := openStoreReadOnlyOrCreate(*dataDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pincher: failed to open database: %v\n", err)
 		os.Exit(1)
@@ -95,10 +85,10 @@ func runHookStatsCLI(args []string) {
 // additions: a `meta` block carrying schema version + capture
 // timestamp, and an optional `host` block (omitted by default).
 type hookStatsExport struct {
-	Schema string `json:"schema"`        // bump when the shape changes
-	Window string `json:"window"`        // always "7d" for now
+	Schema      string `json:"schema"`       // bump when the shape changes
+	Window      string `json:"window"`       // always "7d" for now
 	GeneratedAt string `json:"generated_at"` // RFC3339
-	Conversion struct {
+	Conversion  struct {
 		Pct       float64 `json:"pct"`
 		Redirects int     `json:"redirects"`
 		Taken     int     `json:"taken"`

@@ -78,7 +78,7 @@ func runProjectListCLI(args []string, stdout, stderr io.Writer) {
 	}
 	fs.Parse(args)
 
-	store, dir, err := openProjectStore(*dataDir)
+	store, dir, err := openProjectStoreReadOnly(*dataDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "pincher project list: %v\n", err)
 		os.Exit(1)
@@ -303,13 +303,13 @@ func runProjectRMCLI(args []string, stdin io.Reader, stdout, stderr io.Writer) {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(map[string]any{
-			"removed":  true,
-			"id":       chosen.ID,
-			"name":     chosen.Name,
-			"path":     chosen.Path,
-			"files":    chosen.FileCount,
-			"symbols":  chosen.SymCount,
-			"edges":    chosen.EdgeCount,
+			"removed": true,
+			"id":      chosen.ID,
+			"name":    chosen.Name,
+			"path":    chosen.Path,
+			"files":   chosen.FileCount,
+			"symbols": chosen.SymCount,
+			"edges":   chosen.EdgeCount,
 		})
 		return
 	}
@@ -539,17 +539,44 @@ func matchProject(ps []db.Project, target string) ([]db.Project, matchStatus) {
 // ── shared ───────────────────────────────────────────────────────────────────
 
 func openProjectStore(dataDirOverride string) (*db.Store, string, error) {
-	dir := dataDirOverride
-	if dir == "" {
-		var err error
-		dir, err = db.DataDir()
-		if err != nil {
-			return nil, "", fmt.Errorf("data directory: %w", err)
-		}
+	dir, err := resolveStoreDataDir(dataDirOverride)
+	if err != nil {
+		return nil, "", err
 	}
 	store, err := db.Open(dir)
 	if err != nil {
 		return nil, "", fmt.Errorf("open database: %w", err)
 	}
 	return store, dir, nil
+}
+
+func openProjectStoreReadOnly(dataDirOverride string) (*db.Store, string, error) {
+	return openStoreReadOnlyOrCreate(dataDirOverride)
+}
+
+func openStoreReadOnlyOrCreate(dataDirOverride string) (*db.Store, string, error) {
+	dir, err := resolveStoreDataDir(dataDirOverride)
+	if err != nil {
+		return nil, "", err
+	}
+	store, err := db.OpenReadOnly(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return openProjectStore(dataDirOverride)
+		}
+		return nil, "", fmt.Errorf("open database read-only: %w", err)
+	}
+	return store, dir, nil
+}
+
+func resolveStoreDataDir(dataDirOverride string) (string, error) {
+	dir := dataDirOverride
+	if dir == "" {
+		var err error
+		dir, err = db.DataDir()
+		if err != nil {
+			return "", fmt.Errorf("data directory: %w", err)
+		}
+	}
+	return dir, nil
 }

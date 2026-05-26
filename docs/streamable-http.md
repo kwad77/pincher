@@ -37,7 +37,7 @@ When mounted, every tool response includes `streamable_http` in `_meta.capabilit
 ```json
 {
   "_meta": {
-    "capabilities": ["schema_v34", "operator_tools_on_mcp", "streamable_http", ...]
+    "capabilities": ["schema_v35", "operator_tools_on_mcp", "streamable_http", ...]
   }
 }
 ```

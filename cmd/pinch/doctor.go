@@ -71,7 +71,7 @@ func runDoctorCLI(args []string) {
 		return
 	}
 
-	store, err := db.Open(dir)
+	store, _, err := openStoreReadOnlyOrCreate(dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pincher: failed to open database: %v\n", err)
 		os.Exit(1)
@@ -97,16 +97,16 @@ func runDoctorCLI(args []string) {
 // Field names are stable across releases — dashboards and CI scripts
 // can rely on them.
 type DoctorReport struct {
-	GeneratedAt          string                  `json:"generated_at"`
-	BinaryVersion        string                  `json:"binary_version"`
-	SchemaVersion        int                     `json:"schema_version"`
-	BinarySupportsSchema bool                    `json:"binary_supports_schema"`
-	DBSizeBytes          int64                   `json:"db_size_bytes"`
-	WALSizeBytes         int64                   `json:"wal_size_bytes"`
-	Projects             []DoctorProjectSummary  `json:"projects"`
-	ExtractionFailures   []DoctorFailureRow      `json:"extraction_failures"`
-	SlowQueries          []DoctorSlowQueryRow    `json:"slow_queries"`
-	LookbackHours        int                     `json:"lookback_hours"`
+	GeneratedAt          string                 `json:"generated_at"`
+	BinaryVersion        string                 `json:"binary_version"`
+	SchemaVersion        int                    `json:"schema_version"`
+	BinarySupportsSchema bool                   `json:"binary_supports_schema"`
+	DBSizeBytes          int64                  `json:"db_size_bytes"`
+	WALSizeBytes         int64                  `json:"wal_size_bytes"`
+	Projects             []DoctorProjectSummary `json:"projects"`
+	ExtractionFailures   []DoctorFailureRow     `json:"extraction_failures"`
+	SlowQueries          []DoctorSlowQueryRow   `json:"slow_queries"`
+	LookbackHours        int                    `json:"lookback_hours"`
 	// Advisories are human-readable health warnings (#732). Always
 	// present — empty slice when healthy — so JSON consumers can
 	// iterate without a null check. Mirrors the MCP doctor tool's
@@ -690,7 +690,7 @@ func fts5FragmentationAdvisory(rows []db.FTS5CorpusFragmentation) string {
 //
 // Deliberately duplicated per CLAUDE.md bounded-duplication convention.
 func walBloatAdvisory(dbSizeBytes, walSizeBytes int64) string {
-	const absThreshold = 512 << 20 // 512 MiB
+	const absThreshold = 512 << 20    // 512 MiB
 	const minDBForPercent = 100 << 20 // 100 MiB
 	percentBloat := dbSizeBytes >= minDBForPercent && walSizeBytes*10 > dbSizeBytes
 	if walSizeBytes < absThreshold && !percentBloat {
@@ -1196,4 +1196,3 @@ func matchedProjectIDsForFilter(ps []db.Project, filter string) map[string]struc
 	}
 	return hits
 }
-
