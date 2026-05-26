@@ -38,7 +38,7 @@ jobs:
             test-flags: -timeout 240s
           - label: windows-latest / cli
             os: windows-latest
-            packages: ./cmd/benchcmp ./cmd/closurebench ./cmd/pinch ./cmd/tracelatencybench ./cmd/workflow-lint
+            packages: ./cmd/pinch ./cmd/benchcmp ./cmd/closurebench ./cmd/tracelatencybench ./cmd/workflow-lint
             build_pinch: true
             # Windows is the PR wall-clock bottleneck: setup-go cache
             # restore is ~30s, then `go test ./... -p 2` spends ~7m in
@@ -46,13 +46,20 @@ jobs:
             # slow cmd/pinch subprocess suite runs in parallel with the
             # slow SQLite-heavy internal packages on separate runners.
             test-flags: -timeout 600s -p 2
-          - label: windows-latest / data
+          - label: windows-latest / server
             os: windows-latest
-            packages: ./internal/db ./internal/index ./internal/server
+            packages: ./internal/server
             build_pinch: false
-            # Keep the slow DB/index/server suites together so -p 2 can
-            # still overlap two heavyweight packages without fanning out
-            # into one runner per package.
+            # Server dominates the data shard on Windows. Keep it on
+            # its own runner so db/index no longer serialize behind or
+            # in front of the longest package.
+            test-flags: -timeout 600s -p 2
+          - label: windows-latest / index-db
+            os: windows-latest
+            packages: ./internal/index ./internal/db
+            build_pinch: false
+            # index and db are the remaining SQLite-heavy packages; they
+            # can overlap under -p 2 without paying for one runner each.
             test-flags: -timeout 600s -p 2
           - label: windows-latest / core
             os: windows-latest
