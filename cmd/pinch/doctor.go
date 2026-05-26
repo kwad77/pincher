@@ -121,6 +121,7 @@ type DoctorProjectSummary struct {
 	Files                int    `json:"files"`
 	Symbols              int    `json:"symbols"`
 	Edges                int    `json:"edges"`
+	DBBytesEstimate      int64  `json:"db_bytes_estimate"`
 	IndexedAt            string `json:"indexed_at"`
 	SchemaVersionAtIndex *int   `json:"schema_version_at_index,omitempty"`
 	Stale                bool   `json:"stale,omitempty"`
@@ -199,6 +200,7 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 
 	// Projects
 	projects, err := store.ListProjects()
+	projectBytes, _ := store.EstimateProjectBytes()
 	// #1401 / #1404: pre-build the matched-id set so the projects loop
 	// AND the extraction_failures section share one membership predicate.
 	// Tiered resolution (exact id → exact name → substring) mirrors
@@ -222,6 +224,7 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 				Files:                p.FileCount,
 				Symbols:              p.SymCount,
 				Edges:                p.EdgeCount,
+				DBBytesEstimate:      projectBytes[p.ID],
 				IndexedAt:            p.IndexedAt.Format(time.RFC3339),
 				SchemaVersionAtIndex: p.SchemaVersionAtIndex,
 			}
@@ -1005,8 +1008,12 @@ func formatDoctorMarkdown(r *DoctorReport) string {
 			if p.Stale {
 				marker = " [stale]"
 			}
-			fmt.Fprintf(&b, "  %-30s  files=%-6d  symbols=%-8d  edges=%d%s\n",
-				truncMid(p.Name, 30), p.Files, p.Symbols, p.Edges, marker)
+			size := ""
+			if p.DBBytesEstimate > 0 {
+				size = fmt.Sprintf("  db≈%s", humanBytes(p.DBBytesEstimate))
+			}
+			fmt.Fprintf(&b, "  %-30s  files=%-6d  symbols=%-8d  edges=%d%s%s\n",
+				truncMid(p.Name, 30), p.Files, p.Symbols, p.Edges, size, marker)
 		}
 		fmt.Fprintln(&b)
 	} else {

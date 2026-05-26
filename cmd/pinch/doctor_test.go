@@ -279,6 +279,51 @@ func TestDoctorReport_BinaryVersionPopulated(t *testing.T) {
 	}
 }
 
+func TestDoctorReport_ProjectDBBytesEstimateIncludesPendingEdges(t *testing.T) {
+	withNoClaudeCodeDetected(t)
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	projectID := "/tmp/pending-heavy"
+	if err := store.UpsertProject(db.Project{
+		ID:        projectID,
+		Path:      projectID,
+		Name:      "pending-heavy",
+		IndexedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	if err := store.ReplacePendingEdgesForFile(projectID, "caller.go", []db.PendingEdge{{
+		ProjectID:    projectID,
+		FromFile:     "caller.go",
+		Kind:         "CALLS",
+		FromQN:       "pkg.Caller",
+		ToName:       "pkg.Callee",
+		Confidence:   1,
+		ReceiverType: "*Runner",
+	}}); err != nil {
+		t.Fatalf("ReplacePendingEdgesForFile: %v", err)
+	}
+
+	r, err := buildDoctorReport(store, dir, 168, 10, "")
+	if err != nil {
+		t.Fatalf("buildDoctorReport: %v", err)
+	}
+	if len(r.Projects) != 1 {
+		t.Fatalf("Projects len = %d, want 1", len(r.Projects))
+	}
+	if got := r.Projects[0].DBBytesEstimate; got <= 0 {
+		t.Fatalf("DBBytesEstimate = %d, want pending_edges contribution > 0", got)
+	}
+	if md := formatDoctorMarkdown(r); !strings.Contains(md, "db≈") {
+		t.Fatalf("Markdown should include per-project db estimate; got:\n%s", md)
+	}
+}
+
 // TestFormatDoctorMarkdown_BlankBinaryVersionSuppressed pins the
 // graceful-empty branch — a directly-built binary with no -ldflags
 // override would set BinaryVersion="" via the test fixture below;
@@ -693,4 +738,3 @@ func TestMatchedProjectIDsForFilter_Tiered(t *testing.T) {
 		t.Errorf("no-match filter should return empty map, got %v", hitsMiss)
 	}
 }
-

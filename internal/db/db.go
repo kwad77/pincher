@@ -4953,10 +4953,10 @@ func (s *Store) CountRecentExtractionFailuresAcrossProjects(cutoffUnix int64) (i
 
 // EstimateProjectBytes returns a best-effort per-project on-disk byte
 // estimate, keyed by project_id. The estimate sums the LENGTH of every
-// text column in `symbols` and `edges` plus a flat per-row overhead
-// approximating index + b-tree storage, and includes a rough FTS5
-// contribution (~50% of the symbols-text payload, since the FTS5 vtab
-// re-stores qualified_name + signature + docstring tokens).
+// text column in `symbols`, `edges`, and `pending_edges` plus a flat
+// per-row overhead approximating index + b-tree storage, and includes a
+// rough FTS5 contribution (~50% of the symbols-text payload, since the
+// FTS5 vtab re-stores qualified_name + signature + docstring tokens).
 //
 // This is *not* an exact attribution — SQLite page allocation is whole-
 // page granular and pages are shared across projects on multi-project
@@ -5025,7 +5025,36 @@ func (s *Store) EstimateProjectBytes() (map[string]int64, error) {
 		}
 		out[pid] += bytes
 	}
-	return out, rows2.Err()
+	if err := rows2.Err(); err != nil {
+		return nil, err
+	}
+
+	// Pending-edge contribution: persisted resolver candidates are
+	// intentionally durable so incremental re-resolution can repair
+	// edges from hash-skipped files. On resolver-heavy projects this
+	// scratch state can dominate the DB, so include it in the estimate
+	// users consult when deciding what to prune.
+	pendingQ := `SELECT project_id, SUM(
+	    LENGTH(project_id) + LENGTH(from_file) + LENGTH(kind) +
+	    LENGTH(from_qn) + LENGTH(to_name) + LENGTH(receiver_type) +
+	    LENGTH(base_type) + LENGTH(branch)
+	  ) + COUNT(*) * 48 AS bytes
+	  FROM pending_edges
+	  GROUP BY project_id`
+	rows3, err := s.ro.Query(pendingQ)
+	if err != nil {
+		return nil, err
+	}
+	defer rows3.Close()
+	for rows3.Next() {
+		var pid string
+		var bytes int64
+		if err := rows3.Scan(&pid, &bytes); err != nil {
+			return nil, err
+		}
+		out[pid] += bytes
+	}
+	return out, rows3.Err()
 }
 
 // ExtractionFailureCountsByReason returns a map of reason → count for the
