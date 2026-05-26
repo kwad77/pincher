@@ -146,7 +146,7 @@ commit, issue, or artifact URL.
 | Requirement | Evidence | Status |
 |---|---|---|
 | All open v0.98/v0.99 release-scope issues dispositioned | #1716, #1390, #676 | Pending |
-| Hosted Actions enqueue for current release-prep commits | [#1898](https://github.com/kwad77/pincher/issues/1898) | Pending |
+| Hosted Actions setup + validation for current release-prep commits | [#1898](https://github.com/kwad77/pincher/issues/1898) | Pending |
 | Migration guide externally tested by >=2 users | #1390 review comments | Pending |
 | Full CI green on release-prep commit | Actions run URL | Pending |
 | Host conformance green | Actions run URL | Pending |
