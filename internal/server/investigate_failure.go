@@ -73,34 +73,34 @@ var pythonFilePathRE = regexp.MustCompile(`File\s+"([^"]+\.py)"`)
 // `panic`, `runtime`, `goroutine`, etc., and those words would
 // dominate the BM25 scoring otherwise.
 var stopwordFrames = map[string]bool{
-	"panic":       true,
-	"runtime":     true,
-	"goroutine":   true,
-	"Error":       true,
-	"error":       true,
-	"Exception":   true,
-	"exception":   true,
-	"Traceback":   true,
-	"traceback":   true,
-	"at":          true,
-	"in":          true,
-	"line":        true,
-	"File":        true,
-	"file":        true,
-	"main":        true, // too generic; only useful when explicit prefix exists
-	"init":        true,
-	"go":          true,
-	"true":        true,
-	"false":       true,
-	"null":        true,
-	"nil":         true,
-	"None":        true,
-	"undefined":   true,
-	"TypeError":   true,
-	"ValueError":  true,
-	"KeyError":    true,
-	"IndexError":  true,
-	"NameError":   true,
+	"panic":        true,
+	"runtime":      true,
+	"goroutine":    true,
+	"Error":        true,
+	"error":        true,
+	"Exception":    true,
+	"exception":    true,
+	"Traceback":    true,
+	"traceback":    true,
+	"at":           true,
+	"in":           true,
+	"line":         true,
+	"File":         true,
+	"file":         true,
+	"main":         true, // too generic; only useful when explicit prefix exists
+	"init":         true,
+	"go":           true,
+	"true":         true,
+	"false":        true,
+	"null":         true,
+	"nil":          true,
+	"None":         true,
+	"undefined":    true,
+	"TypeError":    true,
+	"ValueError":   true,
+	"KeyError":     true,
+	"IndexError":   true,
+	"NameError":    true,
 	"RuntimeError": true,
 	// #1787: Go runtime panic-message vocabulary. "index out of range
 	// [3] with length 3" / "slice bounds out of range" / "invalid
@@ -143,11 +143,11 @@ var stopwordFrames = map[string]bool{
 	// tokens appear in every frame and are never symbol names. Interior
 	// path segments (org / repo / `internal`) are dropped structurally
 	// by the slash-delimited filter in parseStackFrames.
-	"github": true,
-	"gitlab": true,
+	"github":    true,
+	"gitlab":    true,
 	"bitbucket": true,
-	"golang": true,
-	"gopkg":  true,
+	"golang":    true,
+	"gopkg":     true,
 	// #1880: Go testing package framework vocabulary. Every Go test
 	// failure emits `--- FAIL: TestX`, `--- PASS: TestX`, `=== RUN`,
 	// `FAIL\t<pkg>\t<seconds>s`, `exit status N`. These tokens are
@@ -383,8 +383,8 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 		// all frame searches. We don't sum across frames — that would
 		// over-weight symbols whose name happens to appear in stopword-
 		// adjacent contexts.
-		rawBM25         float64
-		frameMatches    map[string]bool // which frame tokens matched this candidate
+		rawBM25      float64
+		frameMatches map[string]bool // which frame tokens matched this candidate
 	}
 	candidates := map[string]*candidate{}
 
@@ -659,7 +659,13 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 	// ── Step 6: callers union across the top suspects ───────────────────
 	// Each top suspect's depth-2 inbound callers, de-duped by id.
 	callers := []hopRowFailure{}
-	seenCaller := map[string]int{}
+	type callerHitFailure struct {
+		viaSuspect string
+		depth      int
+		viaKind    string
+	}
+	seenCaller := map[string]callerHitFailure{}
+	callerOrder := []string{}
 	for _, sus := range suspects {
 		// #1595: per-iteration cancellation check. Each iteration is a
 		// BFS trace + N GetSymbol calls; bail between suspects on cancel.
@@ -674,23 +680,41 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 			if h.SymbolID == sus.SymbolID {
 				continue
 			}
-			if prev, ok := seenCaller[h.SymbolID]; ok && prev <= h.Depth {
+			if prev, ok := seenCaller[h.SymbolID]; ok && prev.depth <= h.Depth {
 				continue
 			}
-			seenCaller[h.SymbolID] = h.Depth
-			if sym, _ := s.store.GetSymbolScoped(projectID, h.SymbolID); sym != nil {
-				callers = append(callers, hopRowFailure{
-					ViaSuspect:    sus.SymbolID,
-					ID:            sym.ID,
-					Name:          sym.Name,
-					QualifiedName: sym.QualifiedName,
-					Kind:          sym.Kind,
-					FilePath:      sym.FilePath,
-					Depth:         h.Depth,
-					ViaKind:       h.ViaKind,
-				})
+			if _, ok := seenCaller[h.SymbolID]; !ok {
+				callerOrder = append(callerOrder, h.SymbolID)
 			}
+			seenCaller[h.SymbolID] = callerHitFailure{viaSuspect: sus.SymbolID, depth: h.Depth, viaKind: h.ViaKind}
 		}
+	}
+
+	// Batch-load caller metadata after tracing. The previous loop performed
+	// one scoped symbol lookup per unique caller before applying the response
+	// cap; panic traces naming hubs made that extra query fan-out noticeable.
+	callerIDs := make([]string, 0, len(callerOrder))
+	callerIDs = append(callerIDs, callerOrder...)
+	callerSyms, err := s.store.GetSymbolsByIDs(projectID, callerIDs)
+	if err != nil {
+		callerSyms = nil
+	}
+	for _, id := range callerOrder {
+		sym := callerSyms[id]
+		if sym == nil {
+			continue
+		}
+		hit := seenCaller[id]
+		callers = append(callers, hopRowFailure{
+			ViaSuspect:    hit.viaSuspect,
+			ID:            sym.ID,
+			Name:          sym.Name,
+			QualifiedName: sym.QualifiedName,
+			Kind:          sym.Kind,
+			FilePath:      sym.FilePath,
+			Depth:         hit.depth,
+			ViaKind:       hit.viaKind,
+		})
 	}
 
 	// Bound the callers union for transport. A hot suspect — a hub
@@ -740,7 +764,7 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 		if len(frameNames) > 0 {
 			nextSteps = append(nextSteps, map[string]string{
 				"tool": "search", "args": fmt.Sprintf(`{"query":%q}`, frameNames[0]),
-				"why":  "drop kind=callable; widen the search to confirm extraction coverage",
+				"why": "drop kind=callable; widen the search to confirm extraction coverage",
 			})
 		} else if len(frameFiles) > 0 {
 			// Only file paths parsed — search by file basename minus
@@ -753,7 +777,7 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 			if base != "" {
 				nextSteps = append(nextSteps, map[string]string{
 					"tool": "search", "args": fmt.Sprintf(`{"query":%q}`, base),
-					"why":  "trace had file paths but no identifier names; searching by file basename surfaces nearby symbols",
+					"why": "trace had file paths but no identifier names; searching by file basename surfaces nearby symbols",
 				})
 			}
 		}
@@ -773,13 +797,13 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 		if len(suspects) > 1 {
 			nextSteps = append(nextSteps, map[string]string{
 				"tool": "trace", "args": fmt.Sprintf(`{"id":%q,"direction":"out"}`, suspects[0].SymbolID),
-				"why":  "verify what the suspect calls — confirms the suspect's callees match the trace's next-frame names",
+				"why": "verify what the suspect calls — confirms the suspect's callees match the trace's next-frame names",
 			})
 		}
 		if len(callers) > 0 {
 			nextSteps = append(nextSteps, map[string]string{
 				"tool": "context", "args": fmt.Sprintf(`{"id":%q}`, callers[0].ID),
-				"why":  "read a caller's source to see how the suspect was invoked",
+				"why": "read a caller's source to see how the suspect was invoked",
 			})
 		}
 		meta["next_steps"] = nextSteps
@@ -792,10 +816,10 @@ func (s *Server) handleInvestigateFailure(ctx context.Context, req *mcp.CallTool
 		// callers_total is the full pre-truncation union size;
 		// callers_truncated flags that `callers` was capped for
 		// transport (the count survives, the list does not).
-		"callers_total":      callersTotal,
-		"callers_truncated":  callersTruncated,
-		"recent_changes":     recentChanges,
-		"rank":               suspects, // alias for the roadmap's contract; same data
+		"callers_total":     callersTotal,
+		"callers_truncated": callersTruncated,
+		"recent_changes":    recentChanges,
+		"rank":              suspects, // alias for the roadmap's contract; same data
 		"frames_parsed": map[string]any{
 			"names": frameNames,
 			"files": frameFiles,

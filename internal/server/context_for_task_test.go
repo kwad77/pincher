@@ -259,6 +259,75 @@ func TestContextForTask_SeedIDDriven_SkipsSearch(t *testing.T) {
 	}
 }
 
+func TestContextForTask_KeepsClosestCallerAcrossSeeds(t *testing.T) {
+	t.Parallel()
+	srv, store, root := newTestServer(t)
+	srv.sessionRoot = root
+
+	writeGoFile(t, root, "go.mod", "module example.com/contextclosest\n\ngo 1.22\n")
+	writeGoFile(t, root, "lib/lib.go", `package lib
+
+func Leaf() int { return 1 }
+
+func Mid() int { return Leaf() }
+`)
+	writeGoFile(t, root, "upstream/top.go", `package upstream
+
+import "example.com/contextclosest/lib"
+
+func Top() int { return lib.Mid() }
+`)
+
+	idx := index.New(store)
+	res, err := idx.Index(context.Background(), root, false)
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	srv.sessionID = res.ProjectID
+
+	out, err := srv.handleContextForTask(context.Background(), makeReq(map[string]any{
+		"task":      "Leaf Mid",
+		"project":   res.ProjectID,
+		"max_seeds": 10,
+	}))
+	if err != nil {
+		t.Fatalf("handleContextForTask: %v", err)
+	}
+	body := decode(t, out)
+	seeds, _ := body["seeds"].([]any)
+	seedNames := map[string]bool{}
+	for _, s := range seeds {
+		m := s.(map[string]any)
+		seedNames[m["name"].(string)] = true
+	}
+	if !seedNames["Leaf"] || !seedNames["Mid"] {
+		t.Fatalf("expected Leaf and Mid seeds for closest-depth regression; got %v", seedNames)
+	}
+
+	callers, _ := body["callers"].([]any)
+	topDepth1 := 0
+	topDepth2 := 0
+	for _, c := range callers {
+		m := c.(map[string]any)
+		if m["name"] != "Top" {
+			continue
+		}
+		depth, _ := m["depth"].(float64)
+		switch int(depth) {
+		case 1:
+			topDepth1++
+		case 2:
+			topDepth2++
+		}
+	}
+	if topDepth1 != 1 {
+		t.Fatalf("Top depth_1 occurrences = %d, want 1; callers=%v", topDepth1, callers)
+	}
+	if topDepth2 != 0 {
+		t.Fatalf("Top depth_2 occurrences = %d, want 0 after closer seed wins; callers=%v", topDepth2, callers)
+	}
+}
+
 // Negative: missing both task AND seed_id produces a rich-error
 // envelope (failure-as-pedagogy) — not a bare error.
 func TestContextForTask_MissingAnchor_RichError(t *testing.T) {

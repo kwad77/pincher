@@ -293,8 +293,15 @@ func (s *Server) handleContextForTask(ctx context.Context, req *mcp.CallToolRequ
 	// depths only appears once at its min depth. Keyed by (id, direction)
 	// because the same symbol may appear as both caller-of-A and
 	// callee-of-B and that's two distinct hops.
-	seenCaller := map[string]int{}
-	seenCallee := map[string]int{}
+	type traceHit struct {
+		viaSeed string
+		depth   int
+		viaKind string
+	}
+	seenCaller := map[string]traceHit{}
+	seenCallee := map[string]traceHit{}
+	callerOrder := []string{}
+	calleeOrder := []string{}
 
 	for _, seed := range seeds {
 		// #1590: bail between seeds when the caller cancels — each seed
@@ -309,22 +316,13 @@ func (s *Server) handleContextForTask(ctx context.Context, req *mcp.CallToolRequ
 				if h.SymbolID == seed.ID {
 					continue
 				}
-				if prev, ok := seenCallee[h.SymbolID]; ok && prev <= h.Depth {
+				if prev, ok := seenCallee[h.SymbolID]; ok && prev.depth <= h.Depth {
 					continue
 				}
-				seenCallee[h.SymbolID] = h.Depth
-				if sym, _ := s.store.GetSymbolScoped(projectID, h.SymbolID); sym != nil {
-					callees = append(callees, hopRow{
-						ViaSeed:       seed.ID,
-						ID:            sym.ID,
-						Name:          sym.Name,
-						QualifiedName: sym.QualifiedName,
-						Kind:          sym.Kind,
-						FilePath:      sym.FilePath,
-						Depth:         h.Depth,
-						ViaKind:       h.ViaKind,
-					})
+				if _, ok := seenCallee[h.SymbolID]; !ok {
+					calleeOrder = append(calleeOrder, h.SymbolID)
 				}
+				seenCallee[h.SymbolID] = traceHit{viaSeed: seed.ID, depth: h.Depth, viaKind: h.ViaKind}
 			}
 		}
 		// Inbound = who calls the seed (callers).
@@ -334,24 +332,71 @@ func (s *Server) handleContextForTask(ctx context.Context, req *mcp.CallToolRequ
 				if h.SymbolID == seed.ID {
 					continue
 				}
-				if prev, ok := seenCaller[h.SymbolID]; ok && prev <= h.Depth {
+				if prev, ok := seenCaller[h.SymbolID]; ok && prev.depth <= h.Depth {
 					continue
 				}
-				seenCaller[h.SymbolID] = h.Depth
-				if sym, _ := s.store.GetSymbolScoped(projectID, h.SymbolID); sym != nil {
-					callers = append(callers, hopRow{
-						ViaSeed:       seed.ID,
-						ID:            sym.ID,
-						Name:          sym.Name,
-						QualifiedName: sym.QualifiedName,
-						Kind:          sym.Kind,
-						FilePath:      sym.FilePath,
-						Depth:         h.Depth,
-						ViaKind:       h.ViaKind,
-					})
+				if _, ok := seenCaller[h.SymbolID]; !ok {
+					callerOrder = append(callerOrder, h.SymbolID)
 				}
+				seenCaller[h.SymbolID] = traceHit{viaSeed: seed.ID, depth: h.Depth, viaKind: h.ViaKind}
 			}
 		}
+	}
+
+	// Batch-load traced hop metadata. The previous implementation did one
+	// GetSymbolScoped per hop after each trace; hotspot seeds can produce
+	// hundreds of unique hops before the transport cap is applied.
+	hopIDs := make([]string, 0, len(seenCaller)+len(seenCallee))
+	seenHopID := map[string]bool{}
+	for _, id := range callerOrder {
+		if !seenHopID[id] {
+			seenHopID[id] = true
+			hopIDs = append(hopIDs, id)
+		}
+	}
+	for _, id := range calleeOrder {
+		if !seenHopID[id] {
+			seenHopID[id] = true
+			hopIDs = append(hopIDs, id)
+		}
+	}
+	hopSyms, err := s.store.GetSymbolsByIDs(projectID, hopIDs)
+	if err != nil {
+		hopSyms = nil
+	}
+	for _, id := range calleeOrder {
+		sym := hopSyms[id]
+		if sym == nil {
+			continue
+		}
+		hit := seenCallee[id]
+		callees = append(callees, hopRow{
+			ViaSeed:       hit.viaSeed,
+			ID:            sym.ID,
+			Name:          sym.Name,
+			QualifiedName: sym.QualifiedName,
+			Kind:          sym.Kind,
+			FilePath:      sym.FilePath,
+			Depth:         hit.depth,
+			ViaKind:       hit.viaKind,
+		})
+	}
+	for _, id := range callerOrder {
+		sym := hopSyms[id]
+		if sym == nil {
+			continue
+		}
+		hit := seenCaller[id]
+		callers = append(callers, hopRow{
+			ViaSeed:       hit.viaSeed,
+			ID:            sym.ID,
+			Name:          sym.Name,
+			QualifiedName: sym.QualifiedName,
+			Kind:          sym.Kind,
+			FilePath:      sym.FilePath,
+			Depth:         hit.depth,
+			ViaKind:       hit.viaKind,
+		})
 	}
 
 	// Bound the caller/callee unions for transport. A hotspot seed —
