@@ -110,8 +110,8 @@ func TestPlanChange_LooksLikeFilePath_PositiveAndControl(t *testing.T) {
 		"src/main.py",
 		"server.go",
 		"foo/bar/baz.ts",
-		"plain/dir/no_ext",       // contains slash → path
-		`win\style\path.go`,       // backslash counts
+		"plain/dir/no_ext",  // contains slash → path
+		`win\style\path.go`, // backslash counts
 		"README.md",
 		"db.sql",
 	}
@@ -412,6 +412,75 @@ func TestPlanChange_DepthPartitioning_AndCrossPackage(t *testing.T) {
 	cp, _ := br["cross_package"].([]any)
 	if len(cp) == 0 {
 		t.Errorf("cross_package list empty; expected ProcessOrder to surface")
+	}
+}
+
+// TestPlanChange_KeepsClosestCallerAcrossAffectedSymbols is a regression
+// guard for a file-target edge case: the same caller can be reached through
+// multiple affected symbols at different depths. The handler should keep the
+// closest depth and emit the caller once, not leave a stale depth_2 row behind
+// after a later depth_1 path is found.
+func TestPlanChange_KeepsClosestCallerAcrossAffectedSymbols(t *testing.T) {
+	t.Parallel()
+	srv, store, root := newTestServer(t)
+	srv.sessionRoot = root
+
+	writeGoFile(t, root, "go.mod", "module example.com/closest\n\ngo 1.22\n")
+	writeGoFile(t, root, "lib/lib.go", `package lib
+
+func Leaf() int { return 1 }
+
+func Mid() int { return Leaf() }
+`)
+	writeGoFile(t, root, "upstream/top.go", `package upstream
+
+import "example.com/closest/lib"
+
+func Top() int { return lib.Mid() }
+`)
+
+	idx := index.New(store)
+	res, err := idx.Index(context.Background(), root, false)
+	if err != nil {
+		t.Fatalf("index: %v", err)
+	}
+	srv.sessionID = res.ProjectID
+
+	out, err := srv.handlePlanChange(context.Background(), makeReq(map[string]any{
+		"target":  "lib/lib.go",
+		"project": res.ProjectID,
+		"depth":   2,
+	}))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	body := decode(t, out)
+	br := body["blast_radius"].(map[string]any)
+	d1, _ := br["depth_1_callers"].([]any)
+	d2, _ := br["depth_2_callers"].([]any)
+
+	topDepth1 := 0
+	for _, c := range d1 {
+		m := c.(map[string]any)
+		if m["name"] == "Top" {
+			topDepth1++
+			if depth, _ := m["depth"].(float64); int(depth) != 1 {
+				t.Errorf("Top depth_1 row has depth=%v, want 1", depth)
+			}
+		}
+	}
+	topDepth2 := 0
+	for _, c := range d2 {
+		m := c.(map[string]any)
+		if m["name"] == "Top" {
+			topDepth2++
+		}
+	}
+	if topDepth1 != 1 {
+		t.Fatalf("Top depth_1 occurrences = %d, want 1; depth_1=%v depth_2=%v", topDepth1, d1, d2)
+	}
+	if topDepth2 != 0 {
+		t.Fatalf("Top depth_2 occurrences = %d, want 0 after closer path wins; depth_2=%v", topDepth2, d2)
 	}
 }
 

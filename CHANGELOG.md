@@ -12,6 +12,7 @@ minors.
 ### Changed
 - Cache the cmd/pinch integration-test binary per test process to reduce repeated CI build work.
 - Route inspection-only CLI commands through a read-only database open and add covering edge traversal indexes so busy indexers block fewer project/status and pinchQL reads.
+- Batch-load `plan_change` caller metadata after inbound tracing so file-shaped targets avoid one symbol lookup per traced hop.
 - **PR CI runtime trimmed.** Superseded pull-request workflow runs now cancel automatically, and the expensive advisory race detector no longer runs on every PR; it still runs on `master` pushes and manual CI dispatches.
 - Split the Windows data CI shard so server tests run in parallel with index and database tests.
 - Shard Windows CI tests so pull requests stop waiting on one serial Windows package queue.
@@ -19,6 +20,7 @@ minors.
 
 ### Fixed
 - Keep edge cleanup and user-facing edge reads project-scoped when symbol IDs collide across indexed projects; a file reindex can no longer delete another project's matching endpoint edge.
+- Keep `plan_change` callers at their closest traced depth when multiple affected symbols reach the same caller, avoiding duplicate depth_1/depth_2 rows.
 - **Go function-value binding regression guard (#1877).** Added an end-to-end test for top-level package var aliases like `var processExecutablePath = platformProcessExecutablePath`, ensuring the binding-pass CALLS edge keeps platform-dispatch implementations out of high-confidence `dead_code` / `audit_unused` false positives.
 - **Supervised MCP provider/action split (#371).** `pincher supervised` can now keep the long-lived stdio provider stable while delegating tool actions to a separate inner binary, and the subprocess integration tests isolate their data dirs so local dogfood databases cannot lock CI-style test runs.
 - **Init target detection tests are hermetic inside Codex.** Tests that override `HOME` now also neutralize `CODEX_HOME`, so `go test ./...` passes when the repository is exercised from a Codex-managed shell instead of inheriting the real host's global Codex config directory.

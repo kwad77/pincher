@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/kwad77/pincher/internal/db"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -54,9 +55,9 @@ type blastRow struct {
 // adrMatch is one ADR record surfaced because its key or value
 // mentions a keyword from the target's package or directory.
 type adrMatch struct {
-	Key     string `json:"key"`
-	Value   string `json:"value"`
-	Why     string `json:"why"`
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	Why   string `json:"why"`
 }
 
 // targetSummary describes the resolved target — either a single
@@ -267,10 +268,10 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 				"why": "verify the right project is scoped"},
 		}
 		data := map[string]any{
-			"target":         resolved,
-			"blast_radius":   emptyBlastRadius(),
-			"related_adrs":   []adrMatch{},
-			"_meta":          meta,
+			"target":       resolved,
+			"blast_radius": emptyBlastRadius(),
+			"related_adrs": []adrMatch{},
+			"_meta":        meta,
 		}
 		return s.jsonResultWithMeta(data, start, tool, args, 0), nil
 	}
@@ -278,9 +279,11 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 	// ── Step 2: trace inbound callers per affected symbol ───────────────
 	// Each call is depth-bounded; we de-dupe across affected symbols by
 	// caller id, keeping the MIN depth across paths (closest impact).
-	depth1 := []blastRow{}
-	depth2plus := []blastRow{}
-	seen := map[string]int{} // caller id → recorded depth
+	type callerHit struct {
+		depth   int
+		viaKind string
+	}
+	seen := map[string]callerHit{} // caller id -> closest recorded hit
 
 	targetPackage := packageOfFile(resolved.File)
 
@@ -297,34 +300,51 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 			if h.SymbolID == sym.ID {
 				continue
 			}
-			// De-dupe — if we've already recorded this caller at a
-			// closer or equal depth, skip.
-			if prev, ok := seen[h.SymbolID]; ok && prev <= h.Depth {
+			// De-dupe — keep the closest path across all affected symbols.
+			if prev, ok := seen[h.SymbolID]; ok && prev.depth <= h.Depth {
 				continue
 			}
-			seen[h.SymbolID] = h.Depth
-			callerSym, _ := s.store.GetSymbolScoped(projectID, h.SymbolID)
-			if callerSym == nil {
-				continue
-			}
-			callerPkg := packageOfFile(callerSym.FilePath)
-			row := blastRow{
-				ID:            callerSym.ID,
-				Name:          callerSym.Name,
-				QualifiedName: callerSym.QualifiedName,
-				Kind:          callerSym.Kind,
-				FilePath:      callerSym.FilePath,
-				StartLine:     callerSym.StartLine,
-				Depth:         h.Depth,
-				ViaKind:       h.ViaKind,
-				IsTest:        isTestFile(callerSym.FilePath),
-				CrossPackage:  callerPkg != targetPackage && targetPackage != "" && callerPkg != "",
-			}
-			if h.Depth == 1 {
-				depth1 = append(depth1, row)
-			} else {
-				depth2plus = append(depth2plus, row)
-			}
+			seen[h.SymbolID] = callerHit{depth: h.Depth, viaKind: h.ViaKind}
+		}
+	}
+
+	// Batch-load caller metadata after tracing. The old path did one
+	// GetSymbolScoped per hop; a file target can trace 50 affected symbols,
+	// so this collapses the hot-path metadata load into one SQL round trip.
+	callerIDs := make([]string, 0, len(seen))
+	for id := range seen {
+		callerIDs = append(callerIDs, id)
+	}
+	sort.Strings(callerIDs)
+	callerSyms, err := s.store.GetSymbolsByIDs(projectID, callerIDs)
+	if err != nil {
+		callerSyms = map[string]*db.Symbol{}
+	}
+	depth1 := []blastRow{}
+	depth2plus := []blastRow{}
+	for _, id := range callerIDs {
+		callerSym := callerSyms[id]
+		if callerSym == nil {
+			continue
+		}
+		hit := seen[id]
+		callerPkg := packageOfFile(callerSym.FilePath)
+		row := blastRow{
+			ID:            callerSym.ID,
+			Name:          callerSym.Name,
+			QualifiedName: callerSym.QualifiedName,
+			Kind:          callerSym.Kind,
+			FilePath:      callerSym.FilePath,
+			StartLine:     callerSym.StartLine,
+			Depth:         hit.depth,
+			ViaKind:       hit.viaKind,
+			IsTest:        isTestFile(callerSym.FilePath),
+			CrossPackage:  callerPkg != targetPackage && targetPackage != "" && callerPkg != "",
+		}
+		if hit.depth == 1 {
+			depth1 = append(depth1, row)
+		} else {
+			depth2plus = append(depth2plus, row)
 		}
 	}
 
@@ -458,13 +478,13 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 	var warnings []map[string]any
 	if depth1Total > highBlastThreshold {
 		warnings = append(warnings, map[string]any{
-			"code":                   "blast_radius_high",
-			"severity":               "warning",
-			"message":                fmt.Sprintf("depth-1 caller count is %d (threshold %d) — consider a staged refactor or interface-shim before the edit", depth1Total, highBlastThreshold),
-			"depth_1_caller_count":   depth1Total,
-			"threshold":              highBlastThreshold,
-			"cross_package_callers":  crossPkgTotal,
-			"suggestion":             "consider staged refactor",
+			"code":                  "blast_radius_high",
+			"severity":              "warning",
+			"message":               fmt.Sprintf("depth-1 caller count is %d (threshold %d) — consider a staged refactor or interface-shim before the edit", depth1Total, highBlastThreshold),
+			"depth_1_caller_count":  depth1Total,
+			"threshold":             highBlastThreshold,
+			"cross_package_callers": crossPkgTotal,
+			"suggestion":            "consider staged refactor",
 		})
 	}
 	if len(warnings) > 0 {
