@@ -18,8 +18,8 @@ from maintainer dogfood or the hosted rehearsal.
 ## Evidence Already Green
 
 The v0.98-prep hardening commit,
-[`e4df914`](https://github.com/kwad77/pincher/commit/e4df914), has these
-green hosted checks:
+[`e4df914`](https://github.com/kwad77/pincher/commit/e4df914), had these
+green hosted checks when the review packet first landed:
 
 | Gate | Run | Result |
 |---|---|---|
@@ -28,6 +28,19 @@ green hosted checks:
 | govulncheck | [26446353750](https://github.com/kwad77/pincher/actions/runs/26446353750) | Green |
 | Pages | [26446353207](https://github.com/kwad77/pincher/actions/runs/26446353207) | Green |
 | Migration rehearsal | [26446357417](https://github.com/kwad77/pincher/actions/runs/26446357417) | Green |
+
+Current release-prep descendant
+[`731329f`](https://github.com/kwad77/pincher/commit/731329f) also has green
+hosted validation for the same gate: CI
+[`26450244827`](https://github.com/kwad77/pincher/actions/runs/26450244827),
+Host conformance
+[`26450244846`](https://github.com/kwad77/pincher/actions/runs/26450244846),
+govulncheck
+[`26450244955`](https://github.com/kwad77/pincher/actions/runs/26450244955),
+Pages
+[`26450243449`](https://github.com/kwad77/pincher/actions/runs/26450243449),
+and Migration rehearsal
+[`26450781480`](https://github.com/kwad77/pincher/actions/runs/26450781480).
 
 ## Review Materials
 
@@ -55,9 +68,9 @@ output.
 | External review packet has copy/paste-safe backup and probe commands | `docs/migration/external-review-packet.md` | Green |
 | At least one additional external reviewer report linked | #1716 / #1390 comment URL | Pending |
 | All reviewer findings dispositioned | Issue comments / follow-up commits | Pending |
-| Full CI green on the final v0.98 release-prep commit | Actions run URL | Pending hosted validation |
-| Host conformance green on the final v0.98 release-prep commit | Actions run URL | Pending hosted validation |
-| govulncheck green on the final v0.98 release-prep commit | Actions run URL | Pending hosted validation |
+| Full CI green on the final v0.98 release-prep commit | [`26450244827`](https://github.com/kwad77/pincher/actions/runs/26450244827) on [`731329f`](https://github.com/kwad77/pincher/commit/731329f) | Green |
+| Host conformance green on the final v0.98 release-prep commit | [`26450244846`](https://github.com/kwad77/pincher/actions/runs/26450244846) on [`731329f`](https://github.com/kwad77/pincher/commit/731329f) | Green |
+| govulncheck green on the final v0.98 release-prep commit | [`26450244955`](https://github.com/kwad77/pincher/actions/runs/26450244955) on [`731329f`](https://github.com/kwad77/pincher/commit/731329f) | Green |
 
 ## Handoff To v0.99
 
