@@ -126,13 +126,16 @@ jobs:
         run: |
           mkdir -p covdata
           go test ${{ matrix.packages }} ${{ matrix.test-flags }} -coverprofile=cover.out
+          go tool cover -func=cover.out | awk '/^total/ { gsub("%", "", $3); print $3 }' > coverage-total.txt
 
       - name: Upload coverage profile
         if: matrix.coverage == true
         uses: actions/upload-artifact@v4
         with:
           name: coverage-ubuntu
-          path: cover.out
+          path: |
+            cover.out
+            coverage-total.txt
           retention-days: 7
 
       - name: Build
@@ -144,18 +147,17 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
       - name: Download coverage profile
         uses: actions/download-artifact@v4
         with:
           name: coverage-ubuntu
 
+      # The Ubuntu test shard writes coverage-total.txt while Go is
+      # already installed and the checkout is present. This job keeps
+      # the branch-protection-visible "Coverage" check name without
+      # paying for a second checkout + setup-go cycle just to run
+      # `go tool cover` over an already-produced profile.
+      #
       # Coverage gate progression: 83% (v0.5.0 dip) → 84% (v0.6.0 #200,
       # #215, #216, #218 — subprocess-coverage tests for the runXxxCLI
       # dispatch paths) → 85% (v0.7.0 #221 — split downloadAndSwap into
@@ -172,7 +174,7 @@ jobs:
       # those branches via runtime.GOOS guards.
       - name: Check coverage threshold (85%)
         run: |
-          TOTAL=$(go tool cover -func=cover.out | grep "^total" | awk '{print $3}' | tr -d '%')
+          TOTAL=$(tr -d '[:space:]' < coverage-total.txt)
           echo "Total coverage: ${TOTAL}%"
           awk -v t="$TOTAL" 'BEGIN { if (t+0 < 85) { print "Coverage " t "% is below 85% threshold"; exit 1 } }'
 

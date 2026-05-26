@@ -493,6 +493,70 @@ func TestProjectCLI_PruneDead_NoCandidates(t *testing.T) {
 	}
 }
 
+func TestProjectCLI_PruneDead_NoCandidatesText(t *testing.T) {
+	exe := buildPincherBinary(t)
+	dataDir := t.TempDir()
+
+	cmd := exec.Command(exe, "project", "prune-dead", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prune-dead with no candidates should succeed: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "No dead-path projects to prune") {
+		t.Errorf("expected no-candidates text, got: %s", out)
+	}
+}
+
+func TestProjectCLI_PruneDead_ConfirmRejects(t *testing.T) {
+	exe := buildPincherBinary(t)
+	dataDir := t.TempDir()
+	deadPath := filepath.Join(t.TempDir(), "missing")
+	deadID := seedProject(t, dataDir, "dead-proj", deadPath)
+
+	cmd := exec.Command(exe, "project", "prune-dead", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
+	cmd.Stdin = strings.NewReader("n\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prune-dead reject should exit cleanly: %v\n%s", err, out)
+	}
+	got := string(out)
+	if !strings.Contains(got, "eligible for prune") || !strings.Contains(got, "Aborted") {
+		t.Errorf("expected prompt and abort text, got: %s", out)
+	}
+
+	store, _ := db.Open(dataDir)
+	defer store.Close()
+	if p, _ := store.GetProject(deadID); p == nil {
+		t.Errorf("dead project was removed despite rejected confirmation")
+	}
+}
+
+func TestProjectCLI_PruneDead_ConfirmAccepts(t *testing.T) {
+	exe := buildPincherBinary(t)
+	dataDir := t.TempDir()
+	deadPath := filepath.Join(t.TempDir(), "missing")
+	deadID := seedProject(t, dataDir, "dead-proj", deadPath)
+
+	cmd := exec.Command(exe, "project", "prune-dead", "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
+	cmd.Stdin = strings.NewReader("y\n")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("prune-dead accept should exit cleanly: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "Removed 1 dead-path project") {
+		t.Errorf("expected removal text, got: %s", out)
+	}
+
+	store, _ := db.Open(dataDir)
+	defer store.Close()
+	if p, _ := store.GetProject(deadID); p != nil {
+		t.Errorf("dead project still exists after accepted prune-dead")
+	}
+}
+
 // ── vacuum ───────────────────────────────────────────────────────────────────
 
 func TestVacuumCLI_EmitsJSONReceipt(t *testing.T) {
