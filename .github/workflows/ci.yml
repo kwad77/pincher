@@ -27,7 +27,12 @@ jobs:
             # cmd/pinch crosses 120s on the GHA runner once the
             # symbols-table rebuild migration runs N times across the
             # subprocess-coverage tests. Local runs are ~75s.
-            test-flags: -timeout 240s
+            #
+            # Cap per-package test parallelism at 4. internal/server is
+            # SQLite-heavy and regresses under the default high
+            # parallelism: local full-suite wall time dropped from ~75s to
+            # ~49s with this cap while keeping package-level concurrency.
+            test-flags: -timeout 240s -parallel 4
           - label: macos-latest
             os: macos-latest
             packages: ./...
@@ -37,7 +42,10 @@ jobs:
             # crossed the 120s budget on the macos-latest runner once
             # the symbols-table rebuild migration landed. Local runs
             # are ~75s; the slower runner needs the headroom.
-            test-flags: -timeout 240s
+            #
+            # Match Ubuntu's per-package parallel cap to avoid
+            # SQLite-heavy internal/server contention on shared runners.
+            test-flags: -timeout 240s -parallel 4
           - label: windows-latest / cli
             os: windows-latest
             packages: ./cmd/pinch ./cmd/benchcmp ./cmd/closurebench ./cmd/tracelatencybench ./cmd/workflow-lint
@@ -57,7 +65,10 @@ jobs:
             # Server dominates the data shard on Windows. Keep it on
             # its own runner so db/index no longer serialize behind or
             # in front of the longest package.
-            test-flags: -timeout 600s -p 2
+            # Cap per-package test parallelism for the same reason as
+            # Linux/macOS: this package gets slower when too many
+            # SQLite-backed tests run at once.
+            test-flags: -timeout 600s -p 2 -parallel 4
           - label: windows-latest / index-db
             os: windows-latest
             packages: ./internal/index ./internal/db

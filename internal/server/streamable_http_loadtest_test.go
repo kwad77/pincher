@@ -92,7 +92,7 @@ func runStreamableLoadtest(t *testing.T, sessions, callsPer int) {
 	// session primes lazily-initialized server state (the sync.Once
 	// handler, reader-pool connections) that would otherwise look like a
 	// "leak" against a pre-warmup baseline.
-	warmupSession(t, endpoint)
+	warmupSession(t, endpoint, projectID)
 	settleGoroutines()
 	baseline := runtime.NumGoroutine()
 
@@ -245,7 +245,7 @@ func intToLetters(n int) string {
 // warmupSession opens and closes one session so lazily-initialized server
 // state (the sync.Once streamable handler, reader-pool connections) is
 // primed before the goroutine baseline is captured.
-func warmupSession(t *testing.T, endpoint string) {
+func warmupSession(t *testing.T, endpoint, projectID string) {
 	t.Helper()
 	ctx := context.Background()
 	transport := &mcp.StreamableClientTransport{Endpoint: endpoint}
@@ -254,7 +254,7 @@ func warmupSession(t *testing.T, endpoint string) {
 	if err != nil {
 		t.Fatalf("warmup connect: %v", err)
 	}
-	if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "health", Arguments: map[string]any{}}); err != nil {
+	if _, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "health", Arguments: map[string]any{"project": projectID}}); err != nil {
 		t.Fatalf("warmup call: %v", err)
 	}
 	if err := session.Close(); err != nil {
