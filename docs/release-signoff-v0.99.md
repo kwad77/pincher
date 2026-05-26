@@ -4,6 +4,9 @@ Date opened: 2026-05-26
 
 Scope tracker: [#676](https://github.com/kwad77/pincher/issues/676)
 
+Hosted Actions blocker:
+[#1898](https://github.com/kwad77/pincher/issues/1898)
+
 This is the living sign-off document for the final RC + seven-day hold
 before v1.0. It records the evidence that must be true before tagging
 `v0.99.0-rc.1`, then the evidence required to advance that exact binary
@@ -16,6 +19,10 @@ release approval.
 
 - External migration-guide review evidence from at least two distinct
   users, tracked in [#1390](https://github.com/kwad77/pincher/issues/1390).
+- Hosted Actions recovery for post-`b9e298d` commits, tracked in
+  [#1898](https://github.com/kwad77/pincher/issues/1898). Push-triggered
+  runs are stale at `b9e298d`, and manual workflow dispatch is returning
+  GitHub API HTTP 500 before runs are created.
 - Final perf validation against the current committed baseline and, per
   `.x9` policy, a bench-baseline refresh decision.
 - Cross-platform release/install smoke against the eventual v0.99 tag.
@@ -69,10 +76,18 @@ Additional v0.99 local hardening after the last hosted run:
 | [`495af9b`](https://github.com/kwad77/pincher/commit/495af9b) | CI time | Reuses the Ubuntu test pass for coverage; local full coverage flow passed at 85.0% | Pending — Actions stopped enqueueing new push/dispatch runs after `b9e298d` |
 | [`311e16d`](https://github.com/kwad77/pincher/commit/311e16d) | DB diagnostics | `doctor` DB-size attribution now includes durable `pending_edges`; source-built doctor reported `db_bytes_estimate` on the dogfood DB | Pending hosted validation |
 | [`78bdcda`](https://github.com/kwad77/pincher/commit/78bdcda) | Migration review | Adds `docs/release-signoff-v0.98.md`; fixes stale `pincher` data-dir backup examples to `pincherMCP` | Pending hosted validation |
+| [`7e31d7d`](https://github.com/kwad77/pincher/commit/7e31d7d) | Release tracking | Records local v0.99 hardening status and explicitly separates local evidence from hosted release evidence | Pending hosted validation |
 
 These commits are useful v0.99 hardening, but they are **not** final release
 evidence until hosted CI, Host conformance, govulncheck, and Pages enqueue and
 pass again on a descendant commit.
+
+Manual dispatch rechecks on 2026-05-26 still fail before run creation:
+
+| Workflow | Result | GitHub request id |
+|---|---|---|
+| `ci.yml` | HTTP 500 `Failed to run workflow dispatch` | `E828:3208B5:1BCAE1A:1BF0249:6A157F79` |
+| `time-to-first-success.yml` | HTTP 500 `Failed to run workflow dispatch` | `E818:1BCBFC:19FD4A9:1A215B8:6A157F79` |
 
 The migration rehearsal now exercises the intended path:
 
@@ -91,6 +106,7 @@ commit, issue, or artifact URL.
 | Requirement | Evidence | Status |
 |---|---|---|
 | All open v0.98/v0.99 release-scope issues dispositioned | #1716, #1390, #676 | Pending |
+| Hosted Actions enqueue for current release-prep commits | [#1898](https://github.com/kwad77/pincher/issues/1898) | Pending |
 | Migration guide externally tested by >=2 users | #1390 review comments | Pending |
 | Full CI green on release-prep commit | Actions run URL | Pending |
 | Host conformance green | Actions run URL | Pending |
