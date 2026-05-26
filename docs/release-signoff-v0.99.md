@@ -21,8 +21,8 @@ release approval.
   users, tracked in [#1390](https://github.com/kwad77/pincher/issues/1390).
 - Hosted Actions recovery for post-`b9e298d` commits, tracked in
   [#1898](https://github.com/kwad77/pincher/issues/1898). Push-triggered
-  runs now enqueue again, but `45cbc57` reruns failed during hosted setup
-  before project tests could execute.
+  runs now enqueue again, but current-head hosted runs still fail during
+  setup before project tests can execute.
 - Final perf validation against the current committed baseline and, per
   `.x9` policy, a bench-baseline refresh decision.
 - Cross-platform release/install smoke against the eventual v0.99 tag.
@@ -106,6 +106,15 @@ enqueue recovered, but setup still failed before release validation could run:
 | Host conformance | [26447506597](https://github.com/kwad77/pincher/actions/runs/26447506597) | 2 | Failed during setup downloading `actions/setup-go@v5` from GitHub codeload |
 | govulncheck | [26447506598](https://github.com/kwad77/pincher/actions/runs/26447506598) | 2 | Failed during setup downloading `actions/setup-go@v5` from GitHub codeload |
 | Pages | [26447505809](https://github.com/kwad77/pincher/actions/runs/26447505809) | 1 | Failed during setup downloading `actions/upload-pages-artifact@v3` from GitHub codeload |
+
+The same setup blocker reproduced on the current local-evidence head
+[`66dc3ea`](https://github.com/kwad77/pincher/commit/66dc3ea): Host
+conformance
+[`26448603431`](https://github.com/kwad77/pincher/actions/runs/26448603431)
+and govulncheck
+[`26448603429`](https://github.com/kwad77/pincher/actions/runs/26448603429)
+failed before checkout/build/test while downloading `actions/setup-go@v5` from
+GitHub codeload.
 
 Manual dispatch rechecks on 2026-05-26 still fail before run creation:
 
