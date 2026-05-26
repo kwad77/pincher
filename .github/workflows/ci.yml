@@ -13,31 +13,56 @@ concurrency:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }})
+    name: Test (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - label: ubuntu-latest
+            os: ubuntu-latest
+            packages: ./...
+            build_pinch: true
             # 240s after v0.67 #1231 schema v28 rebuild — same as macos.
             # cmd/pinch crosses 120s on the GHA runner once the
             # symbols-table rebuild migration runs N times across the
             # subprocess-coverage tests. Local runs are ~75s.
             test-flags: -timeout 240s
-          - os: macos-latest
+          - label: macos-latest
+            os: macos-latest
+            packages: ./...
+            build_pinch: true
             # 240s after v0.67 #1231 schema v28 rebuild — cmd/pinch
             # crossed the 120s budget on the macos-latest runner once
             # the symbols-table rebuild migration landed. Local runs
             # are ~75s; the slower runner needs the headroom.
             test-flags: -timeout 240s
-          - os: windows-latest
+          - label: windows-latest / cli
+            os: windows-latest
+            packages: ./cmd/benchcmp ./cmd/closurebench ./cmd/pinch ./cmd/tracelatencybench ./cmd/workflow-lint
+            build_pinch: true
+            # Windows is the PR wall-clock bottleneck: setup-go cache
+            # restore is ~30s, then `go test ./... -p 2` spends ~7m in
+            # serial package work. Shard the Windows packages so the
+            # slow cmd/pinch subprocess suite runs in parallel with the
+            # slow SQLite-heavy internal packages on separate runners.
+            test-flags: -timeout 600s -p 2
+          - label: windows-latest / data
+            os: windows-latest
+            packages: ./internal/db ./internal/index ./internal/server
+            build_pinch: false
+            # Keep the slow DB/index/server suites together so -p 2 can
+            # still overlap two heavyweight packages without fanning out
+            # into one runner per package.
+            test-flags: -timeout 600s -p 2
+          - label: windows-latest / core
+            os: windows-latest
+            packages: ./internal/ast ./internal/cypher ./internal/init ./internal/supervisor ./internal/supervisor/cmd/probe
+            build_pinch: false
             # Windows SQLite I/O is ~10x slower per package. Was -p 1
             # (full serial); trying -p 2 — tests use unique temp dirs
             # so concurrent packages shouldn't contend on SQLite, and
-            # halving the package-level wall time should cut Windows
-            # job from ~7min toward ~4min. Revert to -p 1 if flakes
-            # emerge from WAL-file lock contention or runner memory
-            # pressure.
+            # the non-DB core packages are light enough to share one
+            # shard rather than each paying its own setup-go cost.
             #
             # #770: -timeout is per-package. The process-spawn-heavy
             # packages (cmd/pinch, internal/supervisor/cmd/probe) run
@@ -65,9 +90,10 @@ jobs:
       # — pure duplication, ~10-30s on Windows. If you want stricter
       # vet coverage, pass -vet=all to `go test` instead.
       - name: Test
-        run: go test ./... ${{ matrix.test-flags }}
+        run: go test ${{ matrix.packages }} ${{ matrix.test-flags }}
 
       - name: Build
+        if: matrix.build_pinch
         run: go build ./cmd/pinch/
 
   coverage:
