@@ -184,7 +184,7 @@ commit, issue, or artifact URL.
 | Host conformance green | [`26456742311`](https://github.com/kwad77/pincher/actions/runs/26456742311) on [`d83fce9`](https://github.com/kwad77/pincher/commit/d83fce9) | Green |
 | govulncheck green | [`26456742341`](https://github.com/kwad77/pincher/actions/runs/26456742341) on [`d83fce9`](https://github.com/kwad77/pincher/commit/d83fce9) | Green |
 | Pages deploy green | [`26456741166`](https://github.com/kwad77/pincher/actions/runs/26456741166) on [`d83fce9`](https://github.com/kwad77/pincher/commit/d83fce9) | Green |
-| Migration rehearsal green | [`26450781480`](https://github.com/kwad77/pincher/actions/runs/26450781480) on [`731329f`](https://github.com/kwad77/pincher/commit/731329f) | Green |
+| Migration rehearsal green | [`26457408074`](https://github.com/kwad77/pincher/actions/runs/26457408074) on [`0ed0919`](https://github.com/kwad77/pincher/commit/0ed0919), covering v0.4.1 → current schema v37 | Green |
 | Bench baseline decision recorded | [`26450267561`](https://github.com/kwad77/pincher/actions/runs/26450267561) on [`731329f`](https://github.com/kwad77/pincher/commit/731329f); artifact `bench-baseline-26450267561` | Green |
 | Cross-platform install smoke ready | `install-validation.yml` after tag | Pending tag |
 | Launch artifacts have no stale placeholders | `docs/launch/placeholder-audit.md` | Green |
