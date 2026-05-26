@@ -16,8 +16,8 @@ Useful links:
 - Announcement: `<<blog_url>>`
 - Fresh-clone demo: `<<fresh_clone_demo_url>>`
 - Edit-confidence demo: `<<edit_confidence_demo_url>>`
-- Migration guide: `<<migration_guide_url>>`
-- Issues: `<<issues_url>>`
+- Migration guide: `https://github.com/kwad77/pincher/blob/master/docs/migration/v0.4-to-v1.0.md`
+- Issues: `https://github.com/kwad77/pincher/issues`
 
 What is stable in 1.0:
 
@@ -37,6 +37,6 @@ output attached when possible.
 
 ## Publish-Time Checks
 
-- Replace every `<<...>>` slot.
+- Resolve every publish-time slot listed in `docs/launch/placeholder-audit.md`.
 - Do not paste private channel names into the public repo.
 - Confirm the release link points at `v1.0.0`, not the previous RC.

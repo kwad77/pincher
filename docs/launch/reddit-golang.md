@@ -43,15 +43,16 @@ Links:
 
 - Announcement: `<<blog_url>>`
 - Release: `<<release_url>>`
-- Frozen surface ADR: `<<adr_0002_url>>`
-- Migration guide: `<<migration_guide_url>>`
+- Frozen surface ADR: `https://github.com/kwad77/pincher/blob/master/docs/adr/0002-v1-frozen-surface.md`
+- Migration guide: `https://github.com/kwad77/pincher/blob/master/docs/migration/v0.4-to-v1.0.md`
 - Demo: `<<fresh_clone_demo_url>>`
 
-Questions and bug reports are welcome in GitHub issues: `<<issues_url>>`
+Questions and bug reports are welcome in GitHub issues:
+`https://github.com/kwad77/pincher/issues`
 
 ## Publish-Time Checks
 
-- Replace every `<<...>>` slot.
+- Resolve every publish-time slot listed in `docs/launch/placeholder-audit.md`.
 - Keep the technical angle concrete; do not turn it into launch-copy adjectives.
 - Do not include dollar figures or named-product comparisons.
 - Mention deferred plugin/team-index scope if the comments ask about it.

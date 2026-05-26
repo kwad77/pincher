@@ -1,12 +1,12 @@
-# v1.0 landing page rewrite — outline + placeholders
+# v1.0 landing page rewrite — outline + measured-value slots
 
-Scaffolding for [#1537](https://github.com/kwad77/pincher/issues/1537) (FILE-S, v0.97 milestone). The actual landing-page rewrite (`docs/index.html`) is content-fill at v0.97 against the numbers measured by the gates that land between now and then. This doc holds the outline + the placeholders that the v0.97 prep will resolve.
+Scaffolding for [#1537](https://github.com/kwad77/pincher/issues/1537) (FILE-S). The actual landing-page rewrite (`docs/index.html`) is content-fill against the final RC numbers measured by the release gates. This doc holds the outline plus the measured-value slots that the final launch prep resolves.
 
 ## Why scaffold now (8 minors before the rewrite)
 
 Two reasons:
 
-1. **The numbers come from elsewhere.** Every claim in the v1.0 landing page lands here as a `<<placeholder>>` cross-linked to the gate that produces the real number. v0.97 prep is "fill in the numbers" — not "design from scratch" — which keeps the rewrite predictable when v0.97 release pressure arrives.
+1. **The numbers come from elsewhere.** Every claim in the v1.0 landing page lands here as a `<<placeholder>>` cross-linked to the gate that produces the real number. Final RC prep is "fill in the numbers" — not "design from scratch" — which keeps the rewrite predictable when launch pressure arrives.
 2. **Inconsistent claims are the failure mode.** v0.66/v0.67's `docs/index.html` is stale (the v0.79 release-prep audit caught it). Pinning every numeric claim to a methodology link prevents drift.
 
 ## Outline (target order on the landing page)
@@ -65,15 +65,15 @@ License (MIT), repo link, issues link, releases page link.
 
 ## Numeric placeholders (full list)
 
-This is the v0.97 prep checklist. Every `<<placeholder>>` resolves to a number measured by a gate that ships between now and v0.97. The v0.97 release-prep PR walks this list top-to-bottom.
+This is the final launch-prep checklist. Every `<<placeholder>>` resolves to a number measured by a release gate. The release-prep PR walks this list top-to-bottom and records the source run next to every published number.
 
 | Placeholder | Source | Released by |
 |---|---|---|
-| `<<bytes_ratio_baseline>>` | FILE-B comparator JSON | v0.91 phase-2 promotion |
-| `<<context_avg_bytes>>` | per-tool latency budget + savings methodology | v0.91 |
-| `<<find_pincher_ms>>` / `<<find_pincher_bytes>>` / `<<find_raw_ms>>` / `<<find_raw_bytes>>` | FILE-B | v0.91 |
-| `<<ttfs_ms>>` | FILE-Q time-to-first-success baseline | v0.91 |
-| `<<peak_rss_50k>>` | FILE-I 50k tier dispatch run | v0.90 |
+| `<<bytes_ratio_baseline>>` | FILE-B comparator JSON | final RC gate |
+| `<<context_avg_bytes>>` | per-tool latency budget + savings methodology | final RC gate |
+| `<<find_pincher_ms>>` / `<<find_pincher_bytes>>` / `<<find_raw_ms>>` / `<<find_raw_bytes>>` | FILE-B | final RC gate |
+| `<<ttfs_ms>>` | FILE-Q time-to-first-success baseline | final RC gate |
+| `<<peak_rss_50k>>` | FILE-I resource-pressure dispatch run | final RC gate |
 | `<<supported_languages_count>>` | `docs/reference/languages.md` FILE-N table count | live |
 | `<<frozen_surface_count>>` | ADR-0002 frozen-status row count | v0.84 (live) |
 | `<<host_count>>` | host-conformance corpus directory count | v0.91 |

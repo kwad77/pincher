@@ -16,7 +16,8 @@ the v1.0 release, announcement post, and demo links are public.
    host setup docs, CLI workflows, and migration behavior are documented and
    versioned.
 
-   Frozen surface ADR: `<<adr_0002_url>>`
+   Frozen surface ADR:
+   `https://github.com/kwad77/pincher/blob/master/docs/adr/0002-v1-frozen-surface.md`
 
 3. The basic loop is small:
 
@@ -41,15 +42,15 @@ the v1.0 release, announcement post, and demo links are public.
 
 7. Install paths and host walkthroughs are in the README:
 
-   `<<readme_url>>`
+   `https://github.com/kwad77/pincher#readme`
 
 8. Issues and feedback:
 
-   `<<issues_url>>`
+   `https://github.com/kwad77/pincher/issues`
 
 ## Publish-Time Checks
 
-- Replace every `<<...>>` slot.
+- Resolve every publish-time slot listed in `docs/launch/placeholder-audit.md`.
 - Keep each post under the platform character limit after URLs are shortened.
 - Do not add dollar figures or named-product comparisons.
 - Include the demo videos only after they are public.

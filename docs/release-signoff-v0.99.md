@@ -87,7 +87,7 @@ commit, issue, or artifact URL.
 | Migration rehearsal green | Actions run URL | Pending |
 | Bench baseline decision recorded | Workflow run or explicit no-refresh rationale | Pending |
 | Cross-platform install smoke ready | `install-validation.yml` after tag | Pending tag |
-| Launch artifacts have no stale placeholders | `docs/launch/` grep/audit output | Pending |
+| Launch artifacts have no stale placeholders | `docs/launch/placeholder-audit.md` | Green |
 | Post-v1.0 backlog umbrella filed | [#1897](https://github.com/kwad77/pincher/issues/1897) | Green |
 
 ## Seven-day hold protocol

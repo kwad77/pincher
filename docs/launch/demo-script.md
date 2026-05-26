@@ -84,7 +84,7 @@ inspect blast radius, and investigate a failing test.
 - The final cut does not claim the agent is always right; it shows how the
   graph narrows the next read.
 
-## Publish-Time TODO
+## Publish-Time Checks
 
 - Replace the default target repo/query if v0.99 RC output changes.
 - Capture raw transcripts beside the final video files.
