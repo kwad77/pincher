@@ -134,7 +134,7 @@ Aggregate session savings land around **70-90%** on large Go/JS projects, **40-7
 - **[CHANGELOG](CHANGELOG.md)** — release-by-release history. Milestone burndown: <https://github.com/kwad77/pincher/milestones>.
 - **[Migration guide](docs/migration/v0.4-to-v1.0.md)** — v0.4 → v1.0.
 
-Current release: **v0.96** — sign-off correctness drain for the final RC path: interrupted index runs recover cleanly, Markdown inter-doc references and Ansible structural edges persist, every tool has a stable docs anchor, and the v0.96 sign-off doc records the remaining v0.97-v1.0 gates. Latest stable: **v0.90**. v1.0 freezes tool schemas and ships schema attestation + a public launch.
+Current release: **v0.96.1** — sign-off correctness drain for the final RC path plus upgrade-path hardening: interrupted index runs recover cleanly, Markdown inter-doc references and Ansible structural edges persist, every tool has a stable docs anchor, stale read-only CLI opens migrate before reading v36 columns, and install validation uses the current Intel macOS runner label. Latest stable: **v0.90**. v1.0 freezes tool schemas and ships schema attestation + a public launch.
 
 ---
 

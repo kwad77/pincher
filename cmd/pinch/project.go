@@ -566,6 +566,10 @@ func openStoreReadOnlyOrCreate(dataDirOverride string) (*db.Store, string, error
 		}
 		return nil, "", fmt.Errorf("open database read-only: %w", err)
 	}
+	if v := dbSchemaVersion(store); v != db.CurrentSchemaVersion() {
+		store.Close()
+		return openProjectStore(dataDirOverride)
+	}
 	return store, dir, nil
 }
 

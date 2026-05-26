@@ -7,6 +7,12 @@ minors.
 
 ## [Unreleased]
 
+## [0.96.1] — 2026-05-26 — Upgrade-path patch
+
+### Fixed
+- Reopen stale read-only stores writable once so inspection commands apply pending migrations before reading newer columns (#1896). This fixes `pincher stats` failing with `no such column: index_state` when a v0.96 binary is pointed at a v0.95/v35 database before any indexing command has run the v36 migration.
+- Update install-validation's Intel macOS runner label from retired `macos-13` to `macos-15-intel`; the v0.96.0 release-triggered validation exposed this as a permanently queued `direct macos-amd64` cell (#1895).
+
 ## [0.96.0] — 2026-05-26 — Sign-off correctness drain + final polish
 
 ### Fixed

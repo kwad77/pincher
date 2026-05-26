@@ -98,6 +98,63 @@ func TestMatchProject_EmptyTarget(t *testing.T) {
 	}
 }
 
+func TestOpenStoreReadOnlyOrCreate_MigratesStaleSchema(t *testing.T) {
+	if db.CurrentSchemaVersion() < 36 {
+		t.Skip("v36 project index-state migration not present")
+	}
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := store.DB().Exec(`DROP TABLE projects`); err != nil {
+		t.Fatalf("drop projects: %v", err)
+	}
+	if _, err := store.DB().Exec(`
+		CREATE TABLE projects (
+			id TEXT PRIMARY KEY,
+			path TEXT NOT NULL,
+			name TEXT NOT NULL,
+			indexed_at INTEGER,
+			file_count INTEGER DEFAULT 0,
+			sym_count INTEGER DEFAULT 0,
+			edge_count INTEGER DEFAULT 0,
+			schema_version_at_index INTEGER,
+			binary_version TEXT NOT NULL DEFAULT '',
+			current_branch TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+		t.Fatalf("create stale projects: %v", err)
+	}
+	if _, err := store.DB().Exec(`
+		INSERT INTO projects(id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version, current_branch)
+		VALUES('stale', '/tmp/stale', 'stale', 1, 2, 3, 4, 35, '0.95.0', 'master')`); err != nil {
+		t.Fatalf("insert stale project: %v", err)
+	}
+	if _, err := store.DB().Exec(`UPDATE schema_version SET version = 35`); err != nil {
+		t.Fatalf("downgrade schema_version: %v", err)
+	}
+	store.Close()
+
+	reopened, _, err := openStoreReadOnlyOrCreate(dir)
+	if err != nil {
+		t.Fatalf("openStoreReadOnlyOrCreate: %v", err)
+	}
+	defer reopened.Close()
+	if got := dbSchemaVersion(reopened); got != db.CurrentSchemaVersion() {
+		t.Fatalf("schema_version = %d, want %d", got, db.CurrentSchemaVersion())
+	}
+	projects, err := reopened.ListProjects()
+	if err != nil {
+		t.Fatalf("ListProjects after migration: %v", err)
+	}
+	if len(projects) != 1 || projects[0].ID != "stale" {
+		t.Fatalf("projects after migration = %+v, want stale project", projects)
+	}
+	if projects[0].IndexState != "complete" {
+		t.Fatalf("IndexState = %q, want complete default from v36 migration", projects[0].IndexState)
+	}
+}
+
 // ── confirmYesFrom ───────────────────────────────────────────────────────────
 
 func TestConfirmYesFrom(t *testing.T) {
