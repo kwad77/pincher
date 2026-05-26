@@ -26,11 +26,13 @@ pincher stats --json > pincher-stats-before.json
 If your old binary does not support `--json`, paste the human-readable
 `pincher doctor` / `pincher stats` output instead.
 
-Back up the DB before the first run with the new binary:
+Stop the host or MCP session before backing up the DB, then copy the SQLite
+database and any WAL/SHM sidecars before the first run with the new binary:
 
 ```bash
-cp "${XDG_DATA_HOME:-$HOME/.local/share}/pincherMCP/pincher.db" \
-  ~/pincher.db.before-v1-review
+PINCHER_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/pincherMCP"
+mkdir -p ~/pincher-before-v1-review
+cp "$PINCHER_DATA_DIR"/pincher.db* ~/pincher-before-v1-review/
 ```
 
 Use the OS-specific data-dir path from the migration guide if you are
