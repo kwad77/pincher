@@ -49,17 +49,17 @@ for tier in "${TIER_LIST[@]}"; do
   for p in $(seq 1 "${tier}"); do
     proj_dir="${work}/p${p}"
     bash scripts/generate-synthetic-corpus.sh "${PER_PROJECT_FILES}" "${proj_dir}" >/dev/null
-    "${PINCHER_BIN}" --data-dir "${pin_data}" index "${proj_dir}" >/dev/null 2>&1
+    "${PINCHER_BIN}" index "${proj_dir}" --data-dir "${pin_data}" >/dev/null 2>&1
   done
 
-  # Time a single watcher poll cycle by running `pincher list` with
+  # Time a single watcher poll cycle by running `pincher project list` with
   # check-on-disk enabled — that traverses every indexed project,
   # which is what the watcher does per tick. Three runs, take median
   # to filter cold-cache outliers.
   samples=()
   for _ in 1 2 3; do
     t0=$(date +%s%N)
-    "${PINCHER_BIN}" --data-dir "${pin_data}" list --json >/dev/null 2>&1 || true
+    "${PINCHER_BIN}" project list --json --data-dir "${pin_data}" >/dev/null
     t1=$(date +%s%N)
     ms=$(( (t1 - t0) / 1000000 ))
     samples+=("${ms}")
