@@ -129,7 +129,7 @@ Aggregate session savings land around **70-90%** on large Go/JS projects, **40-7
 
 ## Documentation
 
-- 📖 **[Reference](docs/reference/)** — every tool, flag, and endpoint; pinchQL query language; language support; HTTP API; schema history.
+- 📖 **[Reference](docs/reference/)** — every tool, flag, and endpoint; start with the [`search` runbook](docs/reference/tools.md#tool-search), then branch into pinchQL, language support, HTTP API, and schema history.
 - **[Tutorials](docs/tutorials/)** — per-host end-to-end walkthroughs.
 - **[CHANGELOG](CHANGELOG.md)** — release-by-release history. Milestone burndown: <https://github.com/kwad77/pincher/milestones>.
 - **[Migration guide](docs/migration/v0.4-to-v1.0.md)** — v0.4 → v1.0.
