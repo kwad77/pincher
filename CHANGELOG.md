@@ -7,6 +7,8 @@ minors.
 
 ## [Unreleased]
 
+## [0.95.0] — 2026-05-25 — DB contention and probe isolation
+
 ### Changed
 - Keep MCP binary-drift refreshes incremental at the server layer so the indexer can apply its existing invalidatesNothing / language-scoped suppression instead of every reconnect forcing a full project reindex.
 - Treat `--http --no-stdio` as a pure dashboard process by default: it no longer starts the project watcher unless streamable HTTP MCP is enabled, avoiding duplicate background writers beside the real MCP session.
