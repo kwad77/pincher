@@ -10,6 +10,10 @@ on:
     # surfaces by the next dep-update cycle even if no PRs land.
     - cron: '0 9 * * 1'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Permissions: just read code. govulncheck calls out to the OSV
 # database for vulnerability data — no GitHub API access needed.
 permissions:

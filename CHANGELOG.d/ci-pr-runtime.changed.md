@@ -1,0 +1,1 @@
+**PR CI runtime trimmed.** Superseded pull-request workflow runs now cancel automatically, and the expensive advisory race detector no longer runs on every PR; it still runs on `master` pushes and manual CI dispatches.
