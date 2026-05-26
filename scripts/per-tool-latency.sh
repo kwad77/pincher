@@ -47,11 +47,13 @@ work=$(mktemp -d -t pertool-XXXXXX)
 trap 'rm -rf "$work"; kill -TERM $SERVER_PID 2>/dev/null || true' EXIT
 
 # Index the pinned corpus once.
-"${PINCHER_BIN}" --data-dir "${work}/data" index "${CORPUS}" >/dev/null
+"${PINCHER_BIN}" index "${CORPUS}" --data-dir "${work}/data" >/dev/null
 
-# Start HTTP gateway; pick a free port via :0 and read it from the
-# stderr log.
-"${PINCHER_BIN}" --data-dir "${work}/data" --http :0 >"${work}/srv.out" 2>&1 &
+# Start HTTP gateway; pick a free loopback-only port and read it from
+# the stderr log. Binding bare `:0` is intentionally rejected by the
+# default-deny HTTP policy unless auth or an explicit open-bind override
+# is configured.
+"${PINCHER_BIN}" --data-dir "${work}/data" --no-stdio --http 127.0.0.1:0 >"${work}/srv.out" 2>&1 &
 SERVER_PID=$!
 
 # Wait for the bound port. pincher prints `HTTP server listening on
@@ -68,17 +70,51 @@ if [ -z "${addr}" ]; then
   exit 1
 fi
 
+for _ in $(seq 1 30); do
+  if curl -fsSL -m 1 "http://${addr}/v1/health" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.2
+done
+if ! curl -fsSL -m 1 "http://${addr}/v1/health" >/dev/null 2>&1; then
+  echo "::error::HTTP gateway bound ${addr} but did not become ready within 6s" >&2
+  cat "${work}/srv.out" >&2
+  exit 1
+fi
+
 # Tool → invocation body. Bodies are minimal — we want gateway+handler
 # latency, not network or query-complexity contributions.
 declare -A bodies=(
-  [search]='{"query":"Indexer"}'
-  [symbol]='{"id":"internal/db/db.go::db.Open#Function"}'
-  [context]='{"id":"internal/db/db.go::db.Open#Function"}'
-  [schema]='{}'
+  [search]='{"query":"main","project":"go-project"}'
+  [symbol]='{"id":"cmd/cli/main.go::main.main#Function","project":"go-project"}'
+  [context]='{"id":"cmd/cli/main.go::main.main#Function","project":"go-project"}'
+  [schema]='{"project":"go-project"}'
   [list]='{}'
   [stats]='{}'
   [health]='{}'
-  [architecture]='{}'
+  [architecture]='{"project":"go-project"}'
+)
+
+declare -A methods=(
+  [search]=POST
+  [symbol]=POST
+  [context]=POST
+  [schema]=POST
+  [list]=POST
+  [stats]=GET
+  [health]=GET
+  [architecture]=POST
+)
+
+declare -A paths=(
+  [search]="/v1/search"
+  [symbol]="/v1/symbol"
+  [context]="/v1/context"
+  [schema]="/v1/schema"
+  [list]="/v1/list"
+  [stats]="/v1/stats"
+  [health]="/v1/health"
+  [architecture]="/v1/architecture"
 )
 
 results_json="${work}/results.json"
@@ -97,10 +133,15 @@ for tool in "${!bodies[@]}"; do
   for _ in $(seq 1 "${ITERATIONS}"); do
     # curl -w outputs the connect/transfer timing in seconds; convert
     # to ms with awk for integer math against the budget.
-    elapsed_s=$(curl -fsSL -m 5 -o /dev/null -w '%{time_total}' \
-      -H 'Content-Type: application/json' \
-      -d "${bodies[$tool]}" \
-      "http://${addr}/v1/${tool}")
+    if [ "${methods[$tool]}" = "GET" ]; then
+      elapsed_s=$(curl -fsSL -m 5 -o /dev/null -w '%{time_total}' \
+        "http://${addr}${paths[$tool]}")
+    else
+      elapsed_s=$(curl -fsSL -m 5 -o /dev/null -w '%{time_total}' \
+        -H 'Content-Type: application/json' \
+        -d "${bodies[$tool]}" \
+        "http://${addr}${paths[$tool]}")
+    fi
     elapsed_ms=$(awk -v s="${elapsed_s}" 'BEGIN { printf "%d", s * 1000 }')
     samples+=("${elapsed_ms}")
   done
