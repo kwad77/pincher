@@ -39,16 +39,30 @@ Diagnostic report — schema version, index staleness, extraction-failure counts
 ```bash
 pincher doctor                       # Markdown report
 pincher doctor --json                # structured output for CI
-pincher doctor --lookback 24h        # filter slow queries / failures by age
+pincher doctor --data-dir /custom    # inspect a non-default install
+pincher doctor --lookback 24         # filter slow queries / failures by age, in hours
+pincher doctor --top 20              # cap failure / slow-query rows
+pincher doctor --project pincher     # scope project rows and failures by name/id substring
 pincher doctor --fix                 # auto-resolve the safe subset of advisories
 pincher doctor --fix --json          # structured fix-action report for CI
 ```
+
+The JSON report includes database-level `db_size_bytes` / `wal_size_bytes`
+plus a per-project `projects[].db_bytes_estimate`. The per-project estimate is
+best-effort and intended for triage: use the relative ordering to find which
+project owns disk growth before removing stale projects or vacuuming. Human
+output surfaces the same value as `db≈...` in each project row. The estimate
+includes durable resolver caches such as `pending_edges`, so a project with
+heavy cross-file call/read/import candidates is attributed to the project that
+created that storage instead of hiding inside the database total.
 
 **`--fix` safe-action allowlist (#1260 §3 v0.69):**
 
 | Action | Condition | Status if applied |
 |---|---|---|
 | `vacuum-db` | DB has >50 MB reclaimable space (VACUUM run; threshold gates the cost on a clean install) | reports `applied` with byte counts |
+| `prune-stale-failures` | Extraction-failure rows predate the current project index pass | reports removed-row count |
+| `reap-orphan-locks` | Dead/recycled processes left stale project lockfiles | reports reclaimed lock count |
 
 Each action ends up `applied` / `noop` (criterion not met) / `skipped` (precondition like an open WAL reader blocks the fix) / `error` (the fix attempted and failed). **Destructive remediations** — project deletion, force-reindex, prune-stale — stay explicit-action and require the targeted subcommand (`pincher project rm`, `pincher index --force`, `pincher project prune-stale`). Their cost or destructiveness shouldn't be silently absorbed into a generic `--fix`.
 

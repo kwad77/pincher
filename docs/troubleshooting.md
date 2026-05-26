@@ -62,13 +62,19 @@ Rewrites the DB file and truncates the WAL. Heavy operation (file-size proportio
 
 ## "Database is unusually large (multi-GB) but I only indexed a few projects"
 
-**Symptom:** `~/AppData/Roaming/pincherMCP/pincher.db` (Windows) or `~/.pincher/pincher.db` is 5+ GB. `pincher doctor` surfaces the `largeDBAdvisory`.
+**Symptom:** `%APPDATA%\pincherMCP\pincher.db` (Windows),
+`~/Library/Application Support/pincherMCP/pincher.db` (macOS), or
+`${XDG_DATA_HOME:-$HOME/.local/share}/pincherMCP/pincher.db` (Linux) is
+5+ GB. `pincher doctor` surfaces the `largeDBAdvisory`.
 
-**Cause:** stale projects accumulated by older binaries — projects whose on-disk path no longer exists, OR projects indexed by an obsolete schema and untouched for 30+ days.
+**Cause:** stale projects accumulated by older binaries — projects whose on-disk path no longer exists, OR projects indexed by an obsolete schema and untouched for 30+ days. On current binaries, `pincher doctor --json` also reports `projects[].db_bytes_estimate`; use the largest rows to identify which project owns the space. That estimate includes `pending_edges`, the durable resolver cache that preserves cross-file call/read/import candidates for incremental re-indexing, so a large active repo may legitimately own more disk than its final `edges` count suggests.
 
 **Fix:**
 
 ```bash
+# See the biggest project owners first:
+pincher doctor --json
+
 # Remove projects whose on-disk path is gone:
 mcp__pincher__list prune_dead=true
 
@@ -78,6 +84,11 @@ pincher project prune-stale
 # Reclaim disk after pruning (SQLite doesn't shrink the file on row deletion):
 pincher vacuum
 ```
+
+If the largest project is real and active, prefer targeted cleanup over blind
+deletion: run `pincher verify --project <name>` to confirm file drift, then
+`pincher index <path>` to refresh resolver caches before deciding whether the
+project should be removed.
 
 ## "context.callees lists a method that the source clearly doesn't call"
 

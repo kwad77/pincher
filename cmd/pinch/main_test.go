@@ -244,6 +244,27 @@ func TestHelpFlag(t *testing.T) {
 	}
 }
 
+func TestDoctorHelpFlagProjectUsage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI binary build in -short mode")
+	}
+
+	bin := buildPincherBinary(t)
+	cmd := exec.Command(bin, "doctor", "--help")
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pincher doctor --help: %v\n%s", err, out)
+	}
+	got := string(out)
+	if !strings.Contains(got, "-project NAME") {
+		t.Errorf("doctor help should show a useful -project placeholder; got:\n%s", got)
+	}
+	if strings.Contains(got, "-project pincher project rm") {
+		t.Errorf("doctor help leaked Go flag backtick placeholder parsing; got:\n%s", got)
+	}
+}
+
 // TestIndexCLI_Binary_BloatTrap asserts the bloat trap fires when
 // indexing a directory whose absolute parent matches itself (Windows
 // drive root). We can't easily test the actual root from a test, but
