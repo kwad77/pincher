@@ -8930,7 +8930,7 @@ func (s *Server) edgeCoverageGap(projectID string) string {
 // message rather than reusing edgeCoverageGap's trace/dead_code-
 // specific wording.
 func (s *Server) edgeGraphEmptyForLanguage(projectID string) (string, bool) {
-	symCount, edgeCount, _, _, err := s.store.GraphStats(projectID)
+	symCount, edgeCount, err := s.projectGraphTotals(projectID)
 	if err != nil || symCount == 0 || edgeCount > 0 {
 		return "", false
 	}
