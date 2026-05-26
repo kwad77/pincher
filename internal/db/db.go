@@ -61,7 +61,7 @@ func getTokenizer() tkz.Codec {
 // flushes. With the reader pool, concurrent tool calls run in parallel.
 //
 // SECURITY / CORRECTNESS:
-//   - The reader pool's MaxOpenConns MUST stay at 1 (single-writer)
+//   - The writer pool's MaxOpenConns MUST stay at 1 (single-writer)
 //     — see TestStore_WriterPoolStaysSingleWriter.
 //   - Reads that happen to use s.db still work (writer pool serves
 //     reads too); migrating them to s.ro is purely a performance win.
