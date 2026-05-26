@@ -1,0 +1,32 @@
+name: Race detector
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 10 * * *'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  race:
+    name: go test -race ./internal/...
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go test -race ./internal/...
+        env:
+          CGO_ENABLED: 1
+        # Race instrumentation is expensive on SQLite-heavy packages.
+        # Keep the full signal out of release-blocking CI, but bound the
+        # standalone advisory workflow so it cannot sit in the runner pool
+        # indefinitely.
+        run: go test -race ./internal/... -timeout 1800s

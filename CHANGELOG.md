@@ -7,6 +7,9 @@ minors.
 
 ## [Unreleased]
 
+### Changed
+- Move the full `go test -race ./internal/...` pass out of release-blocking CI and into a standalone scheduled/manual Race detector workflow so advisory work remains visible without holding master/tag status open (#1895).
+
 ## [0.96.1] — 2026-05-26 — Upgrade-path patch
 
 ### Fixed
