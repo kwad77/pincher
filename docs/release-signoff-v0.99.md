@@ -35,26 +35,32 @@ green hosted checks:
 | Pages | [26446353207](https://github.com/kwad77/pincher/actions/runs/26446353207) | Green |
 | Migration rehearsal | [26446357417](https://github.com/kwad77/pincher/actions/runs/26446357417) | Green |
 
-The v0.99 sign-off scaffold commit,
-[`0f55949`](https://github.com/kwad77/pincher/commit/0f55949), has these
+The latest v0.99 release-evidence commit,
+[`b9e298d`](https://github.com/kwad77/pincher/commit/b9e298d), has these
 green hosted checks:
 
 | Gate | Run | Result |
 |---|---|---|
-| CI | [26446979000](https://github.com/kwad77/pincher/actions/runs/26446979000) | Green |
-| Host conformance | [26446978931](https://github.com/kwad77/pincher/actions/runs/26446978931) | Green |
-| govulncheck | [26446979011](https://github.com/kwad77/pincher/actions/runs/26446979011) | Green |
-| Pages | [26446978067](https://github.com/kwad77/pincher/actions/runs/26446978067) | Green |
+| CI | [26447393434](https://github.com/kwad77/pincher/actions/runs/26447393434) | Green |
+| Host conformance | [26447393456](https://github.com/kwad77/pincher/actions/runs/26447393456) | Green |
+| govulncheck | [26447393387](https://github.com/kwad77/pincher/actions/runs/26447393387) | Green |
+| Pages | [26447392682](https://github.com/kwad77/pincher/actions/runs/26447392682) | Green |
 
-Advisory perf validation has started for `0f55949`:
+Advisory perf validation for the v0.99 prep window:
 
 | Gate | Run | Result |
 |---|---|---|
 | Per-tool latency | [26447225384](https://github.com/kwad77/pincher/actions/runs/26447225384) | Green |
 | Multi-project ceiling | [26447225380](https://github.com/kwad77/pincher/actions/runs/26447225380) | Green |
 | Resource pressure | [26447225351](https://github.com/kwad77/pincher/actions/runs/26447225351) | Green |
-| Time to first success | [26447225383](https://github.com/kwad77/pincher/actions/runs/26447225383) | Harness failed before measurement; rerun required after workflow fix |
+| Time to first success | [26447395269](https://github.com/kwad77/pincher/actions/runs/26447395269) | Green after harness fix |
 | Bench baseline refresh | [26447233599](https://github.com/kwad77/pincher/actions/runs/26447233599) | Green |
+
+The earlier time-to-first-success run
+[`26447225383`](https://github.com/kwad77/pincher/actions/runs/26447225383)
+failed before measurement because the workflow executed a non-executable
+checkout script directly. `b9e298d` routes that script through `bash`,
+matching the other advisory benchmark workflows.
 
 The migration rehearsal now exercises the intended path:
 
