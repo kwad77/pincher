@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -66,5 +67,29 @@ func TestSupervisedInnerBinary_MissingValue(t *testing.T) {
 func TestNormalizePincherVersionOutput(t *testing.T) {
 	if got := normalizePincherVersionOutput("pincherMCP v0.94.0\n"); got != "0.94.0" {
 		t.Fatalf("version = %q", got)
+	}
+}
+
+func TestSameBinaryPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pincher")
+	if !sameBinaryPath(path, filepath.Join(dir, ".", "pincher")) {
+		t.Fatal("expected clean-equivalent paths to match")
+	}
+	if sameBinaryPath("", path) {
+		t.Fatal("empty path should not match")
+	}
+	if sameBinaryPath(path, filepath.Join(dir, "other-pincher")) {
+		t.Fatal("different paths should not match")
+	}
+}
+
+func TestDetectPincherBinaryVersion(t *testing.T) {
+	providerPath := filepath.Join(t.TempDir(), "pincher")
+	if got := detectPincherBinaryVersion(providerPath, providerPath, "0.90.0"); got != "0.90.0" {
+		t.Fatalf("provider version = %q", got)
+	}
+	if got := detectPincherBinaryVersion(filepath.Join(t.TempDir(), "missing-pincher"), providerPath, "0.90.0"); got != "" {
+		t.Fatalf("missing action binary version = %q, want empty", got)
 	}
 }
