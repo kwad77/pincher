@@ -1,0 +1,13 @@
+schema_version: 1
+captured_at: 2026-05-26
+captured_from_run: 26447395269
+captured_on: GitHub Actions ubuntu-latest
+target_repo: https://github.com/kwad77/pincher
+query: Indexer
+install_ms: 0
+clone_ms: 1000
+index_ms: 11000
+first_query_ms: 0
+total_ms: 12000
+budget_ms: 300000
+within_budget: true
