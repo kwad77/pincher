@@ -312,6 +312,33 @@ func TestUpdateStandalone_Check_HasUpdate_NoAsset(t *testing.T) {
 	}
 }
 
+func TestUpdateStandalone_Check_DoesNotDowngrade(t *testing.T) {
+	savedVersion := version
+	version = "0.97.0"
+	defer func() { version = savedVersion }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"tag_name":"v0.90.0","draft":false,"assets":[{"name":"pincher_linux_amd64","browser_download_url":"http://example/asset","size":42}]}`))
+	}))
+	defer srv.Close()
+
+	savedURL := updateReleasesURL
+	updateReleasesURL = srv.URL
+	defer func() { updateReleasesURL = savedURL }()
+
+	var buf bytes.Buffer
+	if err := updateStandalone(&buf, true, true, false); err != nil {
+		t.Fatalf("updateStandalone --check: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "not downgrading") {
+		t.Errorf("expected no-downgrade message; got:\n%s", got)
+	}
+	if strings.Contains(got, "asset:") {
+		t.Errorf("downgrade path should not select an asset; got:\n%s", got)
+	}
+}
+
 func TestConfirmYes_Empty(t *testing.T) {
 	r, w, _ := os.Pipe()
 	defer r.Close()
@@ -400,6 +427,40 @@ func TestNormaliseVersion(t *testing.T) {
 	for in, want := range cases {
 		if got := normaliseVersion(in); got != want {
 			t.Errorf("normaliseVersion(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestCompareVersions(t *testing.T) {
+	cases := []struct {
+		a    string
+		b    string
+		want int
+		ok   bool
+	}{
+		{"v0.90.0", "0.97.0", -1, true},
+		{"0.98.0", "0.97.0", 1, true},
+		{"v0.97.0", "0.97.0", 0, true},
+		{"v1.0.0", "1.0.0-rc.1", 1, true},
+		{"v1.0.0-rc.1", "1.0.0", -1, true},
+		{"dev", "0.97.0", 0, false},
+	}
+	for _, tc := range cases {
+		got, ok := compareVersions(tc.a, tc.b)
+		if ok != tc.ok {
+			t.Errorf("compareVersions(%q, %q) ok = %v, want %v", tc.a, tc.b, ok, tc.ok)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		switch {
+		case got < 0 && tc.want >= 0:
+			t.Errorf("compareVersions(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+		case got == 0 && tc.want != 0:
+			t.Errorf("compareVersions(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+		case got > 0 && tc.want <= 0:
+			t.Errorf("compareVersions(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
 		}
 	}
 }

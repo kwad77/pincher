@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -350,6 +351,10 @@ func updateStandalone(out io.Writer, check, yes, dryRun bool) error {
 
 	if normaliseVersion(rel.TagName) == normaliseVersion(version) {
 		fmt.Fprintln(out, "  already up to date")
+		return nil
+	}
+	if cmp, ok := compareVersions(rel.TagName, version); ok && cmp < 0 {
+		fmt.Fprintf(out, "  latest published release %s is older than current v%s; not downgrading\n", rel.TagName, normaliseVersion(version))
 		return nil
 	}
 
@@ -727,4 +732,59 @@ func runGit(repoRoot string, args ...string) error {
 // equal to the build-time `version` constant.
 func normaliseVersion(s string) string {
 	return strings.TrimPrefix(strings.TrimSpace(s), "v")
+}
+
+type parsedVersion struct {
+	major int
+	minor int
+	patch int
+	pre   string
+}
+
+func compareVersions(a, b string) (int, bool) {
+	av, okA := parseVersion(a)
+	bv, okB := parseVersion(b)
+	if !okA || !okB {
+		return 0, false
+	}
+	for _, pair := range [][2]int{
+		{av.major, bv.major},
+		{av.minor, bv.minor},
+		{av.patch, bv.patch},
+	} {
+		if pair[0] < pair[1] {
+			return -1, true
+		}
+		if pair[0] > pair[1] {
+			return 1, true
+		}
+	}
+	if av.pre == bv.pre {
+		return 0, true
+	}
+	if av.pre == "" {
+		return 1, true
+	}
+	if bv.pre == "" {
+		return -1, true
+	}
+	return strings.Compare(av.pre, bv.pre), true
+}
+
+func parseVersion(s string) (parsedVersion, bool) {
+	s = normaliseVersion(s)
+	core, pre, _ := strings.Cut(s, "-")
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return parsedVersion{}, false
+	}
+	nums := make([]int, 3)
+	for i, part := range parts {
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return parsedVersion{}, false
+		}
+		nums[i] = n
+	}
+	return parsedVersion{major: nums[0], minor: nums[1], patch: nums[2], pre: pre}, true
 }
