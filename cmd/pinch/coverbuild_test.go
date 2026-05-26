@@ -5,11 +5,28 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"testing"
 )
 
-// buildPincherBinary compiles a pincher binary into t.TempDir() (or a
-// caller-provided dir) and returns its absolute path.
+var cachedPincherBinary struct {
+	once sync.Once
+	dir  string
+	path string
+	err  error
+}
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if cachedPincherBinary.dir != "" {
+		_ = os.RemoveAll(cachedPincherBinary.dir)
+	}
+	os.Exit(code)
+}
+
+// buildPincherBinary compiles a pincher binary once per package test
+// process and returns its absolute path.
 //
 // When the GOCOVERDIR environment variable is set, the binary is built
 // with `-cover` instrumentation so any subprocess invocation that runs
@@ -28,7 +45,21 @@ import (
 // GOCOVERDIR is unset).
 func buildPincherBinary(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	cachedPincherBinary.once.Do(func() {
+		cachedPincherBinary.path, cachedPincherBinary.err = buildPincherBinaryOnce()
+	})
+	if cachedPincherBinary.err != nil {
+		t.Fatalf("build pincher binary: %v", cachedPincherBinary.err)
+	}
+	return cachedPincherBinary.path
+}
+
+func buildPincherBinaryOnce() (string, error) {
+	dir, err := os.MkdirTemp("", "pincher-test-bin-*")
+	if err != nil {
+		return "", err
+	}
+	cachedPincherBinary.dir = dir
 	bin := filepath.Join(dir, pincherBinaryName())
 
 	args := []string{"build"}
@@ -44,9 +75,19 @@ func buildPincherBinary(t *testing.T) string {
 
 	cmd := exec.Command("go", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build (%v): %v\n%s", args, err, out)
+		return "", execBuildError{args: args, err: err, out: out}
 	}
-	return bin
+	return bin, nil
+}
+
+type execBuildError struct {
+	args []string
+	err  error
+	out  []byte
+}
+
+func (e execBuildError) Error() string {
+	return "build (" + strings.Join(e.args, " ") + "): " + e.err.Error() + "\n" + string(e.out)
 }
 
 // pincherCoverEnv returns os.Environ() with GOCOVERDIR set to the
