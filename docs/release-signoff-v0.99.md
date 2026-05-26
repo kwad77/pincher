@@ -19,11 +19,7 @@ release approval.
 
 - External migration-guide review evidence from at least two distinct
   users, tracked in [#1390](https://github.com/kwad77/pincher/issues/1390).
-- Hosted Actions recovery for post-`b9e298d` commits, tracked in
-  [#1898](https://github.com/kwad77/pincher/issues/1898). Push-triggered
-  runs now enqueue again and setup recovered on the latest sampled commit, but
-  CI exposed a Windows watcher-test failure that needs hosted validation on
-  the descendant fix.
+- Current migration rehearsal evidence on the latest release-prep descendant.
 - Final perf validation against the current committed baseline and, per
   `.x9` policy, a bench-baseline refresh decision.
 - Cross-platform release/install smoke against the eventual v0.99 tag.
@@ -93,12 +89,20 @@ Additional v0.99 local hardening after the last hosted run:
 | [`03a07f6`](https://github.com/kwad77/pincher/commit/03a07f6) | Server perf | Narrows architecture's surprising-connection scan to project-local `CALLS` edges via the existing project/kind edge index instead of loading every edge record; local `EXPLAIN QUERY PLAN`, focused DB/server tests, full `internal/db`, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, workflow lint, and dogfood `pincher doctor` all passed | Pending hosted validation |
 | [`362a738`](https://github.com/kwad77/pincher/commit/362a738) | Project resolution | Makes same-name project resolution prefer the current session project, then the newest indexed live project, while preserving exact-case and live-over-dead precedence; local focused collision tests, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, full coverage at 85.2%, workflow lint, and dogfood `pincher doctor` all passed | Pending hosted validation |
 | [`b7439d0`](https://github.com/kwad77/pincher/commit/b7439d0) | Project resolution | Scopes cached project-name resolutions to the session context that produced them so same-name live-project collisions cannot leak across sessions for the cache TTL; local focused cache/collision tests, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, workflow lint, and dogfood `pincher doctor` all passed | Pending hosted validation |
-| [`cce77f8`](https://github.com/kwad77/pincher/commit/cce77f8) | Project resolution | Makes `symbols(cross_project=true)` read source, staleness state, and file-access savings from each returned symbol's owning project root instead of the session root; focused server tests, focused race tests, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, and dogfood `pincher doctor` all passed | Pending hosted validation |
-| [`3e54cd9`](https://github.com/kwad77/pincher/commit/3e54cd9) | CI validation | Stabilizes the watcher serialization test by measuring the indexer's actual active map instead of inferring in-flight state from success-only completion events; focused watcher test loop, full `internal/index`, full `go test ./... -timeout 240s -parallel 4`, and dogfood `pincher doctor` all passed | Pending hosted validation |
+| [`cce77f8`](https://github.com/kwad77/pincher/commit/cce77f8) | Project resolution | Makes `symbols(cross_project=true)` read source, staleness state, and file-access savings from each returned symbol's owning project root instead of the session root; focused server tests, focused race tests, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, and dogfood `pincher doctor` all passed | Covered by descendant hosted green run [`604c721`](https://github.com/kwad77/pincher/commit/604c721) |
+| [`3e54cd9`](https://github.com/kwad77/pincher/commit/3e54cd9) | CI validation | Stabilizes the watcher serialization test by measuring the indexer's actual active map instead of inferring in-flight state from success-only completion events; focused watcher test loop, full `internal/index`, full `go test ./... -timeout 240s -parallel 4`, and dogfood `pincher doctor` all passed | Covered by descendant hosted green run [`604c721`](https://github.com/kwad77/pincher/commit/604c721) |
 
-These commits are useful v0.99 hardening, but they are **not** final release
-evidence until hosted CI, Host conformance, govulncheck, and Pages enqueue and
-pass again on a descendant commit.
+These commits are useful v0.99 hardening. Push-triggered hosted validation
+passed on descendant
+[`604c721`](https://github.com/kwad77/pincher/commit/604c721): CI
+[`26449531612`](https://github.com/kwad77/pincher/actions/runs/26449531612),
+Host conformance
+[`26449531505`](https://github.com/kwad77/pincher/actions/runs/26449531505),
+govulncheck
+[`26449531597`](https://github.com/kwad77/pincher/actions/runs/26449531597),
+and Pages
+[`26449530113`](https://github.com/kwad77/pincher/actions/runs/26449530113)
+are green.
 
 Hosted reruns on 2026-05-26 for
 [`45cbc57`](https://github.com/kwad77/pincher/commit/45cbc57) confirm that run
@@ -132,8 +136,10 @@ passed. CI
 [`26448978425`](https://github.com/kwad77/pincher/actions/runs/26448978425)
 reached project tests and failed on Windows `index-db` in
 `TestWatch_SerializesPerProjectIndex`; the local stabilization fix is
-[`3e54cd9`](https://github.com/kwad77/pincher/commit/3e54cd9), pending hosted
-validation.
+[`3e54cd9`](https://github.com/kwad77/pincher/commit/3e54cd9). Descendant
+[`604c721`](https://github.com/kwad77/pincher/commit/604c721) passed the
+Windows `index-db` shard and full CI in
+[`26449531612`](https://github.com/kwad77/pincher/actions/runs/26449531612).
 
 Manual dispatch rechecks on 2026-05-26 still fail before run creation:
 
@@ -165,12 +171,12 @@ commit, issue, or artifact URL.
 | Requirement | Evidence | Status |
 |---|---|---|
 | All open v0.98/v0.99 release-scope issues dispositioned | #1716, #1390, #676 | Pending |
-| Hosted Actions setup + validation for current release-prep commits | [#1898](https://github.com/kwad77/pincher/issues/1898) | Pending |
+| Hosted Actions setup + validation for current release-prep commits | [`604c721`](https://github.com/kwad77/pincher/commit/604c721): CI [`26449531612`](https://github.com/kwad77/pincher/actions/runs/26449531612), Host conformance [`26449531505`](https://github.com/kwad77/pincher/actions/runs/26449531505), govulncheck [`26449531597`](https://github.com/kwad77/pincher/actions/runs/26449531597), Pages [`26449530113`](https://github.com/kwad77/pincher/actions/runs/26449530113) | Green |
 | Migration guide externally tested by >=2 users | #1390 review comments | Pending |
-| Full CI green on release-prep commit | Actions run URL | Pending |
-| Host conformance green | Actions run URL | Pending |
-| govulncheck green | Actions run URL | Pending |
-| Pages deploy green | Actions run URL | Pending |
+| Full CI green on release-prep commit | [`26449531612`](https://github.com/kwad77/pincher/actions/runs/26449531612) on [`604c721`](https://github.com/kwad77/pincher/commit/604c721) | Green |
+| Host conformance green | [`26449531505`](https://github.com/kwad77/pincher/actions/runs/26449531505) on [`604c721`](https://github.com/kwad77/pincher/commit/604c721) | Green |
+| govulncheck green | [`26449531597`](https://github.com/kwad77/pincher/actions/runs/26449531597) on [`604c721`](https://github.com/kwad77/pincher/commit/604c721) | Green |
+| Pages deploy green | [`26449530113`](https://github.com/kwad77/pincher/actions/runs/26449530113) on [`604c721`](https://github.com/kwad77/pincher/commit/604c721) | Green |
 | Migration rehearsal green | Actions run URL | Pending |
 | Bench baseline decision recorded | Workflow run or explicit no-refresh rationale | Pending |
 | Cross-platform install smoke ready | `install-validation.yml` after tag | Pending tag |
