@@ -21,8 +21,9 @@ release approval.
   users, tracked in [#1390](https://github.com/kwad77/pincher/issues/1390).
 - Hosted Actions recovery for post-`b9e298d` commits, tracked in
   [#1898](https://github.com/kwad77/pincher/issues/1898). Push-triggered
-  runs now enqueue again, but current-head hosted runs still fail during
-  setup before project tests can execute.
+  runs now enqueue again and setup recovered on the latest sampled commit, but
+  CI exposed a Windows watcher-test failure that needs hosted validation on
+  the descendant fix.
 - Final perf validation against the current committed baseline and, per
   `.x9` policy, a bench-baseline refresh decision.
 - Cross-platform release/install smoke against the eventual v0.99 tag.
@@ -92,6 +93,8 @@ Additional v0.99 local hardening after the last hosted run:
 | [`03a07f6`](https://github.com/kwad77/pincher/commit/03a07f6) | Server perf | Narrows architecture's surprising-connection scan to project-local `CALLS` edges via the existing project/kind edge index instead of loading every edge record; local `EXPLAIN QUERY PLAN`, focused DB/server tests, full `internal/db`, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, workflow lint, and dogfood `pincher doctor` all passed | Pending hosted validation |
 | [`362a738`](https://github.com/kwad77/pincher/commit/362a738) | Project resolution | Makes same-name project resolution prefer the current session project, then the newest indexed live project, while preserving exact-case and live-over-dead precedence; local focused collision tests, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, full coverage at 85.2%, workflow lint, and dogfood `pincher doctor` all passed | Pending hosted validation |
 | [`b7439d0`](https://github.com/kwad77/pincher/commit/b7439d0) | Project resolution | Scopes cached project-name resolutions to the session context that produced them so same-name live-project collisions cannot leak across sessions for the cache TTL; local focused cache/collision tests, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, workflow lint, and dogfood `pincher doctor` all passed | Pending hosted validation |
+| [`cce77f8`](https://github.com/kwad77/pincher/commit/cce77f8) | Project resolution | Makes `symbols(cross_project=true)` read source, staleness state, and file-access savings from each returned symbol's owning project root instead of the session root; focused server tests, focused race tests, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, and dogfood `pincher doctor` all passed | Pending hosted validation |
+| [`3e54cd9`](https://github.com/kwad77/pincher/commit/3e54cd9) | CI validation | Stabilizes the watcher serialization test by measuring the indexer's actual active map instead of inferring in-flight state from success-only completion events; focused watcher test loop, full `internal/index`, full `go test ./... -timeout 240s -parallel 4`, and dogfood `pincher doctor` all passed | Pending hosted validation |
 
 These commits are useful v0.99 hardening, but they are **not** final release
 evidence until hosted CI, Host conformance, govulncheck, and Pages enqueue and
@@ -116,6 +119,21 @@ and govulncheck
 [`26448603429`](https://github.com/kwad77/pincher/actions/runs/26448603429)
 failed before checkout/build/test while downloading `actions/setup-go@v5` from
 GitHub codeload.
+
+Hosted setup recovered on
+[`621631f`](https://github.com/kwad77/pincher/commit/621631f): Host
+conformance
+[`26448978426`](https://github.com/kwad77/pincher/actions/runs/26448978426),
+govulncheck
+[`26448978424`](https://github.com/kwad77/pincher/actions/runs/26448978424),
+and Pages
+[`26448977847`](https://github.com/kwad77/pincher/actions/runs/26448977847)
+passed. CI
+[`26448978425`](https://github.com/kwad77/pincher/actions/runs/26448978425)
+reached project tests and failed on Windows `index-db` in
+`TestWatch_SerializesPerProjectIndex`; the local stabilization fix is
+[`3e54cd9`](https://github.com/kwad77/pincher/commit/3e54cd9), pending hosted
+validation.
 
 Manual dispatch rechecks on 2026-05-26 still fail before run creation:
 
