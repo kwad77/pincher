@@ -1702,12 +1702,15 @@ END;`,
 	// extracted data.
 	`CREATE INDEX IF NOT EXISTS idx_edge_project_to ON edges(project_id, to_id);`,
 
-	// v37 → v38: project-first edge endpoint indexes for trace CTEs.
+	// v37 → v38: supplemental project-scoped edge endpoint indexes for
+	// trace CTEs.
 	// Dogfood on the Hermes corpus showed TraceViaCTEScoped picking
 	// idx_edges_source(project_id, kind, source) inside the recursive
 	// step, scanning every CALLS row in the project (~88k rows) instead
-	// of seeking by the current frontier endpoint. These indexes keep
-	// project scoping first, then the recursive endpoint, then kind.
+	// of seeking by the current frontier endpoint. The query path pins
+	// endpoint-first covering indexes with INDEXED BY; these supplemental
+	// project-first indexes preserve a project-scoped endpoint shape for
+	// planner variants and future non-recursive trace helpers.
 	`CREATE INDEX IF NOT EXISTS idx_edge_project_from_kind_to ON edges(project_id, from_id, kind, to_id);
 	 CREATE INDEX IF NOT EXISTS idx_edge_project_to_kind_from ON edges(project_id, to_id, kind, from_id);`,
 }
@@ -1792,7 +1795,7 @@ var schemaMigrationInvalidates = []MigrationInvalidates{
 	invalidatesNothing, // [33] v34→v35: edge traversal covering indexes (pure DDL; no extracted data changes)
 	invalidatesNothing, // [34] v35→v36: projects.index_state/index_started_at (metadata-only crash recovery marker)
 	invalidatesNothing, // [35] v36→v37: edge project/to_id grouping index for hotspots (pure DDL; no extracted data changes)
-	invalidatesNothing, // [36] v37→v38: project-first trace endpoint indexes (pure DDL; no extracted data changes)
+	invalidatesNothing, // [36] v37→v38: trace endpoint planner indexes (pure DDL; no extracted data changes)
 }
 
 func init() {
@@ -4597,9 +4600,9 @@ func (s *Store) traceViaCTE(projectID, startID, direction string, edgeKinds []st
 		indexHint := ""
 		if projectID != "" {
 			if dir == "outbound" {
-				indexHint = " INDEXED BY idx_edge_project_from_kind_to"
+				indexHint = " INDEXED BY idx_edge_from_project_kind_to"
 			} else {
-				indexHint = " INDEXED BY idx_edge_project_to_kind_from"
+				indexHint = " INDEXED BY idx_edge_to_project_kind_from"
 			}
 		}
 		var selectNeighbor string

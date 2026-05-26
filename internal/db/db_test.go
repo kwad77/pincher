@@ -1983,13 +1983,13 @@ func TestTraceViaCTEScoped_UsesProjectEndpointIndexes(t *testing.T) {
 			name:      "outbound",
 			neighbor:  "e.to_id",
 			joinCond:  "e.from_id = r.id",
-			wantIndex: "idx_edge_project_from_kind_to",
+			wantIndex: "idx_edge_from_project_kind_to",
 		},
 		{
 			name:      "inbound",
 			neighbor:  "e.from_id",
 			joinCond:  "e.to_id = r.id",
-			wantIndex: "idx_edge_project_to_kind_from",
+			wantIndex: "idx_edge_to_project_kind_from",
 		},
 	}
 	for _, tc := range cases {

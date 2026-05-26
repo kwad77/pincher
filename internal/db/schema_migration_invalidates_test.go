@@ -50,7 +50,7 @@ func TestSchemaMigrationInvalidates_ClassificationCount(t *testing.T) {
 		}
 	}
 	// Snapshot as of v38 (37 migration entries): 32 Nothing / 5 All.
-	// v37→v38 added project-first trace endpoint indexes — pure DDL,
+	// v37→v38 added trace endpoint planner indexes — pure DDL,
 	// classified Nothing.
 	const wantNothing = 32
 	const wantAll = 5
