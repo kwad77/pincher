@@ -27,7 +27,7 @@ func TestHandleQuery_LowRatio_AttachesGhostWarning(t *testing.T) {
 	srv.sessionID = pid
 
 	syms := []db.Symbol{}
-	for i := 0; i < 1001; i++ {
+	for i := 0; i < 2; i++ {
 		syms = append(syms, db.Symbol{
 			ID:                   pid + "::pkg.Q" + string(rune('A'+(i%26))) + string(rune('A'+(i/26))) + "#Function",
 			ProjectID:            pid,

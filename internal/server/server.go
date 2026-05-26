@@ -3285,6 +3285,14 @@ func (s *Server) mustProject(args map[string]any) (string, *mcp.CallToolResult) 
 	return pid, nil
 }
 
+func (s *Server) projectGraphTotals(projectID string) (symCount, edgeCount int, err error) {
+	if p, err := s.store.GetProject(projectID); err == nil && p != nil && (p.SymCount != 0 || p.EdgeCount != 0) {
+		return p.SymCount, p.EdgeCount, nil
+	}
+	symCount, edgeCount, _, _, err = s.store.GraphStats(projectID)
+	return symCount, edgeCount, err
+}
+
 func (s *Server) resolveProjectID(projectArg string) (string, error) {
 	if projectArg == "" {
 		if s.sessionID == "" {
@@ -7567,9 +7575,10 @@ func (s *Server) handleQuery(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// (architecture / schema). Only runs on single-project queries
 	// (allowAllProjects=false) — cross-project queries would need a
 	// per-project check that's not worth the latency. Cheap probe:
-	// one extra GraphStats call only when rows is empty.
+	// project metadata totals when present, GraphStats fallback for old
+	// zero-count rows.
 	if projectID != "" && !allowAllProjects {
-		if symCount, edgeCount, _, _, gerr := s.store.GraphStats(projectID); gerr == nil {
+		if symCount, edgeCount, gerr := s.projectGraphTotals(projectID); gerr == nil {
 			if len(rows) == 0 && edgeCount == 0 && symCount >= 100 {
 				stampEmpty(meta, EmptyReasonCrossFileUnavailable, fmt.Sprintf(
 					"query returned 0 rows AND the scoped project has %d symbols but ZERO edges — ghost-extraction signature (#815). Resolver phase produced no graph; edge-traversal queries will silently return zero rows. Use `architecture` or `doctor` for the full picture.",
@@ -9273,7 +9282,7 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 	// edges. Same family as #1040 (architecture) / #1042 (schema) /
 	// #1043 (query) + the existing #1009 doctor advisory. Closes
 	// ghost-extraction diagnosis across every code-graph tool.
-	if symCount, edgeCount, _, _, gerr := s.store.GraphStats(projectID); gerr == nil {
+	if symCount, edgeCount, gerr := s.projectGraphTotals(projectID); gerr == nil {
 		if edgeCount == 0 && symCount >= 100 {
 			var diagnosis string
 			if len(dead) > 0 {

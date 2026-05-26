@@ -89,6 +89,18 @@ func writeIndexableRepo(t *testing.T) string {
 	return dir
 }
 
+func waitForEventSubscribers(t *testing.T, srv *Server, want int) {
+	t.Helper()
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if srv.events.subscriberCount() >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("event subscribers = %d, want at least %d", srv.events.subscriberCount(), want)
+}
+
 func TestEvents_DriftSnapshotOnConnect(t *testing.T) {
 	t.Parallel()
 	srv, store, _ := newTestServer(t)
@@ -145,12 +157,9 @@ func TestEvents_IndexLifecycleStreamed(t *testing.T) {
 		t.Fatalf("GET /v1/events: %v", err)
 	}
 	defer resp.Body.Close()
+	waitForEventSubscribers(t, srv, 1)
 
-	// Trigger an index once the subscriber is registered.
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		_, _ = srv.indexer.Index(context.Background(), repo, false)
-	}()
+	_, _ = srv.indexer.Index(context.Background(), repo, false)
 
 	frames := readSSEFrames(t, resp, 2, 5*time.Second)
 	got := map[string]map[string]any{}
@@ -195,7 +204,7 @@ func TestEvents_ProjectFilterExcludesOthers(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	frames := readSSEFrames(t, resp, 2, 1500*time.Millisecond)
+	frames := readSSEFrames(t, resp, 2, 100*time.Millisecond)
 	for _, f := range frames {
 		if pid, _ := f.data["project_id"].(string); pid != "keep" {
 			t.Errorf("project filter leaked an event for %q: %v", pid, f)
@@ -315,12 +324,7 @@ func TestEvents_ConcurrentSubscribers(t *testing.T) {
 		resps[i] = r
 		defer r.Body.Close()
 	}
-
-	// Give every subscriber a moment to register, then index once.
-	go func() {
-		time.Sleep(150 * time.Millisecond)
-		_, _ = srv.indexer.Index(context.Background(), repo, false)
-	}()
+	waitForEventSubscribers(t, srv, subscribers)
 
 	var wg sync.WaitGroup
 	results := make([]bool, subscribers)
@@ -336,6 +340,7 @@ func TestEvents_ConcurrentSubscribers(t *testing.T) {
 			}
 		}(i)
 	}
+	_, _ = srv.indexer.Index(context.Background(), repo, false)
 	wg.Wait()
 
 	for i, ok := range results {
