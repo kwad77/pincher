@@ -62,6 +62,18 @@ failed before measurement because the workflow executed a non-executable
 checkout script directly. `b9e298d` routes that script through `bash`,
 matching the other advisory benchmark workflows.
 
+Additional v0.99 local hardening after the last hosted run:
+
+| Commit | Area | Local evidence | Hosted status |
+|---|---|---|---|
+| [`495af9b`](https://github.com/kwad77/pincher/commit/495af9b) | CI time | Reuses the Ubuntu test pass for coverage; local full coverage flow passed at 85.0% | Pending — Actions stopped enqueueing new push/dispatch runs after `b9e298d` |
+| [`311e16d`](https://github.com/kwad77/pincher/commit/311e16d) | DB diagnostics | `doctor` DB-size attribution now includes durable `pending_edges`; source-built doctor reported `db_bytes_estimate` on the dogfood DB | Pending hosted validation |
+| [`78bdcda`](https://github.com/kwad77/pincher/commit/78bdcda) | Migration review | Adds `docs/release-signoff-v0.98.md`; fixes stale `pincher` data-dir backup examples to `pincherMCP` | Pending hosted validation |
+
+These commits are useful v0.99 hardening, but they are **not** final release
+evidence until hosted CI, Host conformance, govulncheck, and Pages enqueue and
+pass again on a descendant commit.
+
 The migration rehearsal now exercises the intended path:
 
 1. Download `v0.4.1`.
