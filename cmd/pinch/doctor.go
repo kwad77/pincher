@@ -97,16 +97,17 @@ func runDoctorCLI(args []string) {
 // Field names are stable across releases — dashboards and CI scripts
 // can rely on them.
 type DoctorReport struct {
-	GeneratedAt          string                 `json:"generated_at"`
-	BinaryVersion        string                 `json:"binary_version"`
-	SchemaVersion        int                    `json:"schema_version"`
-	BinarySupportsSchema bool                   `json:"binary_supports_schema"`
-	DBSizeBytes          int64                  `json:"db_size_bytes"`
-	WALSizeBytes         int64                  `json:"wal_size_bytes"`
-	Projects             []DoctorProjectSummary `json:"projects"`
-	ExtractionFailures   []DoctorFailureRow     `json:"extraction_failures"`
-	SlowQueries          []DoctorSlowQueryRow   `json:"slow_queries"`
-	LookbackHours        int                    `json:"lookback_hours"`
+	GeneratedAt                 string                 `json:"generated_at"`
+	BinaryVersion               string                 `json:"binary_version"`
+	SchemaVersion               int                    `json:"schema_version"`
+	BinarySupportsSchema        bool                   `json:"binary_supports_schema"`
+	DBSizeBytes                 int64                  `json:"db_size_bytes"`
+	WALSizeBytes                int64                  `json:"wal_size_bytes"`
+	Projects                    []DoctorProjectSummary `json:"projects"`
+	ExtractionFailures          []DoctorFailureRow     `json:"extraction_failures"`
+	ExtractionFailuresTruncated int                    `json:"extraction_failures_truncated,omitempty"`
+	SlowQueries                 []DoctorSlowQueryRow   `json:"slow_queries"`
+	LookbackHours               int                    `json:"lookback_hours"`
 	// Advisories are human-readable health warnings (#732). Always
 	// present — empty slice when healthy — so JSON consumers can
 	// iterate without a null check. Mirrors the MCP doctor tool's
@@ -234,31 +235,57 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 	}
 
 	// Extraction failures (#42 part 1) — across all projects, filtered by
-	// lookback window, capped at top N per project.
+	// lookback window in SQL and capped globally at top N. The unfiltered
+	// path mirrors MCP/HTTP doctor's #1205 cross-project query instead of
+	// doing one SELECT per project.
 	cutoff := time.Now().Add(-time.Duration(lookbackHours) * time.Hour)
-	for _, p := range projects {
+	if err == nil {
+		projectByID := make(map[string]db.Project, len(projects))
+		for _, p := range projects {
+			projectByID[p.ID] = p
+		}
+
+		fetchLimit := top
 		if matchedProjectIDs != nil {
-			if _, ok := matchedProjectIDs[p.ID]; !ok {
-				continue
-			}
+			fetchLimit = 0 // filter in Go so --project does not under-return.
 		}
-		fails, err := store.ListExtractionFailures(p.ID, top)
-		if err != nil {
-			continue
-		}
-		for _, f := range fails {
-			if f.LastSeenAt.Before(cutoff) {
-				continue
+		fails, ferr := store.ListRecentExtractionFailuresAcrossProjects(cutoff.Unix(), fetchLimit)
+		if ferr == nil {
+			matchedTotal := 0
+			for _, f := range fails {
+				p, ok := projectByID[f.ProjectID]
+				if !ok {
+					continue
+				}
+				if matchedProjectIDs != nil {
+					if _, ok := matchedProjectIDs[f.ProjectID]; !ok {
+						continue
+					}
+				}
+				matchedTotal++
+				if top > 0 && len(r.ExtractionFailures) >= top {
+					continue
+				}
+				r.ExtractionFailures = append(r.ExtractionFailures, DoctorFailureRow{
+					Project:    p.Name,
+					File:       f.FilePath,
+					Language:   f.Language,
+					Reason:     f.Reason,
+					Details:    f.Details,
+					LastSeenAt: f.LastSeenAt.Format(time.RFC3339),
+					IsStale:    isStaleFailure(f.LastSeenAt, p.IndexedAt),
+				})
 			}
-			r.ExtractionFailures = append(r.ExtractionFailures, DoctorFailureRow{
-				Project:    p.Name,
-				File:       f.FilePath,
-				Language:   f.Language,
-				Reason:     f.Reason,
-				Details:    f.Details,
-				LastSeenAt: f.LastSeenAt.Format(time.RFC3339),
-				IsStale:    isStaleFailure(f.LastSeenAt, p.IndexedAt),
-			})
+
+			if top > 0 {
+				if matchedProjectIDs == nil {
+					if total, cerr := store.CountRecentExtractionFailuresAcrossProjects(cutoff.Unix()); cerr == nil && total > len(r.ExtractionFailures) {
+						r.ExtractionFailuresTruncated = total - len(r.ExtractionFailures)
+					}
+				} else if matchedTotal > len(r.ExtractionFailures) {
+					r.ExtractionFailuresTruncated = matchedTotal - len(r.ExtractionFailures)
+				}
+			}
 		}
 	}
 
@@ -1059,6 +1086,9 @@ func formatDoctorMarkdown(r *DoctorReport) string {
 	// problems" before drilling in.
 	if len(r.ExtractionFailures) > 5 {
 		fmt.Fprintf(&b, "  → by reason: %s\n", summarizeByReason(r.ExtractionFailures))
+	}
+	if r.ExtractionFailuresTruncated > 0 {
+		fmt.Fprintf(&b, "  → %d more recent failures omitted; rerun with --top to expand\n", r.ExtractionFailuresTruncated)
 	}
 	if len(r.ExtractionFailures) > 0 {
 		fmt.Fprintln(&b)

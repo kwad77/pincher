@@ -4965,13 +4965,14 @@ func (s *Store) ListRecentExtractionFailuresAcrossProjects(cutoffUnix int64, lim
 	for rows.Next() {
 		var f ExtractionFailure
 		var first, last int64
-		var details sql.NullString
-		if err := rows.Scan(&f.ID, &f.ProjectID, &f.FilePath, &f.Language, &f.Reason, &details, &first, &last, &f.BinaryVersionAtFailure); err != nil {
+		var details, binaryVersion sql.NullString
+		if err := rows.Scan(&f.ID, &f.ProjectID, &f.FilePath, &f.Language, &f.Reason, &details, &first, &last, &binaryVersion); err != nil {
 			return nil, err
 		}
 		f.Details = details.String
 		f.FirstSeenAt = time.Unix(first, 0)
 		f.LastSeenAt = time.Unix(last, 0)
+		f.BinaryVersionAtFailure = binaryVersion.String
 		out = append(out, f)
 	}
 	return out, rows.Err()

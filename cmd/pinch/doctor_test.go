@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
@@ -195,6 +196,44 @@ func TestDoctorReport_LookbackFilters(t *testing.T) {
 		if f.File == "old.yaml" {
 			t.Errorf("old.yaml (last_seen_at=0) should be filtered by 1-hour lookback")
 		}
+	}
+}
+
+func TestDoctorReport_ExtractionFailuresGlobalTopAndTruncation(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	for p := 0; p < 3; p++ {
+		id := fmt.Sprintf("p%d", p)
+		if err := store.UpsertProject(db.Project{
+			ID: id, Path: "/" + id, Name: id, IndexedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("UpsertProject %s: %v", id, err)
+		}
+		for i := 0; i < 5; i++ {
+			file := fmt.Sprintf("%s-f%d.go", id, i)
+			if err := store.RecordExtractionFailure(id, file, "Go", "parse_error", "detail"); err != nil {
+				t.Fatalf("RecordExtractionFailure %s: %v", file, err)
+			}
+		}
+	}
+
+	r, err := buildDoctorReport(store, dir, 168, 10, "")
+	if err != nil {
+		t.Fatalf("buildDoctorReport: %v", err)
+	}
+	if len(r.ExtractionFailures) != 10 {
+		t.Fatalf("extraction failures = %d, want 10 global rows", len(r.ExtractionFailures))
+	}
+	if r.ExtractionFailuresTruncated != 5 {
+		t.Fatalf("ExtractionFailuresTruncated = %d, want 5", r.ExtractionFailuresTruncated)
+	}
+	if md := formatDoctorMarkdown(r); !strings.Contains(md, "5 more recent failures omitted") {
+		t.Fatalf("Markdown missing truncation hint:\n%s", md)
 	}
 }
 
