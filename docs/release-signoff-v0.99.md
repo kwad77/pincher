@@ -77,6 +77,10 @@ Additional v0.99 local hardening after the last hosted run:
 | [`311e16d`](https://github.com/kwad77/pincher/commit/311e16d) | DB diagnostics | `doctor` DB-size attribution now includes durable `pending_edges`; source-built doctor reported `db_bytes_estimate` on the dogfood DB | Pending hosted validation |
 | [`78bdcda`](https://github.com/kwad77/pincher/commit/78bdcda) | Migration review | Adds `docs/release-signoff-v0.98.md`; fixes stale `pincher` data-dir backup examples to `pincherMCP` | Pending hosted validation |
 | [`7e31d7d`](https://github.com/kwad77/pincher/commit/7e31d7d) | Release tracking | Records local v0.99 hardening status and explicitly separates local evidence from hosted release evidence | Pending hosted validation |
+| [`e8cfccc`](https://github.com/kwad77/pincher/commit/e8cfccc) | Release tracking | Files [#1898](https://github.com/kwad77/pincher/issues/1898) and makes hosted Actions enqueue recovery an explicit v0.99 gate | Pending hosted validation |
+| [`083452d`](https://github.com/kwad77/pincher/commit/083452d) | CLI diagnostics | Fixes `pincher doctor --help` `--project` placeholder output and documents DB-size triage fields | Pending hosted validation |
+| [`3301fa0`](https://github.com/kwad77/pincher/commit/3301fa0) | DB cleanup | Adds `pincher project prune-dead` as a CLI fallback for dead-path cleanup when MCP hosts are unavailable | Pending hosted validation |
+| [`ce351b3`](https://github.com/kwad77/pincher/commit/ce351b3) | CI time | Removes redundant checkout/setup-go from the `Coverage` job while preserving the check name; local full coverage flow passed at 85.3% | Pending hosted validation |
 
 These commits are useful v0.99 hardening, but they are **not** final release
 evidence until hosted CI, Host conformance, govulncheck, and Pages enqueue and
@@ -88,6 +92,11 @@ Manual dispatch rechecks on 2026-05-26 still fail before run creation:
 |---|---|---|
 | `ci.yml` | HTTP 500 `Failed to run workflow dispatch` | `E828:3208B5:1BCAE1A:1BF0249:6A157F79` |
 | `time-to-first-success.yml` | HTTP 500 `Failed to run workflow dispatch` | `E818:1BCBFC:19FD4A9:1A215B8:6A157F79` |
+
+Pushes through
+[`ce351b3`](https://github.com/kwad77/pincher/commit/ce351b3) also failed to
+create new hosted runs; `gh run list` still shows the newest hosted release
+validation at `b9e298d`.
 
 The migration rehearsal now exercises the intended path:
 
