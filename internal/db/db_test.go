@@ -1962,6 +1962,83 @@ func TestGetHotspots_UsesProjectToIndexWithoutGroupTempTree(t *testing.T) {
 	}
 }
 
+func TestTraceViaCTEScoped_UsesProjectEndpointIndexes(t *testing.T) {
+	s := newTestStore(t)
+	s.UpsertProject(testProject("p1"))
+	s.BulkUpsertSymbols([]Symbol{
+		testSymbol("a", "A", "Function", "p1", "a.go"),
+		testSymbol("b", "B", "Function", "p1", "b.go"),
+	})
+	s.BulkUpsertEdges([]Edge{
+		{ProjectID: "p1", FromID: "a", ToID: "b", Kind: "CALLS", Confidence: 1.0},
+	})
+
+	cases := []struct {
+		name      string
+		neighbor  string
+		joinCond  string
+		wantIndex string
+	}{
+		{
+			name:      "outbound",
+			neighbor:  "e.to_id",
+			joinCond:  "e.from_id = r.id",
+			wantIndex: "idx_edge_project_from_kind_to",
+		},
+		{
+			name:      "inbound",
+			neighbor:  "e.from_id",
+			joinCond:  "e.to_id = r.id",
+			wantIndex: "idx_edge_project_to_kind_from",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := `EXPLAIN QUERY PLAN
+				WITH RECURSIVE reach(id, depth, via) AS (
+					SELECT ?, 0, ''
+					UNION ALL
+					SELECT ` + tc.neighbor + `, r.depth + 1, e.kind
+					FROM reach r
+					JOIN edges e INDEXED BY ` + tc.wantIndex + ` ON ` + tc.joinCond + ` AND e.kind IN (?, ?, ?) AND e.project_id = ?
+					WHERE r.depth < ?
+				)
+				SELECT id, MIN(depth) AS depth, MIN(via) AS via
+				FROM reach
+				WHERE id != ? AND depth > 0
+				GROUP BY id
+				ORDER BY MIN(depth)
+				LIMIT 500`
+			rows, err := s.ro.Query(q, "a", "CALLS", "HTTP_CALLS", "ASYNC_CALLS", "p1", 2, "a")
+			if err != nil {
+				t.Fatalf("EXPLAIN TraceViaCTEScoped %s: %v", tc.name, err)
+			}
+			defer rows.Close()
+
+			var plan strings.Builder
+			for rows.Next() {
+				var id, parent, notused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+					t.Fatalf("scan plan: %v", err)
+				}
+				plan.WriteString(detail)
+				plan.WriteByte('\n')
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("plan rows: %v", err)
+			}
+			got := plan.String()
+			if !strings.Contains(got, tc.wantIndex) {
+				t.Fatalf("TraceViaCTEScoped %s plan did not use %s:\n%s", tc.name, tc.wantIndex, got)
+			}
+			if strings.Contains(got, "idx_edges_source") {
+				t.Fatalf("TraceViaCTEScoped %s plan regressed to idx_edges_source scan:\n%s", tc.name, got)
+			}
+		})
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Utility functions
 // ─────────────────────────────────────────────────────────────────────────────

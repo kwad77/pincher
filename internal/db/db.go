@@ -1701,6 +1701,15 @@ END;`,
 	// order, avoiding that temp grouping structure without changing any
 	// extracted data.
 	`CREATE INDEX IF NOT EXISTS idx_edge_project_to ON edges(project_id, to_id);`,
+
+	// v37 → v38: project-first edge endpoint indexes for trace CTEs.
+	// Dogfood on the Hermes corpus showed TraceViaCTEScoped picking
+	// idx_edges_source(project_id, kind, source) inside the recursive
+	// step, scanning every CALLS row in the project (~88k rows) instead
+	// of seeking by the current frontier endpoint. These indexes keep
+	// project scoping first, then the recursive endpoint, then kind.
+	`CREATE INDEX IF NOT EXISTS idx_edge_project_from_kind_to ON edges(project_id, from_id, kind, to_id);
+	 CREATE INDEX IF NOT EXISTS idx_edge_project_to_kind_from ON edges(project_id, to_id, kind, from_id);`,
 }
 
 // schemaMigrationInvalidates classifies each migration in schemaMigrations
@@ -1783,6 +1792,7 @@ var schemaMigrationInvalidates = []MigrationInvalidates{
 	invalidatesNothing, // [33] v34→v35: edge traversal covering indexes (pure DDL; no extracted data changes)
 	invalidatesNothing, // [34] v35→v36: projects.index_state/index_started_at (metadata-only crash recovery marker)
 	invalidatesNothing, // [35] v36→v37: edge project/to_id grouping index for hotspots (pure DDL; no extracted data changes)
+	invalidatesNothing, // [36] v37→v38: project-first trace endpoint indexes (pure DDL; no extracted data changes)
 }
 
 func init() {
@@ -2535,6 +2545,8 @@ CREATE INDEX IF NOT EXISTS idx_edge_kind ON edges(project_id, kind);
 CREATE INDEX IF NOT EXISTS idx_edge_from_project_kind_to ON edges(from_id, project_id, kind, to_id);
 CREATE INDEX IF NOT EXISTS idx_edge_to_project_kind_from ON edges(to_id, project_id, kind, from_id);
 CREATE INDEX IF NOT EXISTS idx_edge_project_to ON edges(project_id, to_id);
+CREATE INDEX IF NOT EXISTS idx_edge_project_from_kind_to ON edges(project_id, from_id, kind, to_id);
+CREATE INDEX IF NOT EXISTS idx_edge_project_to_kind_from ON edges(project_id, to_id, kind, from_id);
 
 CREATE TABLE IF NOT EXISTS files (
     project_id TEXT    NOT NULL,
@@ -4582,6 +4594,14 @@ func (s *Store) traceViaCTE(projectID, startID, direction string, edgeKinds []st
 		} else {
 			joinCond = "e.to_id = r.id"
 		}
+		indexHint := ""
+		if projectID != "" {
+			if dir == "outbound" {
+				indexHint = " INDEXED BY idx_edge_project_from_kind_to"
+			} else {
+				indexHint = " INDEXED BY idx_edge_project_to_kind_from"
+			}
+		}
 		var selectNeighbor string
 		if dir == "outbound" {
 			selectNeighbor = "e.to_id"
@@ -4601,7 +4621,7 @@ func (s *Store) traceViaCTE(projectID, startID, direction string, edgeKinds []st
 			UNION ALL
 			SELECT ` + selectNeighbor + `, r.depth + 1, e.kind
 			FROM reach r
-			JOIN edges e ON ` + joinCond + ` AND e.kind IN (` + in + `)` + projectFilter + `
+			JOIN edges e` + indexHint + ` ON ` + joinCond + ` AND e.kind IN (` + in + `)` + projectFilter + `
 			WHERE r.depth < ?
 		)
 		SELECT id, MIN(depth) AS depth, MIN(via) AS via

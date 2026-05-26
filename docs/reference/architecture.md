@@ -134,7 +134,7 @@ Project-scoped paths — `search`, `symbol`/`symbols` when `project=` is passed,
 
 ## Schema
 
-Schema is versioned via the `schema_version` table. Current version: **v37**. Migrations apply automatically on startup — no data loss, no manual steps. To add a migration: append a SQL string to `schemaMigrations` in `db.go`; the version number is auto-derived from the slice length.
+Schema is versioned via the `schema_version` table. Current version: **v38**. Migrations apply automatically on startup — no data loss, no manual steps. To add a migration: append a SQL string to `schemaMigrations` in `db.go`; the version number is auto-derived from the slice length.
 
 Migration history:
 
@@ -177,6 +177,7 @@ Migration history:
 | v34→v35 | `idx_edge_from_project_kind_to` + `idx_edge_to_project_kind_from` — covering edge traversal indexes for outbound/inbound pinchQL BFS. Keeps project and kind filtering inside the endpoint lookup so multi-project stores with colliding symbol IDs do less read amplification. |
 | v35→v36 | `projects.index_state` + `index_started_at` — project-level crash/OOM recovery marker. The indexer marks a project `running` before file mutation starts and clears it only after a successful pass; the next index forces re-extraction if a prior run died mid-pass. |
 | v36→v37 | `idx_edge_project_to` — project-scoped inbound edge grouping index for `hotspot`, avoiding a temp grouping B-tree when ranking the most-called symbols. |
+| v37→v38 | `idx_edge_project_from_kind_to` + `idx_edge_project_to_kind_from` — project-first trace endpoint indexes so recursive trace CTEs seek by the current frontier endpoint instead of scanning project/kind edge buckets on large graphs. |
 
 ---
 

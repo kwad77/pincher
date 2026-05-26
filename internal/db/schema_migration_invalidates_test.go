@@ -49,10 +49,10 @@ func TestSchemaMigrationInvalidates_ClassificationCount(t *testing.T) {
 			nothingN++
 		}
 	}
-	// Snapshot as of v37 (36 migration entries): 31 Nothing / 5 All.
-	// v36→v37 added a project/to_id edge grouping index for hotspots —
-	// pure DDL, classified Nothing.
-	const wantNothing = 31
+	// Snapshot as of v38 (37 migration entries): 32 Nothing / 5 All.
+	// v37→v38 added project-first trace endpoint indexes — pure DDL,
+	// classified Nothing.
+	const wantNothing = 32
 	const wantAll = 5
 	if nothingN != wantNothing || allN != wantAll {
 		t.Errorf("classification drifted: got Nothing=%d All=%d, want Nothing=%d All=%d. If you intentionally added/changed a migration's invalidates value, update these constants AND the rationale block in db.go.",
