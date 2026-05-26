@@ -12,8 +12,8 @@ This budget is enforced by `.github/workflows/time-to-first-success.yml` (weekly
 |---|---|---|
 | `install` | `cp $PINCHER_BIN $PATH_DIR/pincher` | Every install path (Homebrew, Scoop, direct download) ends in "binary on PATH" — we time the cheapest representation of that step. Real install paths add network IO, but the floor is meaningful. |
 | `clone` | `git clone --depth=1` of the target repo | Real user wall-clock starts at `git clone`, not at "binary on PATH." `--depth=1` is honest — a new user does not pull full history. |
-| `index` | `pincher index .` | First-index cost — the dominant phase for any non-trivial repo. |
-| `first_query` | `pincher search "<symbol>"` against the just-indexed corpus | Validates the result is usable, not just that indexing completed. |
+| `index` | `pincher index . --data-dir "$WORK/data"` | First-index cost — the dominant phase for any non-trivial repo, isolated from the user's default Pincher DB. |
+| `first_query` | Start loopback HTTP and call `/v1/search` for `"<symbol>"` against the just-indexed corpus | Validates the result is usable through the current tool surface, not just that indexing completed. |
 
 Total: `install + clone + index + first_query` ≤ `BUDGET_SECONDS` (default 300).
 
@@ -73,7 +73,7 @@ Two reasons:
 1. **Variance.** CI runner network IO drives the `clone` phase. Per-PR signal is too noisy to act on.
 2. **The signal is drift, not stepwise change.** Time-to-first-success regressions accumulate over many minors — a single PR almost never moves the number by 20%. Catching it weekly + at release-prep is the right cadence.
 
-The corpus-bench gate (`make corpus-bench`) is the per-PR perf gate for in-process operations. This bench measures the orthogonal axis of process-startup + IO + first-query — much slower-moving territory.
+The corpus-bench gate (`make corpus-bench`) is the per-PR perf gate for in-process operations. This bench measures the orthogonal axis of process-startup + IO + first-query through the loopback HTTP tool surface — much slower-moving territory.
 
 ## Related
 

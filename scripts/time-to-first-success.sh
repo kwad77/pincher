@@ -7,7 +7,7 @@
 #
 #   1. install      — copy the pre-built pincher binary into PATH
 #   2. index        — `pincher index .` against the target repo
-#   3. first-query  — `pincher search` for a representative symbol
+#   3. first-query  — loopback HTTP `/v1/search` for a representative symbol
 #
 # Reported budget: ≤5 min on a ~5k-file repo. Regressions >20% page
 # (gated weekly in CI, not per-PR — see #1536 FILE-R for the conformance
@@ -36,12 +36,27 @@ if [ -z "${PINCHER_BIN}" ] || [ ! -x "${PINCHER_BIN}" ]; then
   exit 2
 fi
 
+for required in curl git jq; do
+  if ! command -v "${required}" >/dev/null 2>&1; then
+    echo "::error::${required} not on PATH — time-to-first-success needs it" >&2
+    exit 2
+  fi
+done
+
 REPO_URL="${1:-https://github.com/golang/go}"
 QUERY="${2:-fmt.Println}"
 BUDGET_SECONDS="${BUDGET_SECONDS:-300}"  # 5 min default
 
 WORK=$(mktemp -d -t pincher-ttfs-XXXXXX)
-trap 'rm -rf "${WORK}"' EXIT
+SERVER_PID=""
+cleanup() {
+  if [ -n "${SERVER_PID}" ]; then
+    kill -TERM "${SERVER_PID}" 2>/dev/null || true
+    wait "${SERVER_PID}" 2>/dev/null || true
+  fi
+  rm -rf "${WORK}"
+}
+trap cleanup EXIT
 
 # Phase 1: install (PATH copy). Realistic minimum — every install path
 # (Homebrew, Scoop, direct download) ends in "binary on PATH"; we time
@@ -63,13 +78,51 @@ T_CLONE=$(date +%s)
 CLONE_MS=$(( (T_CLONE - T0) * 1000 ))
 
 cd "${WORK}/repo"
-pincher index . >/dev/null 2>&1
+pincher index . --data-dir "${WORK}/data" >/dev/null 2>&1
 T2=$(date +%s)
 INDEX_MS=$(( (T2 - T_CLONE) * 1000 ))
 
-# Phase 3: first query. Pick a search the user would actually type.
+# Phase 3: first query. Pick a search the user would actually type and
+# run it through the current tool surface. There is no standalone
+# `pincher search` CLI; search is served through MCP/HTTP.
 T0=$(date +%s)
-pincher search "${QUERY}" >/dev/null 2>&1 || true
+pincher --data-dir "${WORK}/data" --no-stdio --http 127.0.0.1:0 >"${WORK}/srv.out" 2>&1 &
+SERVER_PID=$!
+
+addr=""
+for _ in $(seq 1 50); do
+  addr=$(grep -oE '127\.0\.0\.1:[0-9]+' "${WORK}/srv.out" 2>/dev/null | head -1 || true)
+  [ -n "${addr}" ] && break
+  sleep 0.2
+done
+if [ -z "${addr}" ]; then
+  echo "::error::pincher HTTP gateway did not bind" >&2
+  cat "${WORK}/srv.out" >&2 || true
+  exit 1
+fi
+
+for _ in $(seq 1 30); do
+  if curl -fsSL -m 1 "http://${addr}/v1/health" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.2
+done
+if ! curl -fsSL -m 1 "http://${addr}/v1/health" >/dev/null 2>&1; then
+  echo "::error::pincher HTTP gateway bound ${addr} but did not become ready" >&2
+  cat "${WORK}/srv.out" >&2 || true
+  exit 1
+fi
+
+PROJECT="$(basename "${PWD}")"
+body=$(jq -cn --arg query "${QUERY}" --arg project "${PROJECT}" \
+  '{query:$query, project:$project, limit:5}')
+curl -fsSL -m 10 -H 'Content-Type: application/json' \
+  -d "${body}" "http://${addr}/v1/search" >"${WORK}/search.json"
+if ! jq -e '(.results // []) | length > 0' "${WORK}/search.json" >/dev/null; then
+  echo "::error::first search returned no results for query '${QUERY}' in project '${PROJECT}'" >&2
+  cat "${WORK}/search.json" >&2
+  exit 1
+fi
 T3=$(date +%s)
 QUERY_MS=$(( (T3 - T0) * 1000 ))
 

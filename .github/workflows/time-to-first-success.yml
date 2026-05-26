@@ -1,7 +1,7 @@
 name: Time to first success
 
 # FILE-Q #1535 v0.91 — weekly bench measuring the brand-new-user path
-# from `git clone` to `pincher search`. Budget: ≤5 min total. Regressions
+# from `git clone` to first `/v1/search`. Budget: ≤5 min total. Regressions
 # >20% over the committed baseline page the maintainer (workflow fails).
 #
 # Not part of per-PR CI — runs on a weekly schedule + workflow_dispatch
