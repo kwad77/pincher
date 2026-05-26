@@ -24,7 +24,7 @@ func TestHandleArchitecture_LowRatio_AttachesGhostWarning(t *testing.T) {
 	pid := "p-ratio"
 	store.UpsertProject(db.Project{
 		ID: pid, Path: t.TempDir(), Name: pid, IndexedAt: time.Now(),
-		FileCount: 50, SymCount: 5000, EdgeCount: 2, // ratio 0.0004 — well below 0.001
+		FileCount: 50, SymCount: 1001, EdgeCount: 1, // ratio below 0.001
 	})
 	srv.sessionID = pid
 
