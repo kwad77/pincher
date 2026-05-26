@@ -101,7 +101,12 @@ pincher update --dry-run             # print what would run
 pincher update --yes                 # skip confirmation
 ```
 
-**Caveat:** release artifacts (windows/linux/darwin binaries on each tag) aren't published yet. The asset-matching code is ready for them; the workflow change to upload artifacts is a separate task. Until then, in-repo mode is the supported path.
+Standalone update consumes the release archives published for each tag
+(`pincher-vX.Y.Z-linux-amd64.tar.gz`, `pincher-vX.Y.Z-darwin-arm64.tar.gz`,
+Windows `.zip`, etc.) and extracts the contained binary before swapping it
+into place. If no matching archive or raw binary exists for the current
+platform, it prints the `go install` fallback instead of silently trying an
+unsupported asset.
 
 ### `pincher web`
 

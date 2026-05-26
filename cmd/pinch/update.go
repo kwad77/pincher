@@ -1,6 +1,9 @@
 package main
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -30,10 +33,9 @@ const (
 //     (or --source points at one), runs `git pull --ff-only` and rebuilds
 //     the binary in-place via `go build`.
 //   - **Standalone**: queries GitHub releases for the latest tag, compares
-//     against the running version, and (when release assets land) will
-//     download a prebuilt binary. Until then, falls back to `go install`,
-//     which currently requires the go.mod module path to match the GitHub
-//     URL — see the docs banner.
+//     against the running version, downloads the matching release archive
+//     or raw binary, and swaps the extracted binary into place. If no
+//     matching asset exists, falls back to `go install`.
 //
 // The check-only mode (`--check`) prints what *would* happen and exits 0
 // regardless of whether an update is available; cron-style callers should
@@ -222,14 +224,16 @@ func rebuildBinary(out io.Writer, repoRoot string, dryRun bool) error {
 
 // gitRelease describes one GitHub release as much as we need for update logic.
 type gitRelease struct {
-	TagName string `json:"tag_name"`
-	Name    string `json:"name"`
-	Draft   bool   `json:"draft"`
-	Assets  []struct {
-		Name               string `json:"name"`
-		BrowserDownloadURL string `json:"browser_download_url"`
-		Size               int64  `json:"size"`
-	} `json:"assets"`
+	TagName string         `json:"tag_name"`
+	Name    string         `json:"name"`
+	Draft   bool           `json:"draft"`
+	Assets  []releaseAsset `json:"assets"`
+}
+
+type releaseAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+	Size               int64  `json:"size"`
 }
 
 // detectInstallMethod inspects the running binary's path to figure out
@@ -387,7 +391,7 @@ func updateStandalone(out io.Writer, check, yes, dryRun bool) error {
 			return errors.New("aborted by user")
 		}
 	}
-	return downloadAndSwap(out, asset.BrowserDownloadURL)
+	return downloadAssetAndSwap(out, asset.Name, asset.BrowserDownloadURL)
 }
 
 // updateReleasesURL is the GitHub releases-latest endpoint used by
@@ -429,11 +433,7 @@ func fetchLatestRelease() (gitRelease, error) {
 //	pincher.<os>.<arch>[.exe]
 //
 // Empty BrowserDownloadURL means no asset matched.
-func pickAssetForPlatform(rel gitRelease) struct {
-	Name               string `json:"name"`
-	BrowserDownloadURL string `json:"browser_download_url"`
-	Size               int64  `json:"size"`
-} {
+func pickAssetForPlatform(rel gitRelease) releaseAsset {
 	osTag := strings.ToLower(runtime.GOOS)
 	archTag := strings.ToLower(runtime.GOARCH)
 	for _, a := range rel.Assets {
@@ -441,19 +441,9 @@ func pickAssetForPlatform(rel gitRelease) struct {
 		if !strings.Contains(name, osTag) || !strings.Contains(name, archTag) {
 			continue
 		}
-		// archive formats deliberately not supported in this pass — the
-		// publish workflow can ship raw binaries for now (#TBD: add tar.gz/zip
-		// extraction once release artifacts settle).
-		if strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".tgz") || strings.HasSuffix(name, ".zip") {
-			continue
-		}
 		return a
 	}
-	return struct {
-		Name               string `json:"name"`
-		BrowserDownloadURL string `json:"browser_download_url"`
-		Size               int64  `json:"size"`
-	}{}
+	return releaseAsset{}
 }
 
 // downloadAndSwap fetches url, writes it to a temp file next to the
@@ -467,6 +457,10 @@ func pickAssetForPlatform(rel gitRelease) struct {
 // the test path from having to override os.Executable() and from
 // risking the test binary being renamed mid-run.
 func downloadAndSwap(out io.Writer, url string) error {
+	return downloadAssetAndSwap(out, "", url)
+}
+
+func downloadAssetAndSwap(out io.Writer, assetName, url string) error {
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("locate running binary: %w", err)
@@ -474,13 +468,17 @@ func downloadAndSwap(out io.Writer, url string) error {
 	if resolved, err := filepath.EvalSymlinks(exePath); err == nil {
 		exePath = resolved
 	}
-	return downloadAndInstallAt(out, url, exePath)
+	return downloadAndInstallAssetAt(out, assetName, url, exePath)
 }
 
 // downloadAndInstallAt fetches `url` and atomically replaces the file at
 // `exePath` with the response body. Inner half of downloadAndSwap; see
 // that function's doc for why the split exists.
 func downloadAndInstallAt(out io.Writer, url, exePath string) error {
+	return downloadAndInstallAssetAt(out, "", url, exePath)
+}
+
+func downloadAndInstallAssetAt(out io.Writer, assetName, url, exePath string) error {
 	dir := filepath.Dir(exePath)
 	tmp, err := os.CreateTemp(dir, "pincher-update-*.tmp")
 	if err != nil {
@@ -508,9 +506,31 @@ func downloadAndInstallAt(out io.Writer, url, exePath string) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
 	}
-	if err := os.Chmod(tmpPath, 0o755); err != nil {
+
+	installPath := tmpPath
+	if isTarGzAsset(assetName, url) || isZipAsset(assetName, url) {
+		extracted, err := os.CreateTemp(dir, "pincher-extracted-*.tmp")
+		if err != nil {
+			return fmt.Errorf("create extract temp file in %s: %w", dir, err)
+		}
+		extractPath := extracted.Name()
+		if err := extracted.Close(); err != nil {
+			return fmt.Errorf("close extract temp file: %w", err)
+		}
+		defer os.Remove(extractPath)
+		if isZipAsset(assetName, url) {
+			err = extractZipBinary(tmpPath, extractPath)
+		} else {
+			err = extractTarGzipBinary(tmpPath, extractPath)
+		}
+		if err != nil {
+			return err
+		}
+		installPath = extractPath
+	}
+	if err := os.Chmod(installPath, 0o755); err != nil {
 		// Non-fatal on Windows where Chmod is largely a no-op.
-		fmt.Fprintf(out, "  warn: chmod %s: %v\n", tmpPath, err)
+		fmt.Fprintf(out, "  warn: chmod %s: %v\n", installPath, err)
 	}
 
 	if runtime.GOOS == "windows" {
@@ -523,11 +543,107 @@ func downloadAndInstallAt(out io.Writer, url, exePath string) error {
 			}
 		}
 	}
-	if err := os.Rename(tmpPath, exePath); err != nil {
+	if err := os.Rename(installPath, exePath); err != nil {
 		return fmt.Errorf("install new binary: %w", err)
 	}
 
 	fmt.Fprintf(out, "  installed -> %s\n", exePath)
+	return nil
+}
+
+func isTarGzAsset(assetName, url string) bool {
+	name := strings.ToLower(assetName)
+	if name == "" {
+		name = strings.ToLower(url)
+	}
+	return strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".tgz")
+}
+
+func isZipAsset(assetName, url string) bool {
+	name := strings.ToLower(assetName)
+	if name == "" {
+		name = strings.ToLower(url)
+	}
+	return strings.HasSuffix(name, ".zip")
+}
+
+func archiveBinaryCandidate(name string) bool {
+	base := strings.ToLower(filepath.Base(name))
+	if base == "pincher" || base == "pincher.exe" {
+		return true
+	}
+	if !strings.HasPrefix(base, "pincher-") {
+		return false
+	}
+	return !strings.HasSuffix(base, ".tar.gz") &&
+		!strings.HasSuffix(base, ".tgz") &&
+		!strings.HasSuffix(base, ".zip") &&
+		!strings.HasSuffix(base, ".sig")
+}
+
+func extractTarGzipBinary(archivePath, destPath string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("open tar.gz: %w", err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("read tar.gz: %w", err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return errors.New("archive did not contain a pincher binary")
+		}
+		if err != nil {
+			return fmt.Errorf("read tar entry: %w", err)
+		}
+		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+			continue
+		}
+		if !archiveBinaryCandidate(hdr.Name) {
+			continue
+		}
+		return copyReaderToPath(destPath, tr)
+	}
+}
+
+func extractZipBinary(archivePath, destPath string) error {
+	zr, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return fmt.Errorf("open zip: %w", err)
+	}
+	defer zr.Close()
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() || !archiveBinaryCandidate(f.Name) {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return fmt.Errorf("open zip entry: %w", err)
+		}
+		err = copyReaderToPath(destPath, rc)
+		rc.Close()
+		return err
+	}
+	return errors.New("archive did not contain a pincher binary")
+}
+
+func copyReaderToPath(destPath string, r io.Reader) error {
+	dst, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
+	if err != nil {
+		return fmt.Errorf("create extracted binary: %w", err)
+	}
+	if _, err := io.Copy(dst, r); err != nil {
+		dst.Close()
+		return fmt.Errorf("extract binary: %w", err)
+	}
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("close extracted binary: %w", err)
+	}
 	return nil
 }
 

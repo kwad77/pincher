@@ -1,7 +1,10 @@
 package main
 
 import (
+	"archive/tar"
+	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -404,11 +407,7 @@ func TestNormaliseVersion(t *testing.T) {
 func TestPickAssetForPlatform_MatchesGOOS(t *testing.T) {
 	rel := gitRelease{
 		TagName: "v0.3.0",
-		Assets: []struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
-			Size               int64  `json:"size"`
-		}{
+		Assets: []releaseAsset{
 			{Name: "checksums.txt", BrowserDownloadURL: "u1", Size: 100},
 			{Name: "pincher_" + runtime.GOOS + "_" + runtime.GOARCH, BrowserDownloadURL: "u-bin", Size: 12345},
 			{Name: "pincher_other_arch", BrowserDownloadURL: "u3", Size: 9999},
@@ -420,32 +419,24 @@ func TestPickAssetForPlatform_MatchesGOOS(t *testing.T) {
 	}
 }
 
-func TestPickAssetForPlatform_SkipsArchives(t *testing.T) {
+func TestPickAssetForPlatform_MatchesReleaseArchives(t *testing.T) {
 	osTag := runtime.GOOS
 	archTag := runtime.GOARCH
 	rel := gitRelease{
-		Assets: []struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
-			Size               int64  `json:"size"`
-		}{
-			{Name: "pincher_" + osTag + "_" + archTag + ".tar.gz", BrowserDownloadURL: "u-tgz"},
-			{Name: "pincher_" + osTag + "_" + archTag + ".zip", BrowserDownloadURL: "u-zip"},
+		Assets: []releaseAsset{
+			{Name: "pincher-v0.97.0-" + osTag + "-" + archTag + ".tar.gz", BrowserDownloadURL: "u-tgz"},
+			{Name: "pincher-v0.97.0-other-arch.tar.gz", BrowserDownloadURL: "u-other"},
 		},
 	}
 	got := pickAssetForPlatform(rel)
-	if got.BrowserDownloadURL != "" {
-		t.Fatalf("archive should not be picked, got %+v", got)
+	if got.BrowserDownloadURL != "u-tgz" {
+		t.Fatalf("got %+v, want archive asset with URL u-tgz", got)
 	}
 }
 
 func TestPickAssetForPlatform_NoMatch(t *testing.T) {
 	rel := gitRelease{
-		Assets: []struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
-			Size               int64  `json:"size"`
-		}{
+		Assets: []releaseAsset{
 			{Name: "checksums.txt", BrowserDownloadURL: "u"},
 		},
 	}
@@ -604,6 +595,74 @@ func TestDownloadAndInstallAt_Success(t *testing.T) {
 	}
 }
 
+func TestDownloadAndInstallAssetAt_TarGz(t *testing.T) {
+	body := []byte("#!/bin/sh\necho from tar\n")
+	archive := makeTarGzAsset(t, "pincher-v0.97.0-linux-amd64", body)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(archive)
+	}))
+	defer srv.Close()
+
+	exePath := filepath.Join(t.TempDir(), "fake-pincher")
+	var buf bytes.Buffer
+	if err := downloadAndInstallAssetAt(&buf, "pincher-v0.97.0-linux-amd64.tar.gz", srv.URL, exePath); err != nil {
+		t.Fatalf("downloadAndInstallAssetAt tar.gz: %v\n%s", err, buf.String())
+	}
+	got, err := os.ReadFile(exePath)
+	if err != nil {
+		t.Fatalf("read installed: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("installed bytes mismatch\nwant: %q\ngot:  %q", body, got)
+	}
+}
+
+func TestDownloadAndInstallAssetAt_Zip(t *testing.T) {
+	body := []byte("fake windows binary")
+	archive := makeZipAsset(t, "pincher-v0.97.0-windows-amd64.exe", body)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(archive)
+	}))
+	defer srv.Close()
+
+	exePath := filepath.Join(t.TempDir(), "fake-pincher.exe")
+	var buf bytes.Buffer
+	if err := downloadAndInstallAssetAt(&buf, "pincher-v0.97.0-windows-amd64.zip", srv.URL, exePath); err != nil {
+		t.Fatalf("downloadAndInstallAssetAt zip: %v\n%s", err, buf.String())
+	}
+	got, err := os.ReadFile(exePath)
+	if err != nil {
+		t.Fatalf("read installed: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("installed bytes mismatch\nwant: %q\ngot:  %q", body, got)
+	}
+}
+
+func TestDownloadAndInstallAssetAt_ArchiveMissingBinary(t *testing.T) {
+	archive := makeTarGzAsset(t, "README.txt", []byte("not a binary"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(archive)
+	}))
+	defer srv.Close()
+
+	exePath := filepath.Join(t.TempDir(), "fake-pincher")
+	var buf bytes.Buffer
+	err := downloadAndInstallAssetAt(&buf, "pincher-v0.97.0-linux-amd64.tar.gz", srv.URL, exePath)
+	if err == nil {
+		t.Fatalf("expected missing-binary error; output:\n%s", buf.String())
+	}
+	if !strings.Contains(err.Error(), "archive did not contain") {
+		t.Fatalf("expected archive missing-binary error, got: %v", err)
+	}
+	if _, statErr := os.Stat(exePath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no exePath written, got stat err: %v", statErr)
+	}
+}
+
 // TestDownloadAndInstallAt_Non200 covers the error path when the
 // server returns a non-OK status — the function must not write a
 // partial binary and must surface the status code.
@@ -654,6 +713,47 @@ func TestDownloadAndInstallAt_TransportError(t *testing.T) {
 			t.Errorf("leftover temp file: %s", e.Name())
 		}
 	}
+}
+
+func makeTarGzAsset(t *testing.T, name string, body []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: name,
+		Mode: 0o755,
+		Size: int64(len(body)),
+	}); err != nil {
+		t.Fatalf("write tar header: %v", err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatalf("write tar body: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("close gzip: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func makeZipAsset(t *testing.T, name string, body []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create(name)
+	if err != nil {
+		t.Fatalf("create zip entry: %v", err)
+	}
+	if _, err := w.Write(body); err != nil {
+		t.Fatalf("write zip body: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+	return buf.Bytes()
 }
 
 // TestRunGoInstall_RunnerInvoked covers the happy-ish path: with `go`
