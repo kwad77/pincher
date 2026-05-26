@@ -51,11 +51,11 @@ Advisory perf validation for the v0.99 prep window:
 
 | Gate | Run | Result |
 |---|---|---|
-| Per-tool latency | [26447225384](https://github.com/kwad77/pincher/actions/runs/26447225384) | Green |
+| Per-tool latency | [26457633278](https://github.com/kwad77/pincher/actions/runs/26457633278) | Green on current schema v37 head |
 | Multi-project ceiling | [26447225380](https://github.com/kwad77/pincher/actions/runs/26447225380) | Green |
 | Resource pressure | [26447225351](https://github.com/kwad77/pincher/actions/runs/26447225351) | Green |
 | Time to first success | [26455709893](https://github.com/kwad77/pincher/actions/runs/26455709893) | Green after current HTTP-search harness fix; `total_ms=8000` vs `12000` baseline |
-| Bench baseline refresh | [26447233599](https://github.com/kwad77/pincher/actions/runs/26447233599) | Green |
+| Bench baseline refresh | [26457613811](https://github.com/kwad77/pincher/actions/runs/26457613811) | Green on current schema v37 head |
 
 The earlier time-to-first-success run
 [`26447225383`](https://github.com/kwad77/pincher/actions/runs/26447225383)
@@ -185,7 +185,7 @@ commit, issue, or artifact URL.
 | govulncheck green | [`26456742341`](https://github.com/kwad77/pincher/actions/runs/26456742341) on [`d83fce9`](https://github.com/kwad77/pincher/commit/d83fce9) | Green |
 | Pages deploy green | [`26456741166`](https://github.com/kwad77/pincher/actions/runs/26456741166) on [`d83fce9`](https://github.com/kwad77/pincher/commit/d83fce9) | Green |
 | Migration rehearsal green | [`26457408074`](https://github.com/kwad77/pincher/actions/runs/26457408074) on [`0ed0919`](https://github.com/kwad77/pincher/commit/0ed0919), covering v0.4.1 → current schema v37 | Green |
-| Bench baseline decision recorded | [`26450267561`](https://github.com/kwad77/pincher/actions/runs/26450267561) on [`731329f`](https://github.com/kwad77/pincher/commit/731329f); artifact `bench-baseline-26450267561` | Green |
+| Bench baseline decision recorded | [`26457613811`](https://github.com/kwad77/pincher/actions/runs/26457613811) on [`768ca73`](https://github.com/kwad77/pincher/commit/768ca73); artifact `bench-baseline-26457613811` | Green |
 | Cross-platform install smoke ready | `install-validation.yml` after tag | Pending tag |
 | Launch artifacts have no stale placeholders | `docs/launch/placeholder-audit.md` | Green |
 | Post-v1.0 backlog umbrella filed | [#1897](https://github.com/kwad77/pincher/issues/1897) | Green |
