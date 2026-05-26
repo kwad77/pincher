@@ -3686,6 +3686,8 @@ func inPlaceholders(n int) string {
 
 // GetHotspots returns the most-called symbols (highest in-degree) for a project.
 func (s *Store) GetHotspots(projectID string, limit int) ([]Symbol, error) {
+	// Force the project-leading index so shared DBs with many projects do
+	// not scan unrelated edges ordered by to_id before grouping.
 	return s.querySymbols(`
 		SELECT s.id, s.project_id, s.file_path, s.name, s.qualified_name, s.kind, s.language,
 		       s.start_byte, s.end_byte, s.start_line, s.end_line,
@@ -3693,7 +3695,7 @@ func (s *Store) GetHotspots(projectID string, limit int) ([]Symbol, error) {
 		       s.complexity, s.is_exported, s.is_test, s.is_entry_point, s.file_hash,
 		       s.extraction_confidence, s.branch
 		FROM symbols s
-		JOIN (SELECT to_id, COUNT(*) AS cnt FROM edges WHERE project_id=? GROUP BY to_id) e ON s.id=e.to_id
+		JOIN (SELECT to_id, COUNT(*) AS cnt FROM edges INDEXED BY idx_edge_kind WHERE project_id=? GROUP BY to_id) e ON s.id=e.to_id
 		WHERE s.project_id=?
 		ORDER BY cnt DESC LIMIT ?`, projectID, projectID, limit)
 }
