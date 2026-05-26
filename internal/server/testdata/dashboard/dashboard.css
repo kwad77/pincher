@@ -289,6 +289,19 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .proj-banner-pill{background:rgba(63,185,80,.12);border:1px solid rgba(63,185,80,.25);border-radius:20px;color:var(--green);font-size:12px;font-weight:600;padding:4px 12px}
 .proj-banner-pill.blue{background:rgba(88,166,255,.12);border-color:rgba(88,166,255,.25);color:var(--accent)}
 
+/* ── Savings math panel ── */
+.savings-math-card{background:linear-gradient(135deg,rgba(88,166,255,.07),rgba(163,113,247,.06));border:1px solid rgba(88,166,255,.22);border-radius:10px;padding:18px 20px;margin-bottom:32px}
+.savings-math-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-bottom:14px}
+.savings-math-title{font-size:15px;font-weight:700;color:var(--text)}
+.savings-math-sub{font-size:12px;color:var(--muted);margin-top:4px;line-height:1.45}
+.savings-math-badge{font-family:ui-monospace,monospace;font-size:11px;color:var(--accent);border:1px solid rgba(88,166,255,.28);border-radius:14px;padding:3px 9px;background:rgba(88,166,255,.08)}
+.savings-math-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:12px 0 14px}
+.savings-math-metric{background:rgba(13,17,23,.36);border:1px solid var(--border);border-radius:8px;padding:12px}
+.savings-math-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px}
+.savings-math-value{font-size:20px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}
+.savings-math-value.good{color:var(--green)}
+.savings-math-formula{font-family:ui-monospace,monospace;font-size:12px;line-height:1.6;color:var(--muted);background:rgba(13,17,23,.44);border:1px dashed var(--border);border-radius:8px;padding:10px 12px}
+
 /* ── Project detail panel ── */
 .detail-panel{background:var(--surface);border:1px solid var(--accent);border-radius:10px;padding:20px;margin-top:16px;display:none}
 .detail-panel.open{display:block}

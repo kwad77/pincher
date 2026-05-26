@@ -106,6 +106,73 @@ func TestDeadCode_StructLiteralFnField_NotDead(t *testing.T) {
 	}
 }
 
+// TestDeadCode_TopLevelVarFunctionBinding_NotDead pins the #1877
+// platform-dispatch shape: a package-level var aliases a function
+// implementation that lives in a sibling file. The file-level READS
+// walker plus #565 binding pass must emit a CALLS edge from the module
+// to the bound function so audit_unused/dead_code do not confidently
+// report the implementation as safe to delete.
+func TestDeadCode_TopLevelVarFunctionBinding_NotDead_1877(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/index/orphan.go", `package index
+
+var processExecutablePath = platformProcessExecutablePath
+
+func caller() string {
+	return processExecutablePath()
+}
+`)
+	writeFile(t, dir, "internal/index/orphan_windows.go", `//go:build windows
+
+package index
+
+func platformProcessExecutablePath() string {
+	return "windows"
+}
+`)
+	writeFile(t, dir, "internal/index/orphan_unix.go", `//go:build !windows
+
+package index
+
+func platformProcessExecutablePath() string {
+	return "unix"
+}
+`)
+	if _, err := idx.Index(context.Background(), dir, false); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	pid := db.ProjectIDFromPath(dir)
+
+	dead, err := store.GetDeadCode(pid, []string{"Function"}, "Go", 1.0, 100)
+	if err != nil {
+		t.Fatalf("GetDeadCode: %v", err)
+	}
+	for _, s := range dead {
+		if s.Name == "platformProcessExecutablePath" {
+			t.Errorf("%s flagged dead — top-level var binding lost its binding-pass CALLS edge (#1877)",
+				s.QualifiedName)
+		}
+	}
+
+	syms, err := store.GetSymbolsByName(pid, "platformProcessExecutablePath", 5)
+	if err != nil {
+		t.Fatalf("GetSymbolsByName: %v", err)
+	}
+	if len(syms) != 2 {
+		t.Fatalf("expected both platformProcessExecutablePath build-tag sibling symbols, got %d", len(syms))
+	}
+	for _, sym := range syms {
+		results, err := store.TraceViaCTEScoped(pid, sym.ID, "inbound", []string{"CALLS"}, 2)
+		if err != nil {
+			t.Fatalf("TraceViaCTEScoped(%s): %v", sym.ID, err)
+		}
+		if len(results) == 0 {
+			t.Fatalf("%s has no inbound CALLS edge from binding pass (#1877)", sym.ID)
+		}
+	}
+}
+
 // TestDeadCode_TrulyDeadFnStillDead is the negative pin: a function
 // that's neither called nor bound anywhere should still surface in
 // dead_code. Without this gate the binding-pass would over-suppress

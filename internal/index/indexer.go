@@ -4430,10 +4430,11 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge, 
 	// emit a CALLS edge for it instead of dropping, so dead_code stops
 	// flagging the bound function as unreachable.
 	type lookup struct {
-		id     string
-		lang   string
-		isVar  bool
-		isFunc bool
+		id      string
+		lang    string
+		isVar   bool
+		isFunc  bool
+		funcIDs []string
 	}
 	qnCache := make(map[string]lookup)
 	lookupQN := func(qn string) lookup {
@@ -4466,6 +4467,14 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge, 
 			lang:   syms[canonical].Language,
 			isVar:  k == "Variable",
 			isFunc: k == "Function" || k == "Method",
+		}
+		if k == "Function" {
+			for _, s := range syms {
+				if s.Kind == "Function" && s.Language == syms[canonical].Language {
+					v.funcIDs = append(v.funcIDs, s.ID)
+				}
+			}
+			sort.Strings(v.funcIDs)
 		}
 		qnCache[qn] = v
 		return v
@@ -4531,7 +4540,9 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge, 
 		// stream must not bind the binding-pass CALLS edge onto an
 		// arbitrary same-named method when the real package-level
 		// function exists.
-		var v, fnCand, methodCand lookup
+		var v, methodCand lookup
+		var fnIDs []string
+		var fnLang string
 		for _, s := range syms {
 			if lang != "" && s.Language != lang {
 				continue
@@ -4540,8 +4551,9 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge, 
 			case "Variable":
 				v = lookup{id: s.ID, lang: s.Language, isVar: true}
 			case "Function":
-				if fnCand.id == "" {
-					fnCand = lookup{id: s.ID, lang: s.Language, isFunc: true}
+				fnIDs = append(fnIDs, s.ID)
+				if fnLang == "" {
+					fnLang = s.Language
 				}
 			case "Method":
 				if methodCand.id == "" {
@@ -4553,8 +4565,9 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge, 
 			}
 		}
 		if v.id == "" {
-			if fnCand.id != "" {
-				v = fnCand
+			if len(fnIDs) > 0 {
+				sort.Strings(fnIDs)
+				v = lookup{id: fnIDs[0], lang: fnLang, isFunc: true, funcIDs: fnIDs}
 			} else {
 				v = methodCand
 			}
@@ -4713,24 +4726,30 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge, 
 				droppedStructField++
 				continue
 			}
-			key := fromID + "\x00" + to.id + "\x00CALLS"
-			if seen[key] {
-				dedupedDuplicate++
-				continue
+			targetIDs := to.funcIDs
+			if len(targetIDs) == 0 {
+				targetIDs = []string{to.id}
 			}
-			seen[key] = true
-			edges = append(edges, db.Edge{
-				ProjectID:  projectID,
-				FromID:     fromID,
-				ToID:       to.id,
-				Kind:       "CALLS",
-				Confidence: 0.4,
-				// Distinct source tag so resolveCalls's resolve_pass
-				// CALLS aren't wiped by this pass's atomic replace.
-				// Both pass-tags satisfy dead_code's any-inbound-edge
-				// check; trace + query treat them identically.
-				Source: "binding_pass",
-			})
+			for _, targetID := range targetIDs {
+				key := fromID + "\x00" + targetID + "\x00CALLS"
+				if seen[key] {
+					dedupedDuplicate++
+					continue
+				}
+				seen[key] = true
+				edges = append(edges, db.Edge{
+					ProjectID:  projectID,
+					FromID:     fromID,
+					ToID:       targetID,
+					Kind:       "CALLS",
+					Confidence: 0.4,
+					// Distinct source tag so resolveCalls's resolve_pass
+					// CALLS aren't wiped by this pass's atomic replace.
+					// Both pass-tags satisfy dead_code's any-inbound-edge
+					// check; trace + query treat them identically.
+					Source: "binding_pass",
+				})
+			}
 			continue
 		}
 		// Variable target → READS / WRITES edge. Anything else (Class,

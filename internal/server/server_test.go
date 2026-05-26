@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/kwad77/pincher/internal/db"
 	"github.com/kwad77/pincher/internal/index"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1323,7 +1323,10 @@ func TestParseGitDiffFiles_Empty(t *testing.T) {
 
 func TestRiskLabel(t *testing.T) {
 	t.Parallel()
-	cases := []struct{ d int; want string }{
+	cases := []struct {
+		d    int
+		want string
+	}{
 		{1, "CRITICAL"}, {2, "HIGH"}, {3, "MEDIUM"}, {4, "LOW"}, {5, "LOW"},
 	}
 	for _, c := range cases {
@@ -2235,10 +2238,10 @@ func TestRunGitDiff_RejectsUnknownScope(t *testing.T) {
 	dir := t.TempDir()
 	cases := []string{
 		"complete_garbage",
-		"unsage",          // typo of unstaged
-		"untracked",       // not a real scope
-		"working",         // not a real scope
-		"BASE:main",       // wrong case for the prefix form
+		"unsage",    // typo of unstaged
+		"untracked", // not a real scope
+		"working",   // not a real scope
+		"BASE:main", // wrong case for the prefix form
 	}
 	for _, scope := range cases {
 		t.Run(scope, func(t *testing.T) {
@@ -2282,21 +2285,21 @@ func TestValidateGitRefName(t *testing.T) {
 		{"refs/heads/main:src/file.go", false},
 		// Rejected.
 		{"", true},
-		{"-flag", true},                   // looks like a flag
-		{"-rf", true},                     // shell-flavoured paranoia
-		{"main..feature", true},           // range, not a single ref
-		{"name with spaces", true},        // space disallowed
-		{"main;rm -rf /", true},           // shell metachar
-		{"branch$(whoami)", true},         // command substitution shape
-		{"main`whoami`", true},            // backtick subst shape
-		{"main|cat", true},                // pipe
-		{"main&background", true},         // background
-		{"main>out", true},                // redirect
-		{"main<in", true},                 // redirect
-		{"main*glob", true},               // glob
-		{"main?glob", true},               // glob
-		{"main(paren)", true},             // paren
-		{"main\\backslash", true},         // backslash
+		{"-flag", true},            // looks like a flag
+		{"-rf", true},              // shell-flavoured paranoia
+		{"main..feature", true},    // range, not a single ref
+		{"name with spaces", true}, // space disallowed
+		{"main;rm -rf /", true},    // shell metachar
+		{"branch$(whoami)", true},  // command substitution shape
+		{"main`whoami`", true},     // backtick subst shape
+		{"main|cat", true},         // pipe
+		{"main&background", true},  // background
+		{"main>out", true},         // redirect
+		{"main<in", true},          // redirect
+		{"main*glob", true},        // glob
+		{"main?glob", true},        // glob
+		{"main(paren)", true},      // paren
+		{"main\\backslash", true},  // backslash
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -3006,14 +3009,14 @@ func TestAuth_ConstantTime_LengthInvariant(t *testing.T) {
 
 	// Each of these MUST produce identical 401 + body shape.
 	tokens := []string{
-		"",                                     // empty token
-		"a",                                    // 1-byte wrong
-		"secret12",                             // 1 byte short of correct
-		"secret1234",                           // 1 byte longer than correct
-		"secret124",                            // same length, last byte differs
-		"xsecret123",                           // same length, first byte differs (oracle bait)
-		strings.Repeat("a", 1000),              // very long wrong
-		strings.Repeat("secret123", 100),       // very long, repeats real key as a prefix
+		"",                               // empty token
+		"a",                              // 1-byte wrong
+		"secret12",                       // 1 byte short of correct
+		"secret1234",                     // 1 byte longer than correct
+		"secret124",                      // same length, last byte differs
+		"xsecret123",                     // same length, first byte differs (oracle bait)
+		strings.Repeat("a", 1000),        // very long wrong
+		strings.Repeat("secret123", 100), // very long, repeats real key as a prefix
 	}
 
 	var firstBody string
@@ -3327,6 +3330,133 @@ func TestServeHTTP_GetSessions_WithData(t *testing.T) {
 	if len(rows) != 2 {
 		t.Errorf("GET /v1/sessions: got %d sessions, want 2", len(rows))
 	}
+}
+
+func TestServeHTTP_GetStats_IncludesFalsifiableSavingsMath(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	started := time.Now().Add(-time.Hour)
+	if err := store.RecordSession("sess-math", started, 4, 250, 750, 0, "", 0, ""); err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+
+	w := httpGet(t, srv, "/v1/stats")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /v1/stats: got %d, want 200", w.Code)
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode /v1/stats: %v", err)
+	}
+
+	for _, top := range []string{"session", "all_time"} {
+		section, ok := resp[top].(map[string]any)
+		if !ok {
+			t.Fatalf("%s section missing or wrong type: %#v", top, resp[top])
+		}
+		math, ok := section["savings_math"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s.savings_math missing; stats must expose auditable formula inputs", top)
+		}
+		assertSavingsMath(t, top, math, 250, 750, 1000, 75, 25, 4)
+	}
+}
+
+func TestServeHTTP_GetToolCalls_IncludesPerCallSavingsBreakdown(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	started := time.Now().Add(-time.Hour)
+	if err := store.RecordSession("sess-calls", started, 2, 300, 700, 0, "", 0, ""); err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+	savedSearch := int64(700)
+	pctSearch := float64(70)
+	if err := store.RecordToolCalls([]db.ToolCallEvent{
+		{
+			SessionID:      "sess-calls",
+			Tool:           "search",
+			ComplexityTier: "lite",
+			ResponseBytes:  2048,
+			TokensUsed:     300,
+			TokensSaved:    &savedSearch,
+			TokensSavedPct: &pctSearch,
+			TS:             started.Add(2 * time.Minute),
+			RequestID:      "req-search",
+		},
+		{
+			SessionID:      "sess-calls",
+			Tool:           "trace",
+			ComplexityTier: "heavy",
+			ResponseBytes:  4096,
+			TokensUsed:     1200,
+			TS:             started.Add(time.Minute),
+			RequestID:      "req-trace",
+		},
+	}); err != nil {
+		t.Fatalf("RecordToolCalls: %v", err)
+	}
+
+	w := httpGet(t, srv, "/v1/tool-calls?session_id=sess-calls&limit=10")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /v1/tool-calls: got %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode /v1/tool-calls: %v", err)
+	}
+	if resp["session_id"] != "sess-calls" {
+		t.Fatalf("session_id = %#v, want sess-calls", resp["session_id"])
+	}
+	calls, ok := resp["calls"].([]any)
+	if !ok || len(calls) != 2 {
+		t.Fatalf("calls = %#v, want 2 rows", resp["calls"])
+	}
+	first, ok := calls[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first call wrong type: %#v", calls[0])
+	}
+	if first["tool"] != "search" || first["complexity_tier"] != "lite" || first["request_id"] != "req-search" {
+		t.Fatalf("first call identity fields wrong: %#v", first)
+	}
+	assertSavingsMath(t, "first call", first["savings_math"].(map[string]any), 300, 700, 1000, 70, 30, 1000.0/300.0)
+	if first["improvement_signal"] != "excellent" {
+		t.Fatalf("improvement_signal = %#v, want excellent", first["improvement_signal"])
+	}
+	second := calls[1].(map[string]any)
+	if _, ok := second["savings_math"]; ok {
+		t.Fatalf("unsaved call should not include savings_math: %#v", second)
+	}
+	if second["improvement_signal"] != "needs_baseline" {
+		t.Fatalf("unsaved improvement_signal = %#v, want needs_baseline", second["improvement_signal"])
+	}
+}
+
+func assertSavingsMath(t *testing.T, label string, math map[string]any, used, saved, baseline, savingsPct, usedPct, compressionRatio float64) {
+	t.Helper()
+	assertFloat := func(key string, want float64) {
+		t.Helper()
+		got, ok := math[key].(float64)
+		if !ok {
+			t.Fatalf("%s.savings_math.%s = %#v, want number", label, key, math[key])
+		}
+		if got != want {
+			t.Fatalf("%s.savings_math.%s = %v, want %v", label, key, got, want)
+		}
+	}
+	assertString := func(key, want string) {
+		t.Helper()
+		if got, ok := math[key].(string); !ok || got != want {
+			t.Fatalf("%s.savings_math.%s = %#v, want %q", label, key, math[key], want)
+		}
+	}
+	assertString("baseline_method", "full_file_read")
+	assertString("formula", "baseline_tokens=tokens_used+tokens_saved; savings_pct=tokens_saved/baseline_tokens*100")
+	assertFloat("tokens_used", used)
+	assertFloat("tokens_saved", saved)
+	assertFloat("baseline_tokens", baseline)
+	assertFloat("savings_pct", savingsPct)
+	assertFloat("used_pct", usedPct)
+	assertFloat("compression_ratio", compressionRatio)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -5214,10 +5344,10 @@ func TestSlowQuery_SecretRedaction(t *testing.T) {
 	past := time.Now().Add(-100 * time.Millisecond)
 	srv.jsonResultWithMeta(map[string]any{}, past, "fetch",
 		map[string]any{
-			"url":           "https://api.example.com",
-			"api_key":       "sk-abc123-this-must-not-persist",
-			"BearerToken":   "ey-must-not-persist",
-			"password":      "p4ssw0rd",
+			"url":         "https://api.example.com",
+			"api_key":     "sk-abc123-this-must-not-persist",
+			"BearerToken": "ey-must-not-persist",
+			"password":    "p4ssw0rd",
 			"nested": map[string]any{
 				"my_secret": "must-also-not-persist",
 				"normal":    "ok",

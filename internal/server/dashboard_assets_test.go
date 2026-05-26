@@ -183,6 +183,41 @@ func snippetAroundBP(js string) string {
 	return "(no `const BP` line found)"
 }
 
+func TestDashboardJS_RendersAuditableSavingsMath(t *testing.T) {
+	t.Parallel()
+	js := renderDashboardJS("")
+	for _, want := range []string{
+		"function renderSavingsMath",
+		"Savings Math",
+		"Baseline = used + saved",
+		"Savings % = saved / baseline × 100",
+		"full_file_read",
+		"compressionRatio",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("dashboard JS missing %q; savings dashboard must show falsifiable math, not just headline totals", want)
+		}
+	}
+}
+
+func TestDashboardJS_RendersPerCallSavingsBreakdown(t *testing.T) {
+	t.Parallel()
+	js := renderDashboardJS("")
+	for _, want := range []string{
+		"async function loadPerCallBreakdown",
+		"/v1/tool-calls?limit=50",
+		"Recent Calls",
+		"Improvement",
+		"Baseline",
+		"needs_baseline",
+		"excellent",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("dashboard JS missing %q; per-call savings breakdown must be inspectable", want)
+		}
+	}
+}
+
 // TestDashboardJS_BasepathSubstitution_HTMLAndJSAgree pins the contract
 // that the HTML's <link>/<script> tags use the SAME prefix substitution
 // as the JS body's BP constant. Drift between the two is the exact

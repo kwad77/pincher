@@ -70,8 +70,9 @@ func TestOpenAPI_ParityWithRegisteredHandlers(t *testing.T) {
 		// Skip the special-cased GET endpoints surfaced separately —
 		// they're hardcoded in openAPISpec, not backed by an MCP tool
 		// handler (health: liveness probe; ready: #660 readiness probe;
-		// events: #654 SSE stream).
-		if name == "health" || name == "ready" || name == "events" {
+		// events: #654 SSE stream; tool-calls: dashboard accounting
+		// endpoint).
+		if name == "health" || name == "ready" || name == "events" || name == "tool-calls" {
 			continue
 		}
 		if !expected[name] {

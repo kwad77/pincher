@@ -45,6 +45,7 @@ var nonToolHTTPRoutes = []string{
 	"/v1/events",
 	"/v1/hook-stats",
 	"/v1/tool-call-stats",
+	"/v1/tool-calls",
 	"/v1/tool-tier-stats",
 	"/v1/tool-payload-stats",
 	"/v1/metrics",
