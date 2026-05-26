@@ -429,7 +429,7 @@ func TestEnsureSymbolIDColumn_OptionAReplica(t *testing.T) {
 	}
 	// Build the schema EXCLUDING the symbol_id column on `symbols`.
 	for _, stmt := range []string{
-		`CREATE TABLE projects (id TEXT PRIMARY KEY, path TEXT, name TEXT, indexed_at INTEGER, file_count INTEGER, sym_count INTEGER, edge_count INTEGER, schema_version_at_index INTEGER, binary_version TEXT NOT NULL DEFAULT '', current_branch TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE projects (id TEXT PRIMARY KEY, path TEXT, name TEXT, indexed_at INTEGER, file_count INTEGER, sym_count INTEGER, edge_count INTEGER, schema_version_at_index INTEGER, binary_version TEXT NOT NULL DEFAULT '', current_branch TEXT NOT NULL DEFAULT '', index_state TEXT NOT NULL DEFAULT 'complete', index_started_at INTEGER NOT NULL DEFAULT 0)`,
 		// symbols table WITHOUT the symbol_id column — this is the
 		// Option-A-lineage shape.
 		`CREATE TABLE symbols (
@@ -546,6 +546,7 @@ func TestEnsureSymbolIDColumn_OptionAReplica(t *testing.T) {
 func openRaw(dsn string) (*sql.DB, error) {
 	return sql.Open("sqlite", dsn)
 }
+
 // coverage: after a rebuild, every per-corpus vtab must contain the
 // right slice of `symbols` again. The legacy `symbols_fts` vtab was
 // removed in #106 (v12 migration) — the rebuild contract now covers

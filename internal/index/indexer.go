@@ -53,8 +53,8 @@ const DefaultMaxFileSize int64 = 4 * 1024 * 1024
 type Indexer struct {
 	store    *db.Store
 	mu       sync.Mutex
-	active   map[string]bool         // projectID → indexing in progress
-	progress sync.Map                // projectID → *IndexProgress
+	active   map[string]bool // projectID → indexing in progress
+	progress sync.Map        // projectID → *IndexProgress
 
 	// currentBranchByProject — populated at Index() start with the
 	// detected git branch and consumed by flushBatch to stamp
@@ -221,8 +221,8 @@ type IndexResult struct {
 	// across those files. Both default to 0 on healthy runs. Non-zero
 	// is a strong signal of silent persistence loss — see #1231 for the
 	// root-cause investigation.
-	ParityMismatchFiles   int
-	ParityMissingSymbols  int
+	ParityMismatchFiles  int
+	ParityMissingSymbols int
 }
 
 // #1338: pending-edge threshold above which the resolve block pre-loads
@@ -353,6 +353,7 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 	// build) opts out of the force — we don't want one-shot CLI runs
 	// with --version=dev to nuke the project's hash cache on every call.
 	var binaryDriftForce bool
+	var crashRecoveryForce bool
 	// #986: capture the prior binary_version BEFORE the start-of-pass
 	// UpsertProjectMeta. Pre-fix, the start stamp wrote idx.binaryVersion
 	// — so any interrupted drift-reindex left the row claiming the new
@@ -369,6 +370,16 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 	if prev, _ := idx.store.GetProject(projectID); prev != nil {
 		fileCountEstimate = prev.FileCount
 		priorBinaryVersion = prev.BinaryVersion
+		if incomplete, startedAt, incompleteErr := idx.store.ProjectIndexIncomplete(projectID); incompleteErr != nil {
+			slog.Warn("pincher.index.incomplete_state.err", "project_id", projectID, "err", incompleteErr)
+		} else if incomplete {
+			crashRecoveryForce = true
+			slog.Warn("pincher.index.recover_incomplete_run",
+				"project_id", projectID,
+				"project", projectName,
+				"started_at", startedAt.UTC().Format(time.RFC3339),
+				"action", "force_reextract")
+		}
 		// #1818: only force-reindex when the running binary is strictly
 		// NEWER than the project's stamp — a genuine upgrade. Pre-fix any
 		// version mismatch forced, so two concurrent pincher processes of
@@ -468,6 +479,9 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 	}); err != nil {
 		return nil, fmt.Errorf("upsert project: %w", err)
 	}
+	if err := idx.store.MarkProjectIndexStarted(projectID, start); err != nil {
+		return nil, fmt.Errorf("mark project index started: %w", err)
+	}
 
 	// Best-effort Go module path (from go.mod). Used by the Go extractor to
 	// rewrite intra-module imports to within-module paths so IMPORTS edges
@@ -559,7 +573,7 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 	// scoped incremental is the user-visible graph-degradation signature,
 	// regardless of which phase dropped the edge.
 	callsEdgesAtIndexStart := -1
-	if !force {
+	if !force && !crashRecoveryForce {
 		_ = idx.store.RO().QueryRow(
 			`SELECT COUNT(*) FROM edges WHERE project_id=? AND kind='CALLS'`,
 			projectID).Scan(&callsEdgesAtIndexStart)
@@ -570,7 +584,10 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 		// Respect context cancellation (e.g. graceful shutdown).
 		// Drain the remaining channel items so the walker goroutine can exit.
 		if ctx.Err() != nil {
-			go func() { for range fileListQueue {} }()
+			go func() {
+				for range fileListQueue {
+				}
+			}()
 			wg.Wait()
 			return nil, ctx.Err()
 		}
@@ -648,7 +665,7 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 		// here (not in the per-file goroutine) so no mutex needed.
 		seenFiles[relPath] = true
 
-		if !force && !binaryDriftForce {
+		if !force && !binaryDriftForce && !crashRecoveryForce {
 			stored := idx.store.GetFileHash(projectID, relPath)
 			if stored == hash {
 				totalSkipped++
@@ -761,23 +778,23 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 			syms := make([]db.Symbol, 0, len(result.Symbols))
 			for _, s := range result.Symbols {
 				sym := db.Symbol{
-					ID:            db.MakeSymbolID(relPath, s.QualifiedName, s.Kind),
-					ProjectID:     projectID,
-					FilePath:      relPath,
-					Name:          s.Name,
-					QualifiedName: s.QualifiedName,
-					Kind:          s.Kind,
-					Language:      lang,
-					StartByte:     s.StartByte,
-					EndByte:       s.EndByte,
-					StartLine:     s.StartLine,
-					EndLine:       s.EndLine,
-					Signature:     s.Signature,
-					ReturnType:    s.ReturnType,
-					Docstring:     s.Docstring,
-					Parent:        s.Parent,
-					Complexity:    s.Complexity,
-					IsExported:    s.IsExported,
+					ID:                   db.MakeSymbolID(relPath, s.QualifiedName, s.Kind),
+					ProjectID:            projectID,
+					FilePath:             relPath,
+					Name:                 s.Name,
+					QualifiedName:        s.QualifiedName,
+					Kind:                 s.Kind,
+					Language:             lang,
+					StartByte:            s.StartByte,
+					EndByte:              s.EndByte,
+					StartLine:            s.StartLine,
+					EndLine:              s.EndLine,
+					Signature:            s.Signature,
+					ReturnType:           s.ReturnType,
+					Docstring:            s.Docstring,
+					Parent:               s.Parent,
+					Complexity:           s.Complexity,
+					IsExported:           s.IsExported,
 					IsTest:               s.IsTest,
 					IsEntryPoint:         s.IsEntryPoint,
 					FileHash:             hash,
@@ -1129,7 +1146,7 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 	// edges an earlier incremental tick dropped — and since totalFiles
 	// is 0 on that pass, the incremental-scope gate below stays off, so
 	// the resolve runs project-wide (identical to a force-reindex).
-	resolveChanged := force || totalFiles > 0 || resolveOnly
+	resolveChanged := force || crashRecoveryForce || totalFiles > 0 || resolveOnly
 	var resolveBlockStart time.Time
 	if resolveChanged {
 		// #1613 v0.85 follow-up: total resolve-block timing so the
@@ -1200,7 +1217,7 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 		const incrementalScopeThreshold = 64
 		var resolveScope []string
 		useResolveScope := false
-		if !force && totalFiles > 0 {
+		if !force && !crashRecoveryForce && totalFiles > 0 {
 			scopeSet := make(map[string]bool, len(extractedFiles)+len(referrerFiles))
 			for f := range extractedFiles {
 				scopeSet[f] = true
@@ -1996,11 +2013,11 @@ func (idx *Indexer) Watch(ctx context.Context) {
 				// reindex when the binary stamped on the project
 				// differs from the running binary.
 				// #1818: strict-newer — mirrors the binaryDriftForce branch
-			// in Index(). A non-upgrade version mismatch (an older
-			// concurrent process, a dev build) must not run a pass, or
-			// two processes ping-pong force-reindexes forever.
-			binaryDrifted := p.BinaryVersion != "" && idx.binaryVersion != "" &&
-				db.CompareBinaryVersion(idx.binaryVersion, p.BinaryVersion) > 0
+				// in Index(). A non-upgrade version mismatch (an older
+				// concurrent process, a dev build) must not run a pass, or
+				// two processes ping-pong force-reindexes forever.
+				binaryDrifted := p.BinaryVersion != "" && idx.binaryVersion != "" &&
+					db.CompareBinaryVersion(idx.binaryVersion, p.BinaryVersion) > 0
 				if len(changed) == 0 && !binaryDrifted {
 					// #1772 self-heal: once a project settles (no changes
 					// this tick) after a burst of incremental reindexes,
@@ -4264,10 +4281,10 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 			}
 			seen[sibKey] = true
 			edges = append(edges, db.Edge{
-				ProjectID:  projectID,
-				FromID:     fromID,
-				ToID:       sib,
-				Kind:       "CALLS",
+				ProjectID: projectID,
+				FromID:    fromID,
+				ToID:      sib,
+				Kind:      "CALLS",
 				// Same confidence as the canonical edge — both are
 				// equally "real" implementations of the same call.
 				Confidence: e.Confidence,
@@ -4614,14 +4631,14 @@ func (idx *Indexer) resolveReads(projectID string, pending []ast.ExtractedEdge, 
 	// "10k pending → 3k edges, where did the other 7k go?". Track each
 	// separately so the summary log can split them.
 	var (
-		droppedFromMissing    int
-		droppedToMissing      int
-		droppedSelfEdge       int
-		droppedLangMismatch   int
-		droppedPolymorphic    int
-		droppedStructField    int
-		droppedNotVariable    int
-		dedupedDuplicate      int
+		droppedFromMissing  int
+		droppedToMissing    int
+		droppedSelfEdge     int
+		droppedLangMismatch int
+		droppedPolymorphic  int
+		droppedStructField  int
+		droppedNotVariable  int
+		dedupedDuplicate    int
 	)
 	for _, e := range pending {
 		from := lookupFromQN(e.FromQN, e.FromFile)

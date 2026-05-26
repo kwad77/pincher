@@ -19,7 +19,7 @@
   "files_blocked": 0,
   "files_indexed": 7,
   "files_seen": 7,
-  "schema_version": 35,
+  "schema_version": 36,
   "search_relevance": [
     {
       "corpus": "config",

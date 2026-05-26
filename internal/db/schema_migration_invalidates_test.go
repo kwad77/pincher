@@ -30,7 +30,7 @@ func TestSchemaMigrationInvalidates_AllSentinelHasAll(t *testing.T) {
 }
 
 // TestSchemaMigrationInvalidates_ClassificationCount documents the
-// expected ratio (29 Nothing / 5 All as of v35) and fails if the
+// expected ratio (30 Nothing / 5 All as of v36) and fails if the
 // balance drifts unexpectedly. A new migration appended as
 // invalidatesAll without a CHANGELOG note explaining why would trip
 // this — reviewers can then decide whether the All classification is
@@ -49,10 +49,10 @@ func TestSchemaMigrationInvalidates_ClassificationCount(t *testing.T) {
 			nothingN++
 		}
 	}
-	// Snapshot as of v35 (34 migration entries): 29 Nothing / 5 All.
-	// v34→v35 added edge traversal covering indexes — pure DDL, no
-	// extraction impact, classified Nothing.
-	const wantNothing = 29
+	// Snapshot as of v36 (35 migration entries): 30 Nothing / 5 All.
+	// v35→v36 added project index-run state — metadata-only crash
+	// recovery marker, classified Nothing.
+	const wantNothing = 30
 	const wantAll = 5
 	if nothingN != wantNothing || allN != wantAll {
 		t.Errorf("classification drifted: got Nothing=%d All=%d, want Nothing=%d All=%d. If you intentionally added/changed a migration's invalidates value, update these constants AND the rationale block in db.go.",

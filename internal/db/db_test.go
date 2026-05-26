@@ -644,6 +644,7 @@ var readerRoutedStoreMethods = map[string]bool{
 	// as reader-routed for the gate's purpose since callers never
 	// mutate state through it.
 	"LastStartupMigrationInvalidates": true,
+	"ProjectIndexIncomplete":          true,
 }
 
 var writerRoutedStoreMethods = map[string]bool{
@@ -651,6 +652,8 @@ var writerRoutedStoreMethods = map[string]bool{
 	"UpsertProject":                              true,
 	"UpsertProjectMeta":                          true,
 	"UpdateProjectCounts":                        true,
+	"MarkProjectIndexStarted":                    true,
+	"MarkProjectIndexComplete":                   true,
 	"DeleteProject":                              true,
 	"DeleteEmptyProjects":                        true,
 	"BulkUpsertSymbols":                          true,
@@ -1280,6 +1283,61 @@ func TestUpdateProjectCounts(t *testing.T) {
 	// Other fields untouched
 	if got.Path != p.Path || got.Name != p.Name {
 		t.Errorf("non-count fields changed: path=%q name=%q", got.Path, got.Name)
+	}
+}
+
+func TestProjectIndexStateStartedAndComplete(t *testing.T) {
+	s := newTestStore(t)
+	p := testProject("index-state-proj")
+	if err := s.UpsertProject(p); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+
+	started := time.Unix(1234, 0)
+	if err := s.MarkProjectIndexStarted(p.ID, started); err != nil {
+		t.Fatalf("MarkProjectIndexStarted: %v", err)
+	}
+	incomplete, gotStarted, err := s.ProjectIndexIncomplete(p.ID)
+	if err != nil {
+		t.Fatalf("ProjectIndexIncomplete: %v", err)
+	}
+	if !incomplete {
+		t.Fatal("ProjectIndexIncomplete=false after MarkProjectIndexStarted")
+	}
+	if !gotStarted.Equal(started) {
+		t.Errorf("started_at = %s, want %s", gotStarted, started)
+	}
+
+	if err := s.MarkProjectIndexComplete(p.ID); err != nil {
+		t.Fatalf("MarkProjectIndexComplete: %v", err)
+	}
+	incomplete, _, err = s.ProjectIndexIncomplete(p.ID)
+	if err != nil {
+		t.Fatalf("ProjectIndexIncomplete after complete: %v", err)
+	}
+	if incomplete {
+		t.Fatal("ProjectIndexIncomplete=true after MarkProjectIndexComplete")
+	}
+}
+
+func TestUpsertProjectClearsRunningIndexState(t *testing.T) {
+	s := newTestStore(t)
+	p := testProject("index-state-upsert-proj")
+	if err := s.UpsertProject(p); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	if err := s.MarkProjectIndexStarted(p.ID, time.Unix(1234, 0)); err != nil {
+		t.Fatalf("MarkProjectIndexStarted: %v", err)
+	}
+	if err := s.UpsertProject(p); err != nil {
+		t.Fatalf("UpsertProject second: %v", err)
+	}
+	incomplete, _, err := s.ProjectIndexIncomplete(p.ID)
+	if err != nil {
+		t.Fatalf("ProjectIndexIncomplete: %v", err)
+	}
+	if incomplete {
+		t.Fatal("UpsertProject did not clear running index state")
 	}
 }
 

@@ -7,6 +7,9 @@ minors.
 
 ## [Unreleased]
 
+### Fixed
+- Add a project-level index-run marker so a killed/OOMed index pass is retried with a full re-extract on the next run instead of trusting file hashes that may have been stamped before symbols and edges finished landing (#1573). Schema v36 adds `projects.index_state` and `index_started_at`; no manual re-index is required.
+
 ## [0.95.0] — 2026-05-25 — DB contention and probe isolation
 
 ### Changed

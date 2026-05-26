@@ -1676,6 +1676,16 @@ END;`,
 	// kind inside the same covering index lookup.
 	`CREATE INDEX IF NOT EXISTS idx_edge_from_project_kind_to ON edges(from_id, project_id, kind, to_id);
 	 CREATE INDEX IF NOT EXISTS idx_edge_to_project_kind_from ON edges(to_id, project_id, kind, from_id);`,
+
+	// v35 → v36: project index run state for crash/OOM recovery (#1573).
+	// The indexer marks a project "running" before per-file deletes/hash
+	// stamps begin and flips it back to "complete" only at the successful
+	// tail. If a process dies mid-run, the next Index() sees the stale
+	// running marker and forces a full re-extract instead of trusting
+	// content hashes that may have been stamped before all symbols/edges
+	// landed.
+	`ALTER TABLE projects ADD COLUMN index_state TEXT NOT NULL DEFAULT 'complete';
+	 ALTER TABLE projects ADD COLUMN index_started_at INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // schemaMigrationInvalidates classifies each migration in schemaMigrations
@@ -1685,7 +1695,7 @@ END;`,
 //
 // Classification rationale (audit 2026-05-18):
 //
-//   - **Nothing** (22 entries): migrations that touch only sessions,
+//   - **Nothing** (30 entries): migrations that touch only sessions,
 //     diagnostics, metadata, or pure DDL operations whose effects are
 //     evident on existing data without re-extraction. New tables with
 //     trigger-driven backfill, virtual generated columns, dropped
@@ -1756,6 +1766,7 @@ var schemaMigrationInvalidates = []MigrationInvalidates{
 	invalidatesNothing, // [31] v32→v33: extraction_failures.binary_version_at_failure (metadata on diagnostic table)
 	invalidatesNothing, // [32] v33→v34: sessions.queries_zero_expected + queries_zero_unexpected (per-session metric split; pre-migration rows hold zero on both)
 	invalidatesNothing, // [33] v34→v35: edge traversal covering indexes (pure DDL; no extracted data changes)
+	invalidatesNothing, // [34] v35→v36: projects.index_state/index_started_at (metadata-only crash recovery marker)
 }
 
 func init() {
@@ -2643,6 +2654,12 @@ type Project struct {
 	// "what branch was the project last indexed on" — every new
 	// integrator would misread it.
 	CurrentBranch string `json:"last_indexed_branch,omitempty"`
+	// IndexState is "complete" for a cleanly finished pass and "running"
+	// while Index() is mutating per-file rows. A stale "running" value
+	// means a prior process died mid-pass; the next Index() force-refreshes
+	// rather than trusting possibly premature file hashes (#1573).
+	IndexState     string `json:"index_state,omitempty"`
+	IndexStartedAt int64  `json:"index_started_at,omitempty"`
 }
 
 // SearchResult is a FTS5 match returned by SearchSymbols.
@@ -2698,8 +2715,8 @@ func (s *Store) UpsertProject(p Project) error {
 		}
 	}
 	_, err := s.db.Exec(`
-		INSERT INTO projects(id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version, current_branch)
-		VALUES (?,?,?,?,?,?,?,?,?,?)
+		INSERT INTO projects(id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version, current_branch, index_state, index_started_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			path=excluded.path, name=excluded.name, indexed_at=excluded.indexed_at,
 			file_count=excluded.file_count, sym_count=excluded.sym_count, edge_count=excluded.edge_count,
@@ -2707,9 +2724,11 @@ func (s *Store) UpsertProject(p Project) error {
 				WHEN excluded.schema_version_at_index >= schema_version_at_index
 				THEN excluded.binary_version ELSE binary_version END,
 			schema_version_at_index=MAX(schema_version_at_index, excluded.schema_version_at_index),
-			current_branch=excluded.current_branch`,
+			current_branch=excluded.current_branch,
+			index_state='complete',
+			index_started_at=0`,
 		p.ID, p.Path, p.Name, p.IndexedAt.Unix(),
-		p.FileCount, p.SymCount, p.EdgeCount, currentSchema, binaryToWrite, p.CurrentBranch,
+		p.FileCount, p.SymCount, p.EdgeCount, currentSchema, binaryToWrite, p.CurrentBranch, "complete", 0,
 	)
 	return err
 }
@@ -2724,6 +2743,52 @@ func (s *Store) UpdateProjectCounts(projectID string, files, syms, edges int) er
 		files, syms, edges, projectID,
 	)
 	return err
+}
+
+// MarkProjectIndexStarted persists the start of an indexing pass. If the
+// process dies before MarkProjectIndexComplete / UpsertProject resets the row,
+// the next Index() treats the project as crash-interrupted and forces a full
+// re-extract (#1573).
+func (s *Store) MarkProjectIndexStarted(projectID string, startedAt time.Time) error {
+	_, err := s.db.Exec(
+		`UPDATE projects SET index_state='running', index_started_at=? WHERE id=?`,
+		startedAt.Unix(), projectID,
+	)
+	return err
+}
+
+// MarkProjectIndexComplete clears a running marker after a successful pass.
+// UpsertProject also clears it, but this helper is useful for direct tests and
+// any future flow that completes without rewriting counts.
+func (s *Store) MarkProjectIndexComplete(projectID string) error {
+	_, err := s.db.Exec(
+		`UPDATE projects SET index_state='complete', index_started_at=0 WHERE id=?`,
+		projectID,
+	)
+	return err
+}
+
+// ProjectIndexIncomplete reports whether the previous indexing pass died before
+// its success tail. Missing projects and clean projects both return false.
+func (s *Store) ProjectIndexIncomplete(projectID string) (bool, time.Time, error) {
+	var state string
+	var started int64
+	err := s.ro.QueryRow(
+		`SELECT index_state, index_started_at FROM projects WHERE id=?`, projectID,
+	).Scan(&state, &started)
+	if err == sql.ErrNoRows {
+		return false, time.Time{}, nil
+	}
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	if state != "running" {
+		return false, time.Time{}, nil
+	}
+	if started <= 0 {
+		return true, time.Time{}, nil
+	}
+	return true, time.Unix(started, 0), nil
 }
 
 // UpsertProjectMeta upserts a project's metadata WITHOUT touching the
@@ -2891,7 +2956,7 @@ func parseBinaryVersion(s string) ([4]int, bool) {
 func (s *Store) ListProjects() ([]Project, error) {
 	// Reader pool (#51).
 	rows, err := s.ro.Query(
-		`SELECT id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version, current_branch FROM projects ORDER BY name`)
+		`SELECT id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version, current_branch, index_state, index_started_at FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -2902,7 +2967,7 @@ func (s *Store) ListProjects() ([]Project, error) {
 		var ts int64
 		var schemaVer sql.NullInt64
 		var binVer sql.NullString
-		if err := rows.Scan(&p.ID, &p.Path, &p.Name, &ts, &p.FileCount, &p.SymCount, &p.EdgeCount, &schemaVer, &binVer, &p.CurrentBranch); err != nil {
+		if err := rows.Scan(&p.ID, &p.Path, &p.Name, &ts, &p.FileCount, &p.SymCount, &p.EdgeCount, &schemaVer, &binVer, &p.CurrentBranch, &p.IndexState, &p.IndexStartedAt); err != nil {
 			return nil, err
 		}
 		p.IndexedAt = time.Unix(ts, 0)
@@ -2977,12 +3042,12 @@ func pathContains(parent, child string) bool {
 func (s *Store) GetProject(id string) (*Project, error) {
 	// Reader pool (#51).
 	row := s.ro.QueryRow(
-		`SELECT id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version, current_branch FROM projects WHERE id=?`, id)
+		`SELECT id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version, current_branch, index_state, index_started_at FROM projects WHERE id=?`, id)
 	var p Project
 	var ts int64
 	var schemaVer sql.NullInt64
 	var binVer sql.NullString
-	if err := row.Scan(&p.ID, &p.Path, &p.Name, &ts, &p.FileCount, &p.SymCount, &p.EdgeCount, &schemaVer, &binVer, &p.CurrentBranch); err == sql.ErrNoRows {
+	if err := row.Scan(&p.ID, &p.Path, &p.Name, &ts, &p.FileCount, &p.SymCount, &p.EdgeCount, &schemaVer, &binVer, &p.CurrentBranch, &p.IndexState, &p.IndexStartedAt); err == sql.ErrNoRows {
 		return nil, nil
 	} else if err != nil {
 		return nil, err
