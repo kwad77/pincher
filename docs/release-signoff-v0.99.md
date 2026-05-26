@@ -67,6 +67,7 @@ Additional v0.99 local hardening after the last hosted run:
 
 | Commit | Area | Local evidence | Hosted status |
 |---|---|---|---|
+| [`c1822c2`](https://github.com/kwad77/pincher/commit/c1822c2) | Dogfood ops docs | Captures the Codex host-side `Transport closed` recovery path from [#1901](https://github.com/kwad77/pincher/issues/1901), refreshes the Codex tutorial's managed `pincher supervised` config example, validates local workflow lint, changelog stub check, and `git diff --check`; local install updated to `0.97.0-68-gd741803`, managed Pincher/Hermes services restarted, Codex and Hermes isolated `pincher health-check` probes pass on schema v37 stores | CI [`26458916189`](https://github.com/kwad77/pincher/actions/runs/26458916189), Host conformance [`26458916246`](https://github.com/kwad77/pincher/actions/runs/26458916246), govulncheck [`26458916185`](https://github.com/kwad77/pincher/actions/runs/26458916185), and Pages [`26458914344`](https://github.com/kwad77/pincher/actions/runs/26458914344) green |
 | [`d83fce9`](https://github.com/kwad77/pincher/commit/d83fce9) | DB perf | Adds schema v37 `idx_edge_project_to` and forces `hotspot` grouping onto it so project-scoped inbound edge aggregation avoids the temp `GROUP BY` B-tree; copied dogfood DB timing improved 200 executions from 2.30s to 1.05s, `EXPLAIN QUERY PLAN` no longer reports temp grouping, focused DB/server tests, `make corpus-test`, source-built isolated v37 index/doctor smoke, `go test ./... -count=1 -timeout 240s -parallel 4`, workflow lint, changelog preview, and `git diff --check` all passed | CI [`26456742320`](https://github.com/kwad77/pincher/actions/runs/26456742320), Host conformance [`26456742311`](https://github.com/kwad77/pincher/actions/runs/26456742311), govulncheck [`26456742341`](https://github.com/kwad77/pincher/actions/runs/26456742341), and Pages [`26456741166`](https://github.com/kwad77/pincher/actions/runs/26456741166) green |
 | [`2de0a0a`](https://github.com/kwad77/pincher/commit/2de0a0a) | CI perf harness | Repairs the time-to-first-success harness so it uses an isolated Pincher DB, starts loopback HTTP, and verifies `/v1/search` returns at least one result instead of timing the removed `pincher search` CLI; local `bash -n`, `git diff --check`, changelog preview, workflow lint, local `file://` TTFS smoke, dogfood index, and dogfood `pincher doctor` all passed | CI [`26455465169`](https://github.com/kwad77/pincher/actions/runs/26455465169), Host conformance [`26455465191`](https://github.com/kwad77/pincher/actions/runs/26455465191), govulncheck [`26455465225`](https://github.com/kwad77/pincher/actions/runs/26455465225), and Pages [`26455461261`](https://github.com/kwad77/pincher/actions/runs/26455461261) green; manual Time to first success dispatch [`26455709893`](https://github.com/kwad77/pincher/actions/runs/26455709893) green with `total_ms=8000`, `first_query=1000`, and `delta=-33%` vs the pinned baseline |
 | [`1f8007b`](https://github.com/kwad77/pincher/commit/1f8007b) | CI perf harness | Repairs the multi-project ceiling harness so it indexes with the supported subcommand-first CLI form and times `pincher project list --json` instead of swallowing the invalid removed `pincher list --json` path; local `bash -n`, `git diff --check`, changelog preview, CI-tier local run (`10`/`50` projects), dogfood index, and dogfood `pincher doctor` all passed | CI [`26454726188`](https://github.com/kwad77/pincher/actions/runs/26454726188), Host conformance [`26454726290`](https://github.com/kwad77/pincher/actions/runs/26454726290), govulncheck [`26454726184`](https://github.com/kwad77/pincher/actions/runs/26454726184), and Pages [`26454723570`](https://github.com/kwad77/pincher/actions/runs/26454723570) green; manual Multi-project ceiling dispatch [`26455015435`](https://github.com/kwad77/pincher/actions/runs/26455015435) green |
@@ -97,14 +98,14 @@ Additional v0.99 local hardening after the last hosted run:
 
 These commits are useful v0.99 hardening. Push-triggered hosted validation
 passed on current hardening head
-[`d83fce9`](https://github.com/kwad77/pincher/commit/d83fce9): CI
-[`26456742320`](https://github.com/kwad77/pincher/actions/runs/26456742320),
+[`c1822c2`](https://github.com/kwad77/pincher/commit/c1822c2): CI
+[`26458916189`](https://github.com/kwad77/pincher/actions/runs/26458916189),
 Host conformance
-[`26456742311`](https://github.com/kwad77/pincher/actions/runs/26456742311),
+[`26458916246`](https://github.com/kwad77/pincher/actions/runs/26458916246),
 govulncheck
-[`26456742341`](https://github.com/kwad77/pincher/actions/runs/26456742341),
+[`26458916185`](https://github.com/kwad77/pincher/actions/runs/26458916185),
 and Pages
-[`26456741166`](https://github.com/kwad77/pincher/actions/runs/26456741166)
+[`26458914344`](https://github.com/kwad77/pincher/actions/runs/26458914344)
 are green. The Pages run still shows a GitHub-generated workflow Node 20
 annotation for `.github#2`; repo-owned workflow files no longer reference the
 old action majors.
@@ -157,7 +158,7 @@ Earlier pushes through
 [`c2c77db`](https://github.com/kwad77/pincher/commit/c2c77db) failed to create
 new hosted runs, and manual dispatch returned GitHub API HTTP 500. Pushes now
 create hosted runs again; the current hardening head
-[`d83fce9`](https://github.com/kwad77/pincher/commit/d83fce9) has green CI,
+[`c1822c2`](https://github.com/kwad77/pincher/commit/c1822c2) has green CI,
 Host conformance, govulncheck, Pages, and manual Time to first success evidence
 above.
 
@@ -178,12 +179,12 @@ commit, issue, or artifact URL.
 | Requirement | Evidence | Status |
 |---|---|---|
 | All open v0.98/v0.99 release-scope issues dispositioned | #1716, #1390, #676 | Pending |
-| Hosted Actions setup + validation for current release-prep commits | [`d83fce9`](https://github.com/kwad77/pincher/commit/d83fce9): CI [`26456742320`](https://github.com/kwad77/pincher/actions/runs/26456742320), Host conformance [`26456742311`](https://github.com/kwad77/pincher/actions/runs/26456742311), govulncheck [`26456742341`](https://github.com/kwad77/pincher/actions/runs/26456742341), Pages [`26456741166`](https://github.com/kwad77/pincher/actions/runs/26456741166) | Green |
+| Hosted Actions setup + validation for current release-prep commits | [`c1822c2`](https://github.com/kwad77/pincher/commit/c1822c2): CI [`26458916189`](https://github.com/kwad77/pincher/actions/runs/26458916189), Host conformance [`26458916246`](https://github.com/kwad77/pincher/actions/runs/26458916246), govulncheck [`26458916185`](https://github.com/kwad77/pincher/actions/runs/26458916185), Pages [`26458914344`](https://github.com/kwad77/pincher/actions/runs/26458914344) | Green |
 | Migration guide externally tested by >=2 users | #1390 review comments | Pending |
-| Full CI green on release-prep commit | [`26456742320`](https://github.com/kwad77/pincher/actions/runs/26456742320) on [`d83fce9`](https://github.com/kwad77/pincher/commit/d83fce9) | Green |
-| Host conformance green | [`26456742311`](https://github.com/kwad77/pincher/actions/runs/26456742311) on [`d83fce9`](https://github.com/kwad77/pincher/commit/d83fce9) | Green |
-| govulncheck green | [`26456742341`](https://github.com/kwad77/pincher/actions/runs/26456742341) on [`d83fce9`](https://github.com/kwad77/pincher/commit/d83fce9) | Green |
-| Pages deploy green | [`26456741166`](https://github.com/kwad77/pincher/actions/runs/26456741166) on [`d83fce9`](https://github.com/kwad77/pincher/commit/d83fce9) | Green |
+| Full CI green on release-prep commit | [`26458916189`](https://github.com/kwad77/pincher/actions/runs/26458916189) on [`c1822c2`](https://github.com/kwad77/pincher/commit/c1822c2) | Green |
+| Host conformance green | [`26458916246`](https://github.com/kwad77/pincher/actions/runs/26458916246) on [`c1822c2`](https://github.com/kwad77/pincher/commit/c1822c2) | Green |
+| govulncheck green | [`26458916185`](https://github.com/kwad77/pincher/actions/runs/26458916185) on [`c1822c2`](https://github.com/kwad77/pincher/commit/c1822c2) | Green |
+| Pages deploy green | [`26458914344`](https://github.com/kwad77/pincher/actions/runs/26458914344) on [`c1822c2`](https://github.com/kwad77/pincher/commit/c1822c2) | Green |
 | Migration rehearsal green | [`26457408074`](https://github.com/kwad77/pincher/actions/runs/26457408074) on [`0ed0919`](https://github.com/kwad77/pincher/commit/0ed0919), covering v0.4.1 → current schema v37 | Green |
 | Bench baseline decision recorded | [`26457613811`](https://github.com/kwad77/pincher/actions/runs/26457613811) on [`768ca73`](https://github.com/kwad77/pincher/commit/768ca73); artifact `bench-baseline-26457613811` | Green |
 | Cross-platform install smoke ready | `install-validation.yml` after tag | Pending tag |
