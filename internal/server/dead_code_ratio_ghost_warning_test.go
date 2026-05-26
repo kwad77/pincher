@@ -22,12 +22,12 @@ func TestHandleDeadCode_LowRatio_AttachesGhostWarning(t *testing.T) {
 	pid := "p-dc-ratio"
 	store.UpsertProject(db.Project{
 		ID: pid, Path: t.TempDir(), Name: pid, IndexedAt: time.Now(),
-		FileCount: 50, SymCount: 5000, EdgeCount: 2,
+		FileCount: 50, SymCount: 1001, EdgeCount: 1,
 	})
 	srv.sessionID = pid
 
 	syms := []db.Symbol{}
-	for i := 0; i < 5000; i++ {
+	for i := 0; i < 1001; i++ {
 		syms = append(syms, db.Symbol{
 			ID:                   pid + "::pkg.Dead" + string(rune('A'+(i%26))) + string(rune('A'+(i/26))) + "#Function",
 			ProjectID:            pid,
@@ -42,7 +42,6 @@ func TestHandleDeadCode_LowRatio_AttachesGhostWarning(t *testing.T) {
 	mustUpsertSymbols(t, store, syms)
 	if err := store.BulkUpsertEdges([]db.Edge{
 		{ProjectID: pid, FromID: syms[0].ID, ToID: syms[1].ID, Kind: "CALLS", Confidence: 1.0},
-		{ProjectID: pid, FromID: syms[1].ID, ToID: syms[2].ID, Kind: "CALLS", Confidence: 1.0},
 	}); err != nil {
 		t.Fatalf("BulkUpsertEdges: %v", err)
 	}

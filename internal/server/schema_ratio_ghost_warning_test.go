@@ -21,14 +21,14 @@ func TestHandleSchema_LowRatio_AttachesGhostWarning(t *testing.T) {
 	pid := "p-schema-ratio"
 	store.UpsertProject(db.Project{
 		ID: pid, Path: t.TempDir(), Name: pid, IndexedAt: time.Now(),
-		FileCount: 50, SymCount: 5000, EdgeCount: 2, // ratio 0.0004
+		FileCount: 50, SymCount: 1001, EdgeCount: 1, // ratio below 0.001
 	})
 	srv.sessionID = pid
 
 	// Seed enough symbols for GraphStats to return a non-zero symCount
 	// AND a non-zero edgeCount via an edge below.
 	syms := []db.Symbol{}
-	for i := 0; i < 5000; i++ {
+	for i := 0; i < 1001; i++ {
 		syms = append(syms, db.Symbol{
 			ID:                   pid + "::pkg.S" + string(rune('A'+(i%26))) + string(rune('A'+(i/26))) + "#Function",
 			ProjectID:            pid,
@@ -41,11 +41,10 @@ func TestHandleSchema_LowRatio_AttachesGhostWarning(t *testing.T) {
 		})
 	}
 	mustUpsertSymbols(t, store, syms)
-	// Seed exactly 2 edges so GraphStats reports edgeCount > 0 but the
+	// Seed exactly 1 edge so GraphStats reports edgeCount > 0 but the
 	// ratio remains below 0.001.
 	if err := store.BulkUpsertEdges([]db.Edge{
 		{ProjectID: pid, FromID: syms[0].ID, ToID: syms[1].ID, Kind: "CALLS", Confidence: 1.0},
-		{ProjectID: pid, FromID: syms[1].ID, ToID: syms[2].ID, Kind: "CALLS", Confidence: 1.0},
 	}); err != nil {
 		t.Fatalf("BulkUpsertEdges: %v", err)
 	}
