@@ -180,13 +180,15 @@ jobs:
   # exercises the modulo-10 rule + pre-release suffixes so a future
   # workflow edit can't silently break the dev/stable promotion pattern.
   release-channel:
-    name: Release channel rule
+    name: Shell script contracts
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Verify channel detection
-        run: bash scripts/release-channel_test.sh
+        run: |
+          bash scripts/release-channel_test.sh
+          bash scripts/swap-active-binary_test.sh
 
   # #690: workflow-isolation lint (#681 follow-up). Catches the recurring
   # "missing-checkout before script ref" bug shape that bit v0.54.0-beta.1

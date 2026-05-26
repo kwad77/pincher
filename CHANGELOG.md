@@ -7,6 +7,17 @@ minors.
 
 ## [Unreleased]
 
+### Changed
+- Keep MCP binary-drift refreshes incremental at the server layer so the indexer can apply its existing invalidatesNothing / language-scoped suppression instead of every reconnect forcing a full project reindex.
+- Treat `--http --no-stdio` as a pure dashboard process by default: it no longer starts the project watcher unless streamable HTTP MCP is enabled, avoiding duplicate background writers beside the real MCP session.
+- Run `make install`'s pre-swap MCP health probe against an isolated temporary `PINCHER_DATA_DIR`, with a regression test proving the probe does not touch the caller's live data dir. The safety check still performs initialize + `tools/list`, but no longer competes with active MCP/dashboard sessions or wakes large shared databases during updates.
+- Mark `pincher health-check` child processes with `PINCHER_HEALTH_CHECK=1` and skip background binary-drift reindex in that mode. Liveness probes now stay read-mostly and cannot leave noisy `database is closed` drift-refresh warnings after the probe exits.
+
+### DOGFOOD
+- **Hermes/Pincher shared-DB collision cleanup** — surfaced when Hermes failed to load Pincher after multiple supervised children and the detached HTTP dashboard all tried to refresh drifted projects in the same SQLite database. Fixed by preserving the indexer drift gate and stopping pure-dashboard processes from watching/reindexing projects.
+- **Install-probe DB isolation** — surfaced when `make install` refused to swap a healthy repo build because the pre-swap `health-check` used the live default Pincher DB and hit an EOF under active-session contention. The swap script now owns a temporary probe data dir by default, and `scripts/swap-active-binary_test.sh` locks in that contract.
+- **Health-check side effects** — surfaced while dogfooding the Hermes split: a short-lived supervised health check could answer `tools/list`, then kill its child while a background drift refresh was still writing. Health-check children now advertise probe mode so server startup skips that refresh entirely.
+
 ## [0.94.0] — 2026-05-25 — CI runtime reduction + supervised split
 
 ### Changed

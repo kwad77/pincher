@@ -102,10 +102,32 @@ fi
 # `health-check` exits 0 = healthy, non-zero = anything wrong. Default
 # --timeout is 10s; we cap to 15s to absorb cold-disk variance without
 # letting a hung binary stall the loop indefinitely.
+# The probe must not use the operator's live default DB: installs often run
+# while MCP/dashboard processes are active, and a safety probe should not
+# compete with the real session or trigger binary-drift reindex work. Use a
+# temporary PINCHER_DATA_DIR unless PINCHER_SWAP_PROBE_DATA_DIR explicitly
+# points at a debugging fixture.
 # `SKIP_PROBE=1` bypasses both for the rare case where the new binary
 # legitimately can't health-check (e.g. early-stage build that hasn't
 # wired the MCP loop yet).
 if [[ "${SKIP_PROBE:-0}" != "1" ]]; then
+    PROBE_LOG="$(mktemp "${TMPDIR:-/tmp}/pincher-swap-probe.XXXXXX.log")"
+    PROBE_DATA_CLEANUP=""
+    if [[ -n "${PINCHER_SWAP_PROBE_DATA_DIR:-}" ]]; then
+        PROBE_DATA_DIR="$PINCHER_SWAP_PROBE_DATA_DIR"
+        mkdir -p "$PROBE_DATA_DIR"
+    else
+        PROBE_DATA_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pincher-swap-probe-data.XXXXXX")"
+        PROBE_DATA_CLEANUP="$PROBE_DATA_DIR"
+    fi
+    cleanup_probe() {
+        rm -f "$PROBE_LOG" 2>/dev/null || true
+        if [[ -n "$PROBE_DATA_CLEANUP" ]]; then
+            rm -rf "$PROBE_DATA_CLEANUP" 2>/dev/null || true
+        fi
+    }
+    trap cleanup_probe EXIT
+
     if ! "$SOURCE" --version >/dev/null 2>&1; then
         echo "swap-active-binary: REFUSING swap — $SOURCE failed --version (broken binary?)" >&2
         "$SOURCE" --version 2>&1 | sed 's/^/  /' >&2 || true
@@ -113,15 +135,15 @@ if [[ "${SKIP_PROBE:-0}" != "1" ]]; then
         exit 1
     fi
     echo "swap-active-binary: probing MCP handshake on $SOURCE..."
-    if ! "$SOURCE" health-check --timeout 15s >/tmp/swap-probe.$$.log 2>&1; then
+    if ! PINCHER_DATA_DIR="$PROBE_DATA_DIR" "$SOURCE" health-check --timeout 15s >"$PROBE_LOG" 2>&1; then
         echo "swap-active-binary: REFUSING swap — $SOURCE health-check failed (MCP handshake or tools/list broken)" >&2
         echo "  Last 20 lines of probe output:" >&2
-        tail -n 20 /tmp/swap-probe.$$.log 2>/dev/null | sed 's/^/  /' >&2 || true
+        tail -n 20 "$PROBE_LOG" 2>/dev/null | sed 's/^/  /' >&2 || true
         echo "  No swap performed. Existing $TARGET unchanged. Investigate the build before retrying." >&2
-        rm -f /tmp/swap-probe.$$.log 2>/dev/null || true
         exit 1
     fi
-    rm -f /tmp/swap-probe.$$.log 2>/dev/null || true
+    cleanup_probe
+    trap - EXIT
 fi
 
 OLD_VERSION="$("$TARGET" --version 2>&1 || echo "(unable to invoke)")"

@@ -70,10 +70,16 @@ const httpPeerStaleAfter = 30 * time.Second
 
 // Server is the pincherMCP MCP server.
 type Server struct {
-	mcp      *mcp.Server
-	store    *db.Store
-	indexer  *index.Indexer
-	handlers map[string]mcp.ToolHandler
+	mcp     *mcp.Server
+	store   *db.Store
+	indexer *index.Indexer
+	// driftIndex is an indirection over indexer.Index used by the
+	// background binary-drift refresh path. Production binds it to the
+	// real indexer; tests replace it to assert the refresh remains an
+	// incremental pass instead of bypassing the indexer's drift gate with
+	// force=true.
+	driftIndex func(context.Context, string, bool) (*index.IndexResult, error)
+	handlers   map[string]mcp.ToolHandler
 	// tools holds the same set as handlers but keyed for inspection. Used
 	// by the tool-contract golden-file test (#127) so any rename / removal
 	// of a tool surfaces as a deliberate, reviewable diff.
@@ -440,6 +446,7 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 	// index_started / index_complete reach /v1/events subscribers. The
 	// bus fan-out is non-blocking, so this never stalls indexing.
 	if indexer != nil {
+		s.driftIndex = indexer.Index
 		indexer.SetEventHook(func(eventType string, payload map[string]any) {
 			pid, _ := payload["project_id"].(string)
 			s.events.publish(sseEvent{Type: eventType, ProjectID: pid, Payload: payload})
@@ -1496,7 +1503,7 @@ func (s *Server) setRoot(path string) {
 	s.sessionID = db.ProjectIDFromPath(path)
 }
 
-// maybeReindexOnDrift kicks off a background force re-index of the
+// maybeReindexOnDrift kicks off a background index refresh of the
 // session project when the binary that indexed it differs from the
 // running binary (#719).
 //
@@ -1511,12 +1518,25 @@ func (s *Server) setRoot(path string) {
 // Runs once per session (detectRoot is sessionOnce-guarded). Best
 // effort and non-blocking: a not-yet-indexed project (resolveProjectID
 // auto-indexes that on first use) or a matching version is a no-op,
-// and the re-index runs on a background context so it outlives the
-// initialize request. The existing `_meta.binary_version_warning`
-// already tells the agent results may shift while it converges.
+// and the index pass runs on a background context so it outlives the
+// initialize request. Do not pass force=true here: the indexer owns the
+// binary-drift gate and can suppress or narrow re-extraction for
+// invalidatesNothing / language-scoped migrations. Forcing at this layer
+// bypasses that gate and can fan multiple MCP sessions into unnecessary
+// full reindexes against the shared SQLite writer. The existing
+// `_meta.binary_version_warning` already tells the agent results may shift
+// while it converges.
 func (s *Server) maybeReindexOnDrift() {
 	indexedBy, drifted := s.driftReindexNeeded()
 	if !drifted {
+		return
+	}
+	if os.Getenv("PINCHER_HEALTH_CHECK") == "1" {
+		slog.Info("pincher.drift_reindex.skip",
+			"project", s.sessionProject,
+			"indexed_by", indexedBy,
+			"running", s.version,
+			"reason", "health-check")
 		return
 	}
 	slog.Info("pincher.drift_reindex.start",
@@ -1524,7 +1544,15 @@ func (s *Server) maybeReindexOnDrift() {
 		"indexed_by", indexedBy,
 		"running", s.version)
 	go func() {
-		if _, err := s.indexer.Index(context.Background(), s.sessionRoot, true); err != nil {
+		indexFn := s.driftIndex
+		if indexFn == nil && s.indexer != nil {
+			indexFn = s.indexer.Index
+		}
+		if indexFn == nil {
+			slog.Warn("pincher.drift_reindex.err", "project", s.sessionProject, "err", "indexer not initialized")
+			return
+		}
+		if _, err := indexFn(context.Background(), s.sessionRoot, false); err != nil {
 			slog.Warn("pincher.drift_reindex.err", "project", s.sessionProject, "err", err)
 			return
 		}

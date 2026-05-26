@@ -138,20 +138,20 @@ func main() {
 	}
 
 	var (
-		showVersion = flag.Bool("version", false, "Print version and exit")
-		dataDir     = flag.String("data-dir", "", "Override data directory (default: platform-appropriate)")
-		verbose     = flag.Bool("verbose", false, "Enable verbose logging")
-		httpAddr    = flag.String("http", "", "Also listen for HTTP requests on this address (e.g. :8080, or :0 to let the OS pick a free port). Falls back to $PINCHER_HTTP_ADDR. Enables any HTTP client to call all tools via POST /v1/{tool}.")
-		httpKey     = flag.String("http-key", "", "Require this bearer token on all HTTP requests (recommended for non-localhost deployments). Falls back to $PINCHER_HTTP_KEY.")
+		showVersion   = flag.Bool("version", false, "Print version and exit")
+		dataDir       = flag.String("data-dir", "", "Override data directory (default: platform-appropriate)")
+		verbose       = flag.Bool("verbose", false, "Enable verbose logging")
+		httpAddr      = flag.String("http", "", "Also listen for HTTP requests on this address (e.g. :8080, or :0 to let the OS pick a free port). Falls back to $PINCHER_HTTP_ADDR. Enables any HTTP client to call all tools via POST /v1/{tool}.")
+		httpKey       = flag.String("http-key", "", "Require this bearer token on all HTTP requests (recommended for non-localhost deployments). Falls back to $PINCHER_HTTP_KEY.")
 		httpRate      = flag.Int("http-rate", 0, "Max HTTP requests per IP per minute. 0 = unlimited.")
 		httpAllowOpen = flag.Bool("http-allow-open", false, "Permit a non-loopback HTTP bind without --http-key. Default: refuse (default-deny remote HTTP, #199). Only set when out-of-band auth is in place — reverse proxy, trusted Docker network. Falls back to $PINCHER_HTTP_ALLOW_OPEN=1.")
-		basePath    = flag.String("basepath", "", "External URL prefix when behind a reverse proxy (e.g. /pincher). Both /pincher/v1/* and /v1/* will route. Falls back to $PINCHER_BASEPATH.")
-		trustProxy  = flag.Bool("trust-proxy", false, "Honor X-Forwarded-Prefix / X-Forwarded-Proto / X-Forwarded-Host headers. Only enable when behind a trusted proxy. Falls back to $PINCHER_TRUST_PROXY=1.")
-		slowQueryMS = flag.Int64("slow-query-ms", 0, "Persist tool calls slower than N ms to the slow_queries table for `pincher doctor` to surface (#42). 0 = disabled (zero overhead).")
-		dbReaders   = flag.Int("db-readers", db.DefaultReaderPoolSize, "Maximum concurrent SQLite read connections. Higher = more parallel tool calls behind a busy server; capped at 32. Falls back to $PINCHER_DB_READERS.")
-		maxFileMB   = flag.Int("max-file-size-mb", int(index.DefaultMaxFileSize/(1024*1024)), "Per-file size cap during indexing (MB). Files larger than this are recorded as `file_too_large` failures and skipped without being read into memory (#111). 0 disables the cap. Falls back to $PINCHER_MAX_FILE_SIZE_MB.")
-		noStdio     = flag.Bool("no-stdio", false, "Don't run the MCP stdio loop. Used by `pincher web` when spawning a detached HTTP-only child on Windows, where the child has no inherited console and the stdio reader would error immediately and tear down the in-flight HTTP server (#232). Requires --http or the process has nothing to do.")
-		mcpHTTPPath = flag.String("mcp-http-path", "", "Mount the MCP streamable-HTTP transport on the existing HTTP server at this path (e.g. /mcp). Empty disables — pincher serves MCP over stdio only. Requires --http. Routers (zelos/bifrost) deployed in k8s prefer this over per-backend stdio sub-process spawning. Falls back to $PINCHER_MCP_HTTP_PATH. (#651)")
+		basePath      = flag.String("basepath", "", "External URL prefix when behind a reverse proxy (e.g. /pincher). Both /pincher/v1/* and /v1/* will route. Falls back to $PINCHER_BASEPATH.")
+		trustProxy    = flag.Bool("trust-proxy", false, "Honor X-Forwarded-Prefix / X-Forwarded-Proto / X-Forwarded-Host headers. Only enable when behind a trusted proxy. Falls back to $PINCHER_TRUST_PROXY=1.")
+		slowQueryMS   = flag.Int64("slow-query-ms", 0, "Persist tool calls slower than N ms to the slow_queries table for `pincher doctor` to surface (#42). 0 = disabled (zero overhead).")
+		dbReaders     = flag.Int("db-readers", db.DefaultReaderPoolSize, "Maximum concurrent SQLite read connections. Higher = more parallel tool calls behind a busy server; capped at 32. Falls back to $PINCHER_DB_READERS.")
+		maxFileMB     = flag.Int("max-file-size-mb", int(index.DefaultMaxFileSize/(1024*1024)), "Per-file size cap during indexing (MB). Files larger than this are recorded as `file_too_large` failures and skipped without being read into memory (#111). 0 disables the cap. Falls back to $PINCHER_MAX_FILE_SIZE_MB.")
+		noStdio       = flag.Bool("no-stdio", false, "Don't run the MCP stdio loop. Used by `pincher web` when spawning a detached HTTP-only child on Windows, where the child has no inherited console and the stdio reader would error immediately and tear down the in-flight HTTP server (#232). Requires --http or the process has nothing to do.")
+		mcpHTTPPath   = flag.String("mcp-http-path", "", "Mount the MCP streamable-HTTP transport on the existing HTTP server at this path (e.g. /mcp). Empty disables — pincher serves MCP over stdio only. Requires --http. Routers (zelos/bifrost) deployed in k8s prefer this over per-backend stdio sub-process spawning. Falls back to $PINCHER_MCP_HTTP_PATH. (#651)")
 	)
 	// Custom usage banner: subcommand summary + the standard flag list.
 	// Without this, `pincher --help` only shows flags — and a new user has
@@ -289,8 +289,15 @@ func main() {
 		watchParent(ctx, cancel)
 	}
 
-	// Start background file watcher and session persistence flusher
-	go idx.Watch(ctx)
+	// Start background file watcher only for agent-facing transports.
+	// Pure `--http --no-stdio` is the detached dashboard process; letting
+	// it watch every indexed project duplicates the real MCP session's
+	// watcher and can turn a binary upgrade into a shared-DB reindex storm.
+	// If streamable HTTP MCP is enabled, HTTP is itself an agent transport
+	// and should keep the watcher.
+	if shouldStartBackgroundWatcher(*noStdio, *mcpHTTPPath) {
+		go idx.Watch(ctx)
+	}
 	srv.StartSessionFlusher(ctx)
 	// #1374: detect out-of-process schema migrations under a running
 	// MCP server and exit so supervised mode respawns against the
@@ -363,6 +370,13 @@ func main() {
 		}
 		log.Fatalf("pincherMCP: server error: %v", err)
 	}
+}
+
+func shouldStartBackgroundWatcher(noStdio bool, mcpHTTPPath string) bool {
+	if !noStdio {
+		return true
+	}
+	return strings.TrimSpace(mcpHTTPPath) != ""
 }
 
 // isGracefulStdioShutdown reports whether err signals a clean stdio
@@ -752,9 +766,9 @@ type searchRelevanceQuery struct {
 var searchRelevanceQueries = map[string][]searchRelevanceQuery{
 	"go-project": {
 		// Code corpus — Go identifiers.
-		{Query: "Open", Corpus: db.CorpusCode},   // Function in internal/auth/auth.go
-		{Query: "Greet", Corpus: db.CorpusCode},  // Function in cmd/cli/main.go
-		{Query: "User", Corpus: db.CorpusCode},   // Method on Session
+		{Query: "Open", Corpus: db.CorpusCode},  // Function in internal/auth/auth.go
+		{Query: "Greet", Corpus: db.CorpusCode}, // Function in cmd/cli/main.go
+		{Query: "User", Corpus: db.CorpusCode},  // Method on Session
 	},
 	"k8s-ops": {
 		// Config corpus — YAML Settings.
@@ -772,9 +786,9 @@ var searchRelevanceQueries = map[string][]searchRelevanceQuery{
 		// Docs corpus — Markdown headings extracted by the goldmark-backed
 		// extractor (#81). Each query targets a hierarchical qualified name
 		// produced by the heading walker.
-		{Query: "Authentication", Corpus: db.CorpusDocs},   // api_reference.authentication
-		{Query: "Installation", Corpus: db.CorpusDocs},     // getting_started.installation
-		{Query: "Endpoints", Corpus: db.CorpusDocs},        // api_reference.endpoints
+		{Query: "Authentication", Corpus: db.CorpusDocs}, // api_reference.authentication
+		{Query: "Installation", Corpus: db.CorpusDocs},   // getting_started.installation
+		{Query: "Endpoints", Corpus: db.CorpusDocs},      // api_reference.endpoints
 	},
 	"terraform-stack": {
 		// Config corpus — HCL block/attribute symbols (#189).
@@ -782,9 +796,9 @@ var searchRelevanceQueries = map[string][]searchRelevanceQuery{
 		// HCL extractor: Variable, Resource, Module. Single-token
 		// queries — FTS5 treats `.` as an operator, so dotted
 		// identifiers like `aws_instance.web` don't match cleanly.
-		{Query: "stack_name", Corpus: db.CorpusConfig},     // Variable in variables.tf
+		{Query: "stack_name", Corpus: db.CorpusConfig},         // Variable in variables.tf
 		{Query: "aws_security_group", Corpus: db.CorpusConfig}, // Resource in main.tf
-		{Query: "network", Corpus: db.CorpusConfig},        // Module call in main.tf
+		{Query: "network", Corpus: db.CorpusConfig},            // Module call in main.tf
 	},
 	"python-app": {
 		// Code corpus — Python identifiers (#1057). Each query
@@ -799,19 +813,19 @@ var searchRelevanceQueries = map[string][]searchRelevanceQuery{
 		// query targets a shape the existing python-app corpus
 		// doesn't cover: a decorated route handler (Function), an
 		// inherited class (Class), an async function (Function).
-		{Query: "read_user", Corpus: db.CorpusCode},        // async @route handler in app/routes.py
-		{Query: "BaseModel", Corpus: db.CorpusCode},        // base Class in app/models.py
+		{Query: "read_user", Corpus: db.CorpusCode},         // async @route handler in app/routes.py
+		{Query: "BaseModel", Corpus: db.CorpusCode},         // base Class in app/models.py
 		{Query: "get_async_session", Corpus: db.CorpusCode}, // async DI provider in app/deps.py
 	},
 }
 
 // SearchRelevanceHit is the per-query record persisted to the snapshot.
 type SearchRelevanceHit struct {
-	Query       string `json:"query"`
-	Corpus      string `json:"corpus,omitempty"`
-	TopHitKind  string `json:"top_hit_kind,omitempty"`
-	TopHitQN    string `json:"top_hit_qn,omitempty"`
-	NoMatch     bool   `json:"no_match,omitempty"`
+	Query      string `json:"query"`
+	Corpus     string `json:"corpus,omitempty"`
+	TopHitKind string `json:"top_hit_kind,omitempty"`
+	TopHitQN   string `json:"top_hit_qn,omitempty"`
+	NoMatch    bool   `json:"no_match,omitempty"`
 }
 
 // defaultMinConfidence mirrors the MCP `search` tool's default

@@ -116,6 +116,7 @@ func replyToServerRequest(w io.Writer, id json.RawMessage, method string, verbos
 // failure — the message is what the operator will see in cron logs.
 func healthCheckProbe(ctx context.Context, bin string, args []string, verbose bool) error {
 	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Env = append(os.Environ(), "PINCHER_HEALTH_CHECK=1")
 	cmd.Stderr = os.Stderr // surface inner logs directly
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
