@@ -41,29 +41,31 @@ func TestWatch_SerializesPerProjectIndex(t *testing.T) {
 	writeFile(t, dirA, "a.go", "package a\nfunc A() {}\nfunc A2() {}\n")
 	writeFile(t, dirB, "b.go", "package b\nfunc B() {}\nfunc B2() {}\n")
 
-	// Instrument concurrency: started++/complete--, track max.
-	var inFlight atomic.Int32
-	var maxInFlight atomic.Int32
-	var completeCount atomic.Int32
+	// Instrument concurrency from the indexer's actual active map. The event
+	// stream only emits index_complete on success, so a cancelled/error return
+	// can otherwise look like a leaked in-flight index in this test even after
+	// Index has removed itself from idx.active.
+	var maxActive atomic.Int32
+	var startCount atomic.Int32
 	var seenStartedFor sync.Map // projectID → struct{}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	idx.SetEventHook(func(eventType string, payload map[string]any) {
 		switch eventType {
 		case "index_started":
-			cur := inFlight.Add(1)
+			idx.mu.Lock()
+			cur := int32(len(idx.active))
+			idx.mu.Unlock()
 			for {
-				m := maxInFlight.Load()
-				if cur <= m || maxInFlight.CompareAndSwap(m, cur) {
+				m := maxActive.Load()
+				if cur <= m || maxActive.CompareAndSwap(m, cur) {
 					break
 				}
 			}
 			if pid, ok := payload["project_id"].(string); ok {
 				seenStartedFor.Store(pid, struct{}{})
 			}
-		case "index_complete":
-			inFlight.Add(-1)
-			if completeCount.Add(1) >= 2 {
+			if startCount.Add(1) >= 2 {
 				cancel()
 			}
 		}
@@ -95,11 +97,11 @@ func TestWatch_SerializesPerProjectIndex(t *testing.T) {
 	startedCount := 0
 	seenStartedFor.Range(func(_, _ any) bool { startedCount++; return true })
 	if startedCount < 2 {
-		t.Errorf("Watch reindexed %d projects, want at least 2 (A + B). Hook events: %d concurrent peak", startedCount, maxInFlight.Load())
+		t.Errorf("Watch reindexed %d projects, want at least 2 (A + B). Hook events: %d active peak", startedCount, maxActive.Load())
 	}
 
 	// The serialise contract: never more than one in-flight at a time.
-	if got := maxInFlight.Load(); got > 1 {
+	if got := maxActive.Load(); got > 1 {
 		t.Errorf("Watch ran %d Index calls concurrently; want max 1 (serial). #1496 regression — Watch is fanning out goroutines again.", got)
 	}
 }
