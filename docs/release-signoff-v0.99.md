@@ -84,6 +84,7 @@ Additional v0.99 local hardening after the last hosted run:
 | [`e0aa1ed`](https://github.com/kwad77/pincher/commit/e0aa1ed) | Update/install | Teaches standalone `pincher update` to install the published release `.tar.gz` / `.zip` archives instead of falling back to `go install`; local full coverage flow passed at 85.3% | Pending hosted validation |
 | [`9f29dda`](https://github.com/kwad77/pincher/commit/9f29dda) | Update/install | Prevents standalone `pincher update` from downgrading a prerelease build when GitHub `/releases/latest` reports the older stable channel; local full coverage flow passed at 85.3% | Pending hosted validation |
 | [`452f9e0`](https://github.com/kwad77/pincher/commit/452f9e0) | Update/install | Replaces the temporary update-version comparator with the existing `golang.org/x/mod/semver` implementation; local `go test ./... -timeout 240s` passed | Pending hosted validation |
+| [`87b2e47`](https://github.com/kwad77/pincher/commit/87b2e47) | CI time | Removes accidental auto-indexing from the streamable HTTP load-test warmup and caps CI server-test parallelism; local `go test ./... -timeout 240s -parallel 4` and full coverage flow passed at 85.3% | Pending hosted validation |
 
 These commits are useful v0.99 hardening, but they are **not** final release
 evidence until hosted CI, Host conformance, govulncheck, and Pages enqueue and
@@ -97,7 +98,7 @@ Manual dispatch rechecks on 2026-05-26 still fail before run creation:
 | `time-to-first-success.yml` | HTTP 500 `Failed to run workflow dispatch` | `E818:1BCBFC:19FD4A9:1A215B8:6A157F79` |
 
 Pushes through
-[`452f9e0`](https://github.com/kwad77/pincher/commit/452f9e0) also failed to
+[`87b2e47`](https://github.com/kwad77/pincher/commit/87b2e47) also failed to
 create new hosted runs; `gh run list` still shows the newest hosted release
 validation at `b9e298d`.
 
