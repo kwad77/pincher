@@ -35,6 +35,27 @@ green hosted checks:
 | Pages | [26446353207](https://github.com/kwad77/pincher/actions/runs/26446353207) | Green |
 | Migration rehearsal | [26446357417](https://github.com/kwad77/pincher/actions/runs/26446357417) | Green |
 
+The v0.99 sign-off scaffold commit,
+[`0f55949`](https://github.com/kwad77/pincher/commit/0f55949), has these
+green hosted checks:
+
+| Gate | Run | Result |
+|---|---|---|
+| CI | [26446979000](https://github.com/kwad77/pincher/actions/runs/26446979000) | Green |
+| Host conformance | [26446978931](https://github.com/kwad77/pincher/actions/runs/26446978931) | Green |
+| govulncheck | [26446979011](https://github.com/kwad77/pincher/actions/runs/26446979011) | Green |
+| Pages | [26446978067](https://github.com/kwad77/pincher/actions/runs/26446978067) | Green |
+
+Advisory perf validation has started for `0f55949`:
+
+| Gate | Run | Result |
+|---|---|---|
+| Per-tool latency | [26447225384](https://github.com/kwad77/pincher/actions/runs/26447225384) | Green |
+| Multi-project ceiling | [26447225380](https://github.com/kwad77/pincher/actions/runs/26447225380) | Green |
+| Resource pressure | [26447225351](https://github.com/kwad77/pincher/actions/runs/26447225351) | Green |
+| Time to first success | [26447225383](https://github.com/kwad77/pincher/actions/runs/26447225383) | Harness failed before measurement; rerun required after workflow fix |
+| Bench baseline refresh | [26447233599](https://github.com/kwad77/pincher/actions/runs/26447233599) | Green |
+
 The migration rehearsal now exercises the intended path:
 
 1. Download `v0.4.1`.

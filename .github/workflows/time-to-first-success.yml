@@ -49,7 +49,7 @@ jobs:
           BUDGET_SECONDS: 300
         run: |
           mkdir -p out
-          ./scripts/time-to-first-success.sh \
+          bash scripts/time-to-first-success.sh \
             https://github.com/kwad77/pincher \
             "Indexer" > out/ttfs.json
           cat out/ttfs.json
