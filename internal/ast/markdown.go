@@ -2,6 +2,7 @@ package ast
 
 import (
 	"bytes"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -268,7 +269,7 @@ func (m *markdownExtractor) Extract(source []byte, _, relPath string, _ ExtractO
 	}
 	seenEdge := make(map[string]struct{})
 	for _, lnk := range links {
-		toName := canonicalDocsLinkTarget(lnk.dest, selfModule)
+		toName := canonicalDocsLinkTarget(lnk.dest, selfModule, relPath)
 		if toName == "" {
 			continue
 		}
@@ -302,7 +303,9 @@ func (m *markdownExtractor) Extract(source []byte, _, relPath string, _ ExtractO
 // shape the cross-file resolver can match against extracted Section
 // QNs. Returns "" for external / non-symbol-bearing destinations.
 // #1343 v0.71.
-func canonicalDocsLinkTarget(dest, selfModule string) string {
+const MarkdownDocRefPrefix = "@docref:"
+
+func canonicalDocsLinkTarget(dest, selfModule, fromFile string) string {
 	if dest == "" {
 		return ""
 	}
@@ -369,19 +372,14 @@ func canonicalDocsLinkTarget(dest, selfModule string) string {
 		return ""
 	}
 
-	// Strip path components: `docs/foo.md` → `foo`. The Markdown
-	// extractor's Module field is the file basename, so the target
-	// QN root is the basename of the linked file.
-	if i := strings.LastIndexAny(base, "/\\"); i >= 0 {
-		base = base[i+1:]
-	}
-	if base == "" {
+	targetPath := path.Clean(path.Join(path.Dir(filepath.ToSlash(fromFile)), dest))
+	targetPath = strings.TrimPrefix(targetPath, "/")
+	if targetPath == "." || targetPath == "" || strings.HasPrefix(targetPath, "../") {
 		return ""
 	}
-
-	target := base
+	target := MarkdownDocRefPrefix + targetPath
 	if anchor != "" {
-		target = base + "." + markdownSlug(anchor)
+		target += "#" + markdownSlug(anchor)
 	}
 	return target
 }

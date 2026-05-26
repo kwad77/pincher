@@ -62,3 +62,46 @@ func TestIndex_MarkdownIntraDocREFERENCES_PersistedToDB_1481(t *testing.T) {
 		t.Errorf("expected ≥1 REFERENCES edge into the Configuration section (Installation links to it via [Configuration](#configuration)); got 0. #1481 reproduces.")
 	}
 }
+
+func TestIndex_MarkdownParentRelativeREFERENCES_PersistedToDB_1868(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "docs/adr-migration-plan.md", `# Migration Plan
+
+See [Phase 0](../adr/0009-phase-0-tool-validation.md#decision) before continuing.
+`)
+	writeFile(t, dir, "adr/0009-phase-0-tool-validation.md", `# Phase 0 Tool Validation
+
+## Decision
+
+Use the validated tool path.
+`)
+
+	if _, err := idx.Index(context.Background(), dir, false); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	projectID := db.ProjectIDFromPath(dir)
+	targetSyms, err := store.GetSymbolsForFile(projectID, "adr/0009-phase-0-tool-validation.md")
+	if err != nil {
+		t.Fatalf("GetSymbolsForFile target: %v", err)
+	}
+	var targetID string
+	for _, s := range targetSyms {
+		if s.QualifiedName == "phase_0_tool_validation.decision" {
+			targetID = s.ID
+			break
+		}
+	}
+	if targetID == "" {
+		t.Fatalf("target Decision section missing; syms=%+v", targetSyms)
+	}
+
+	edges, err := store.EdgesTo(targetID, []string{"REFERENCES"})
+	if err != nil {
+		t.Fatalf("EdgesTo: %v", err)
+	}
+	if len(edges) == 0 {
+		t.Fatal("expected parent-relative Markdown link to persist as REFERENCES edge; got 0")
+	}
+}

@@ -2,7 +2,9 @@
   "avg_confidence_by_kind": {
     "Section": 0.85
   },
-  "edge_count_by_kind": {},
+  "edge_count_by_kind": {
+    "REFERENCES": 6
+  },
   "extraction_failures_by_reason": {},
   "files_blocked": 0,
   "files_indexed": 6,

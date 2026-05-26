@@ -532,6 +532,7 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 		pendingCalls   []ast.ExtractedEdge // deferred Go CALLS: resolved globally after full pass
 		pendingReads   []ast.ExtractedEdge // deferred Go READS (#247 #3): resolved globally; only Variable targets persist
 		pendingUsesVar []ast.ExtractedEdge // deferred Ansible USES_VAR (#1165): resolved against Setting symbols in canonical var-decl paths
+		pendingRefs    []ast.ExtractedEdge // deferred Markdown REFERENCES: resolved by target file path + optional anchor
 		bufMu          sync.Mutex
 		lastStatsFlush time.Time           // throttle for in-flight project counts; guarded by bufMu
 		seenFiles      = map[string]bool{} // #326: relPaths the walker yielded this run; tail-pass GC's symbols for files NOT in this set. Populated in the main (single-threaded) loop so no mutex.
@@ -829,6 +830,7 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 			deferredCalls := make([]ast.ExtractedEdge, 0)
 			deferredReads := make([]ast.ExtractedEdge, 0)
 			deferredUsesVar := make([]ast.ExtractedEdge, 0)
+			deferredRefs := make([]ast.ExtractedEdge, 0)
 			for _, e := range result.Edges {
 				// Stamp the source file before deferral so the resolver
 				// can disambiguate FromQN against project-wide name
@@ -850,6 +852,10 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 					// Per-file nameToID never sees those, so binding has to
 					// wait for the project-wide pass.
 					deferredUsesVar = append(deferredUsesVar, e)
+					continue
+				}
+				if e.Kind == "REFERENCES" && lang == "Markdown" {
+					deferredRefs = append(deferredRefs, e)
 					continue
 				}
 				fromID := nameToID[e.FromQN]
@@ -896,7 +902,7 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 			// still has its IMPORTS / CALLS / READS / WRITES in the
 			// candidate pool. Without this, edges from a skipped file
 			// to a changed file get dropped on resolve.
-			fileDeferred := make([]db.PendingEdge, 0, len(deferredImports)+len(deferredCalls)+len(deferredReads)+len(deferredUsesVar))
+			fileDeferred := make([]db.PendingEdge, 0, len(deferredImports)+len(deferredCalls)+len(deferredReads)+len(deferredUsesVar)+len(deferredRefs))
 			appendDeferred := func(src []ast.ExtractedEdge) {
 				for _, e := range src {
 					fileDeferred = append(fileDeferred, db.PendingEdge{
@@ -915,6 +921,7 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 			appendDeferred(deferredCalls)
 			appendDeferred(deferredReads)
 			appendDeferred(deferredUsesVar)
+			appendDeferred(deferredRefs)
 			// #423 piece 2: persist Go struct field maps so the resolver
 			// can follow recv.field.method calls. No-op for files
 			// that contain no Class symbols with a non-empty Fields map.
@@ -994,6 +1001,7 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 			pendingCalls = append(pendingCalls, deferredCalls...)
 			pendingReads = append(pendingReads, deferredReads...)
 			pendingUsesVar = append(pendingUsesVar, deferredUsesVar...)
+			pendingRefs = append(pendingRefs, deferredRefs...)
 			// #1231 v0.66 DOGFOOD: record this file's extracted-symbol
 			// count under bufMu so the post-pass parity check
 			// (Index() tail) can compare against the DB's
@@ -1244,6 +1252,7 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 		allCalls := loadKind("CALLS", pendingCalls)
 		allReads := loadKind("READS", pendingReads)
 		allReads = append(allReads, loadKind("WRITES", nil)...)
+		allRefs := loadKind("REFERENCES", pendingRefs)
 
 		var qnMap map[string][]db.Symbol
 		if len(allImports)+len(allCalls)+len(allReads) > qnPreloadThreshold {
@@ -1301,6 +1310,9 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 			if len(allReads) == 0 {
 				idx.resolveReads(projectID, nil, qnMap, resolveScope)
 			}
+			if len(allRefs) == 0 {
+				idx.resolveReferences(projectID, nil, resolveScope)
+			}
 		}
 		runResolve("IMPORTS", len(allImports), func() int {
 			return idx.resolveImports(projectID, allImports, pythonRoots, qnMap, resolveScope)
@@ -1310,6 +1322,9 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 		})
 		runResolve("READS", len(allReads), func() int {
 			return idx.resolveReads(projectID, allReads, qnMap, resolveScope)
+		})
+		runResolve("REFERENCES", len(allRefs), func() int {
+			return idx.resolveReferences(projectID, allRefs, resolveScope)
 		})
 
 		// #1165 Phase 2: bind Ansible USES_VAR refs to Setting symbols in
@@ -3185,6 +3200,130 @@ func (idx *Indexer) resolveUsesVar(projectID string, pending []ast.ExtractedEdge
 	// above) — ReplaceEdgesByKindSource deletes then inserts nothing.
 	if err := idx.store.ReplaceEdgesByKindSource(projectID, "USES_VAR", "resolve_pass", scopeFiles, edges); err != nil {
 		slog.Warn("pincher.uses_var.replace.err", "err", err, "edge_count", len(edges))
+		return 0
+	}
+	return len(edges)
+}
+
+func (idx *Indexer) resolveReferences(projectID string, pending []ast.ExtractedEdge, scopeFiles []string) int {
+	if len(pending) == 0 {
+		if len(scopeFiles) > 0 {
+			if err := idx.store.DeleteResolvePassEdgesByKindForSourceFiles(projectID, "REFERENCES", scopeFiles); err != nil {
+				slog.Warn("pincher.references.scoped_delete.err", "err", err)
+			}
+		}
+		return 0
+	}
+
+	symbolsByFile := map[string][]db.Symbol{}
+	loadFile := func(file string) []db.Symbol {
+		if syms, ok := symbolsByFile[file]; ok {
+			return syms
+		}
+		syms, err := idx.store.GetSymbolsForFile(projectID, file)
+		if err != nil {
+			slog.Warn("pincher.references.load_file.err", "file", file, "err", err)
+			return nil
+		}
+		symbolsByFile[file] = syms
+		return syms
+	}
+
+	pickFrom := func(file, qn string) string {
+		syms := loadFile(file)
+		if qn == "" {
+			qn = "preamble"
+		}
+		for _, s := range syms {
+			if s.Kind == "Section" && s.Language == "Markdown" && s.QualifiedName == qn {
+				return s.ID
+			}
+		}
+		for _, s := range syms {
+			if s.Kind == "Section" && s.Language == "Markdown" {
+				return s.ID
+			}
+		}
+		return ""
+	}
+
+	pickTarget := func(p ast.ExtractedEdge) string {
+		toName := p.ToName
+		if !strings.HasPrefix(toName, ast.MarkdownDocRefPrefix) {
+			for _, s := range loadFile(p.FromFile) {
+				if s.Kind == "Section" && s.Language == "Markdown" && s.QualifiedName == toName {
+					return s.ID
+				}
+			}
+			return ""
+		}
+		raw := strings.TrimPrefix(toName, ast.MarkdownDocRefPrefix)
+		targetFile := raw
+		anchor := ""
+		if i := strings.IndexByte(raw, '#'); i >= 0 {
+			targetFile = raw[:i]
+			anchor = raw[i+1:]
+		}
+		if targetFile == "" {
+			return ""
+		}
+		syms := loadFile(targetFile)
+		if anchor != "" {
+			for _, s := range syms {
+				if s.Kind != "Section" || s.Language != "Markdown" {
+					continue
+				}
+				if s.QualifiedName == anchor || strings.HasSuffix(s.QualifiedName, "."+anchor) {
+					return s.ID
+				}
+			}
+			return ""
+		}
+		var firstSection, preamble string
+		for _, s := range syms {
+			if s.Kind != "Section" || s.Language != "Markdown" {
+				continue
+			}
+			if firstSection == "" {
+				firstSection = s.ID
+			}
+			if s.QualifiedName == "preamble" {
+				preamble = s.ID
+			}
+		}
+		if firstSection != "" {
+			return firstSection
+		}
+		return preamble
+	}
+
+	branch := idx.currentBranchFor(projectID)
+	edges := make([]db.Edge, 0, len(pending))
+	seen := map[string]struct{}{}
+	for _, p := range pending {
+		fromID := pickFrom(p.FromFile, p.FromQN)
+		toID := pickTarget(p)
+		if fromID == "" || toID == "" || fromID == toID {
+			continue
+		}
+		key := fromID + "->" + toID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		edges = append(edges, db.Edge{
+			ProjectID:  projectID,
+			FromID:     fromID,
+			ToID:       toID,
+			Kind:       "REFERENCES",
+			Confidence: p.Confidence,
+			Source:     "resolve_pass",
+			Branch:     branch,
+		})
+	}
+
+	if err := idx.store.ReplaceEdgesByKindSource(projectID, "REFERENCES", "resolve_pass", scopeFiles, edges); err != nil {
+		slog.Warn("pincher.references.resolve.persist.err", "err", err)
 		return 0
 	}
 	return len(edges)

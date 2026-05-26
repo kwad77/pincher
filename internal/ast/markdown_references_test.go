@@ -20,8 +20,8 @@ See [the tutorial](docs/tutorials/quickstart.md).
 		t.Fatal("nil result")
 	}
 	want := []struct{ fromQN, toName string }{
-		{"overview", "REFERENCE.schema_version"},
-		{"overview", "quickstart"},
+		{"overview", "@docref:REFERENCE.md#schema_version"},
+		{"overview", "@docref:docs/tutorials/quickstart.md"},
 	}
 	for _, w := range want {
 		var found bool
@@ -125,7 +125,7 @@ func TestExtractMarkdown_DuplicateLink_DedupedToOneEdge_1343(t *testing.T) {
 	}
 	var count int
 	for _, e := range result.Edges {
-		if e.Kind == "REFERENCES" && e.FromQN == "overview" && e.ToName == "REFERENCE" {
+		if e.Kind == "REFERENCES" && e.FromQN == "overview" && e.ToName == "@docref:REFERENCE.md" {
 			count++
 		}
 	}
@@ -148,7 +148,7 @@ func TestExtractMarkdown_PreambleLink_FromQNEmpty_1343(t *testing.T) {
 	}
 	var found bool
 	for _, e := range result.Edges {
-		if e.Kind == "REFERENCES" && e.FromQN == "" && e.ToName == "REFERENCE" {
+		if e.Kind == "REFERENCES" && e.FromQN == "" && e.ToName == "@docref:REFERENCE.md" {
 			found = true
 			break
 		}
