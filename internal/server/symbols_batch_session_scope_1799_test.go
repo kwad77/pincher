@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,5 +114,61 @@ func TestHandleSymbols_CrossProjectOptIn_ResolvesMirrorID_1799(t *testing.T) {
 	}
 	if errStr, _ := syms[0].(map[string]any)["error"].(string); errStr != "" {
 		t.Errorf("cross_project=true must resolve the mirror-only ID; got error %q", errStr)
+	}
+}
+
+func TestHandleSymbols_CrossProjectOptIn_ReadsSourceFromOwningProject(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	sessionRoot := t.TempDir()
+	mirrorRoot := t.TempDir()
+	sessionID, mirrorID := "p-session-source", "p-mirror-source"
+	mustUpsertProject(t, store, sessionID, sessionRoot, sessionID)
+	mustUpsertProject(t, store, mirrorID, mirrorRoot, mirrorID)
+	srv.sessionID = sessionID
+	srv.sessionRoot = sessionRoot
+
+	rel := filepath.Join("pkg", "x.go")
+	sessionSource := "package pkg\nfunc Marker() string { return \"SESSION\" }\n"
+	mirrorSource := "package pkg\nfunc Marker() string { return \"MIRROR!\" }\n"
+	for root, body := range map[string]string{
+		sessionRoot: sessionSource,
+		mirrorRoot:  mirrorSource,
+	} {
+		if err := os.MkdirAll(filepath.Join(root, "pkg"), 0o755); err != nil {
+			t.Fatalf("mkdir fixture: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(root, rel), []byte(body), 0o644); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+	}
+
+	start := strings.Index(mirrorSource, "func Marker")
+	if start < 0 {
+		t.Fatal("test fixture missing function")
+	}
+	id := "pkg/x.go::pkg.Marker#Function"
+	mustUpsertSymbols(t, store, []db.Symbol{{
+		ID: id, ProjectID: mirrorID, FilePath: filepath.ToSlash(rel),
+		Name: "Marker", QualifiedName: "pkg.Marker", Kind: "Function",
+		Language: "Go", StartByte: start, EndByte: len(mirrorSource),
+		Signature: "func Marker() string", ExtractionConfidence: 1.0,
+	}})
+
+	res, err := srv.handleSymbols(context.Background(), makeReq(map[string]any{
+		"ids":           []any{id},
+		"cross_project": true,
+		"fields":        "id,source",
+	}))
+	if err != nil {
+		t.Fatalf("handleSymbols: %v", err)
+	}
+	syms, _ := decode(t, res)["symbols"].([]any)
+	if len(syms) != 1 {
+		t.Fatalf("expected 1 symbol, got %d", len(syms))
+	}
+	source, _ := syms[0].(map[string]any)["source"].(string)
+	if !strings.Contains(source, "MIRROR!") || strings.Contains(source, "SESSION") {
+		t.Fatalf("cross_project source must come from owning project root; got %q", source)
 	}
 }

@@ -5199,6 +5199,21 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 		// not_found; cross_project=true opts into the unscoped fallback.
 		resolvedProjectID = s.sessionID
 	}
+	rootCache := map[string]string{}
+	rootForProject := func(projectID string) string {
+		if projectID == "" {
+			return root
+		}
+		if projectID == resolvedProjectID && root != "" {
+			return root
+		}
+		if cached, ok := rootCache[projectID]; ok {
+			return cached
+		}
+		r, _ := s.resolveProjectRoot(projectID)
+		rootCache[projectID] = r
+		return r
+	}
 
 	// One round trip to SQLite for the whole batch. Was N round trips
 	// (loop over GetSymbol) — for a 100-ID batch that's the dominant
@@ -5234,8 +5249,9 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 	// so the helper sees the actual set of files an agent would otherwise
 	// have read. A 30-ID batch hitting 12 unique files credits 12 file
 	// sizes, not 30 × per-file-estimate as the prior savedVsFullRead path
-	// did.
-	filePaths := make([]string, 0, len(ids))
+	// did. Key by project so cross_project=true batches charge and read
+	// against the source checkout for each returned row.
+	filePathsByProject := map[string][]string{}
 	// #1050: track resolved-symbol project_ids on the unscoped batch
 	// path so a cross-project leak warning can surface below. Same
 	// shape as #1049 on handleSymbol but the batch variant aggregates
@@ -5266,9 +5282,10 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 			crossProjectSources[sym.ProjectID]++
 		}
 		source := ""
+		symRoot := rootForProject(sym.ProjectID)
 		if includeSource {
-			if root != "" {
-				source, _ = index.ReadSymbolSource(root, *sym)
+			if symRoot != "" {
+				source, _ = index.ReadSymbolSource(symRoot, *sym)
 			}
 			// Document symbols (fetched URLs) store their content in Docstring —
 			// no local file to seek. Mirrors the fallback in handleSymbol so a
@@ -5311,12 +5328,8 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 		// own _meta when the file's on-disk hash diverges from the indexed
 		// one. Mirrors the per-symbol path so a mixed batch (some stale,
 		// some fresh) reports accurately at the entry level.
-		if root != "" && sym.Kind != "Document" {
-			pidForHash := resolvedProjectID
-			if pidForHash == "" {
-				pidForHash = sym.ProjectID
-			}
-			s.attachStalenessWarning(entry, pidForHash, sym, root)
+		if symRoot != "" && sym.Kind != "Document" {
+			s.attachStalenessWarning(entry, sym.ProjectID, sym, symRoot)
 		}
 		// Apply per-entry projection. _meta (the staleness warning
 		// attached just above) is preserved by projectFields.
@@ -5325,11 +5338,33 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 		// Document symbols have no on-disk file; skip them in the
 		// savings baseline so we don't os.Stat a non-existent path.
 		if sym.Kind != "Document" && sym.FilePath != "" {
-			filePaths = append(filePaths, sym.FilePath)
+			filePathsByProject[sym.ProjectID] = append(filePathsByProject[sym.ProjectID], sym.FilePath)
 		}
 	}
 
 	responseJSON, _ := json.Marshal(results)
+	baselineBytes := 0
+	for projectID, paths := range filePathsByProject {
+		projectRoot := rootForProject(projectID)
+		seen := map[string]bool{}
+		for _, fp := range paths {
+			if seen[fp] {
+				continue
+			}
+			seen[fp] = true
+			if !s.markFileAccessed(projectID, fp) {
+				continue
+			}
+			if projectRoot != "" {
+				if fi, err := os.Stat(filepath.Join(projectRoot, filepath.FromSlash(fp))); err == nil {
+					baselineBytes += int(fi.Size())
+					continue
+				}
+			}
+			baselineBytes += avgFileSize
+		}
+	}
+	tokensSaved := max(0, baselineBytes/charsPerToken-db.ApproxTokens(string(responseJSON)))
 	data := map[string]any{
 		"symbols": results,
 		"count":   len(results),
@@ -5386,7 +5421,7 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 			"fields %v matched no keys and were dropped; valid keys: %v",
 			symbolsUnknownFields, knownKeys))
 	}
-	return s.jsonResultWithMeta(data, start, tool, args, s.savedVsFileSizesSession(resolvedProjectID, root, filePaths, responseJSON)), nil
+	return s.jsonResultWithMeta(data, start, tool, args, tokensSaved), nil
 }
 
 func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
