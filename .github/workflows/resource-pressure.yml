@@ -29,12 +29,13 @@ jobs:
     # Phase-1 advisory; flip at v0.90 per FILE-I.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
 
       - name: Install jq + GNU time
         run: |
@@ -53,7 +54,7 @@ jobs:
           # validating the published budget for the larger tiers.
         run: bash scripts/resource-pressure-bench.sh 1000,10000 out/resource-pressure.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: resource-pressure-${{ github.run_id }}

@@ -33,12 +33,13 @@ jobs:
     name: host-conformance
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
 
       - name: Build pincher
         run: go build -trimpath -ldflags="-s -w" -o ./pincher ./cmd/pinch/
@@ -66,7 +67,7 @@ jobs:
       # DB is excluded — it's scratch, not a transcript.
       - name: Upload per-host transcripts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: host-conformance-transcripts
           path: host-conformance-out/host-*

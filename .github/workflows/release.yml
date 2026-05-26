@@ -39,12 +39,13 @@ jobs:
             ext: .exe
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
 
       - name: Build
         env:
@@ -83,13 +84,13 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/pincher-*.tar.gz
           if-no-files-found: ignore
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.goos }}-${{ matrix.goarch }}-zip
           path: dist/pincher-*.zip
@@ -105,9 +106,9 @@ jobs:
       # v0.54.0-beta.1 release run, which failed at the channel step
       # with "scripts/release-channel.sh: No such file or directory"
       # because this job runs on a fresh runner with no repo.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -138,7 +139,7 @@ jobs:
         if: env.COSIGN_PRIVATE_KEY != ''
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@v4
 
       - name: Sign release artifacts
         if: env.COSIGN_PRIVATE_KEY != ''
@@ -195,7 +196,7 @@ jobs:
           echo "Release channel for ${GITHUB_REF_NAME}: $CHANNEL"
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/pincher-*.tar.gz
@@ -213,13 +214,13 @@ jobs:
     name: Docker image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v4
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -254,7 +255,7 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Docker tags for ${GITHUB_REF_NAME} (channel=$CHANNEL): ${TAGS}"
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           push: true
@@ -294,7 +295,7 @@ jobs:
             echo "SKIP_HOMEBREW=1" >> "$GITHUB_ENV"
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         if: env.SKIP_HOMEBREW != '1'
         with:
           ref: master
@@ -439,7 +440,7 @@ jobs:
             echo "SKIP_SCOOP=1" >> "$GITHUB_ENV"
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         if: env.SKIP_SCOOP != '1'
         with:
           ref: master

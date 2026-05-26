@@ -27,12 +27,13 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true   # phase-1 advisory; flip at v1.0 per FILE-C.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
 
       - name: Build pincher
         run: go build -trimpath -ldflags="-s -w" -o ./pincher ./cmd/pinch/

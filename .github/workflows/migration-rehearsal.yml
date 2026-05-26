@@ -28,12 +28,13 @@ jobs:
     name: v0.4 to current migration smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
 
       - name: Build current pincher
         run: |
@@ -172,7 +173,7 @@ jobs:
 
       - name: Upload data dir for forensics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: migration-rehearsal-data-${{ github.run_id }}
           path: datadir-v04/

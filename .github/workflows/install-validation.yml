@@ -63,7 +63,7 @@ jobs:
       tag: ${{ steps.r.outputs.tag }}
       channel: ${{ steps.r.outputs.channel }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Resolve
         id: r

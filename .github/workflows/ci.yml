@@ -101,12 +101,13 @@ jobs:
             test-flags: -timeout 600s -p 2
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
 
       # `go test` runs `go vet` automatically (with a slightly narrower
       # default check set than `go vet ./...`). We don't pass -vet=off,
@@ -141,7 +142,7 @@ jobs:
 
       - name: Upload coverage profile
         if: matrix.coverage == true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-ubuntu
           path: |
@@ -159,7 +160,7 @@ jobs:
     needs: test
     steps:
       - name: Download coverage profile
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: coverage-ubuntu
 
@@ -201,12 +202,13 @@ jobs:
     name: Corpus snapshot
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
 
       - name: Verify pinned-corpus snapshots
         run: make corpus-test
@@ -218,7 +220,7 @@ jobs:
     name: Shell script contracts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Verify channel detection
         run: |
@@ -238,12 +240,13 @@ jobs:
     name: Workflow isolation lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
 
       - name: Run workflow-lint
         run: go run ./cmd/workflow-lint
@@ -254,12 +257,13 @@ jobs:
     name: Benchmark smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
 
       - name: Run benchmarks (smoke only — 100ms per benchmark)
         run: |
@@ -306,7 +310,7 @@ jobs:
     # Only meaningful on PRs (master pushes don't have a "vs base" diff).
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0  # need full history to diff vs base
 
@@ -324,7 +328,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Check PR title (#N) ↔ body Closes #M consistency
         env:

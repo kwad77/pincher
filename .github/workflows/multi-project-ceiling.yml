@@ -24,12 +24,13 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.sum
 
       - name: Install jq
         run: |
@@ -48,7 +49,7 @@ jobs:
           # on cron.
         run: bash scripts/multi-project-ceiling-bench.sh 10,50 out/multi-project-ceiling.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: multi-project-ceiling-${{ github.run_id }}
