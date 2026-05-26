@@ -14,9 +14,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/mod/semver"
 )
 
 const (
@@ -734,57 +735,20 @@ func normaliseVersion(s string) string {
 	return strings.TrimPrefix(strings.TrimSpace(s), "v")
 }
 
-type parsedVersion struct {
-	major int
-	minor int
-	patch int
-	pre   string
-}
-
 func compareVersions(a, b string) (int, bool) {
-	av, okA := parseVersion(a)
-	bv, okB := parseVersion(b)
+	av, okA := semverForCompare(a)
+	bv, okB := semverForCompare(b)
 	if !okA || !okB {
 		return 0, false
 	}
-	for _, pair := range [][2]int{
-		{av.major, bv.major},
-		{av.minor, bv.minor},
-		{av.patch, bv.patch},
-	} {
-		if pair[0] < pair[1] {
-			return -1, true
-		}
-		if pair[0] > pair[1] {
-			return 1, true
-		}
-	}
-	if av.pre == bv.pre {
-		return 0, true
-	}
-	if av.pre == "" {
-		return 1, true
-	}
-	if bv.pre == "" {
-		return -1, true
-	}
-	return strings.Compare(av.pre, bv.pre), true
+	return semver.Compare(av, bv), true
 }
 
-func parseVersion(s string) (parsedVersion, bool) {
+func semverForCompare(s string) (string, bool) {
 	s = normaliseVersion(s)
-	core, pre, _ := strings.Cut(s, "-")
-	parts := strings.Split(core, ".")
-	if len(parts) != 3 {
-		return parsedVersion{}, false
+	if s == "" {
+		return "", false
 	}
-	nums := make([]int, 3)
-	for i, part := range parts {
-		n, err := strconv.Atoi(part)
-		if err != nil {
-			return parsedVersion{}, false
-		}
-		nums[i] = n
-	}
-	return parsedVersion{major: nums[0], minor: nums[1], patch: nums[2], pre: pre}, true
+	s = "v" + s
+	return s, semver.IsValid(s)
 }
