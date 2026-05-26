@@ -29,7 +29,8 @@ If your old binary does not support `--json`, paste the human-readable
 Back up the DB before the first run with the new binary:
 
 ```bash
-cp ~/.local/share/pincher/pincher.db ~/pincher.db.before-v1-review
+cp "${XDG_DATA_HOME:-$HOME/.local/share}/pincherMCP/pincher.db" \
+  ~/pincher.db.before-v1-review
 ```
 
 Use the OS-specific data-dir path from the migration guide if you are
