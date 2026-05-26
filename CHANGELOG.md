@@ -5,6 +5,22 @@ versioning follows [SemVer](https://semver.org/) — once 1.0 ships, schema
 breaking changes will be major bumps and tool-contract additions will be
 minors.
 
+## [Unreleased]
+
+## [0.94.0] — 2026-05-25 — CI runtime reduction + supervised split
+
+### Changed
+- Cache the cmd/pinch integration-test binary per test process to reduce repeated CI build work.
+- **PR CI runtime trimmed.** Superseded pull-request workflow runs now cancel automatically, and the expensive advisory race detector no longer runs on every PR; it still runs on `master` pushes and manual CI dispatches.
+- Split the Windows data CI shard so server tests run in parallel with index and database tests.
+- Shard Windows CI tests so pull requests stop waiting on one serial Windows package queue.
+- Shrink ratio-ghost server test fixtures while preserving the same threshold coverage.
+
+### Fixed
+- **Go function-value binding regression guard (#1877).** Added an end-to-end test for top-level package var aliases like `var processExecutablePath = platformProcessExecutablePath`, ensuring the binding-pass CALLS edge keeps platform-dispatch implementations out of high-confidence `dead_code` / `audit_unused` false positives.
+- **Supervised MCP provider/action split (#371).** `pincher supervised` can now keep the long-lived stdio provider stable while delegating tool actions to a separate inner binary, and the subprocess integration tests isolate their data dirs so local dogfood databases cannot lock CI-style test runs.
+- **Init target detection tests are hermetic inside Codex.** Tests that override `HOME` now also neutralize `CODEX_HOME`, so `go test ./...` passes when the repository is exercised from a Codex-managed shell instead of inheriting the real host's global Codex config directory.
+
 ## [0.93.0] — 2026-05-23 — Post-v0.92 polish: install-validation, composite UX, migration-guide forward-port
 
 **Theme — v0.93 closes the gaps that surfaced as soon as v0.92 shipped.** Real-world install paths exposed two release-pipeline races (install-validation cells 404'd while CDN propagation finished; Docker push job runs ~8 min behind everything else) — both fixed at the `workflow_run` trigger layer. The composite-tool surface hardened in two places: `onboard_module` now explains itself when scoped to a library package instead of returning a silent `[]`, and `investigate_failure` no longer BM25-matches unrelated symbols against Go test-framework vocabulary (`compare`, `fetch`, `FAIL` etc. that legitimately appear in failure output but aren't identifier-shaped). The migration guide forward-ports through v0.92 — re-install matrix, schema table, tool count, new-tool appendix — as the prerequisite for the v0.99 external review (#1390). A `golang.org/x/net` bump closes five govulncheck advisories. `CHANGELOG.d/` carries one retroactively-documented entry: the migration-guide modernization PR landed after the v0.92.0 tag cut, so it documents here per the v0.78.1 release-honesty precedent.
@@ -3641,7 +3657,10 @@ Highlights:
 - `docs/index.html`: single-file GitHub Pages landing page.
 - CI coverage gate lowered to 83% to match reality.
 
-[Unreleased]: https://github.com/kwad77/pincher/compare/v0.91.0...HEAD
+[Unreleased]: https://github.com/kwad77/pincher/compare/v0.94.0...HEAD
+[0.94.0]: https://github.com/kwad77/pincher/compare/v0.93.0...v0.94.0
+[0.93.0]: https://github.com/kwad77/pincher/compare/v0.92.0...v0.93.0
+[0.92.0]: https://github.com/kwad77/pincher/compare/v0.91.0...v0.92.0
 [0.91.0]: https://github.com/kwad77/pincher/compare/v0.90.0...v0.91.0
 [v0.11.0]: https://github.com/kwad77/pincher/compare/v0.10.0...v0.11.0
 [v0.10.0]: https://github.com/kwad77/pincher/compare/v0.9.0...v0.10.0
