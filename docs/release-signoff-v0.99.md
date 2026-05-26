@@ -89,19 +89,19 @@ Additional v0.99 local hardening after the last hosted run:
 | [`03a07f6`](https://github.com/kwad77/pincher/commit/03a07f6) | Server perf | Narrows architecture's surprising-connection scan to project-local `CALLS` edges via the existing project/kind edge index instead of loading every edge record; local `EXPLAIN QUERY PLAN`, focused DB/server tests, full `internal/db`, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, workflow lint, and dogfood `pincher doctor` all passed | Pending hosted validation |
 | [`362a738`](https://github.com/kwad77/pincher/commit/362a738) | Project resolution | Makes same-name project resolution prefer the current session project, then the newest indexed live project, while preserving exact-case and live-over-dead precedence; local focused collision tests, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, full coverage at 85.2%, workflow lint, and dogfood `pincher doctor` all passed | Pending hosted validation |
 | [`b7439d0`](https://github.com/kwad77/pincher/commit/b7439d0) | Project resolution | Scopes cached project-name resolutions to the session context that produced them so same-name live-project collisions cannot leak across sessions for the cache TTL; local focused cache/collision tests, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, workflow lint, and dogfood `pincher doctor` all passed | Pending hosted validation |
-| [`cce77f8`](https://github.com/kwad77/pincher/commit/cce77f8) | Project resolution | Makes `symbols(cross_project=true)` read source, staleness state, and file-access savings from each returned symbol's owning project root instead of the session root; focused server tests, focused race tests, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, and dogfood `pincher doctor` all passed | Covered by descendant hosted green run [`604c721`](https://github.com/kwad77/pincher/commit/604c721) |
-| [`3e54cd9`](https://github.com/kwad77/pincher/commit/3e54cd9) | CI validation | Stabilizes the watcher serialization test by measuring the indexer's actual active map instead of inferring in-flight state from success-only completion events; focused watcher test loop, full `internal/index`, full `go test ./... -timeout 240s -parallel 4`, and dogfood `pincher doctor` all passed | Covered by descendant hosted green run [`604c721`](https://github.com/kwad77/pincher/commit/604c721) |
+| [`cce77f8`](https://github.com/kwad77/pincher/commit/cce77f8) | Project resolution | Makes `symbols(cross_project=true)` read source, staleness state, and file-access savings from each returned symbol's owning project root instead of the session root; focused server tests, focused race tests, full `internal/server`, full `go test ./... -timeout 240s -parallel 4`, and dogfood `pincher doctor` all passed | Covered by current-head hosted green run [`9479037`](https://github.com/kwad77/pincher/commit/9479037) |
+| [`3e54cd9`](https://github.com/kwad77/pincher/commit/3e54cd9) | CI validation | Stabilizes the watcher serialization test by measuring the indexer's actual active map instead of inferring in-flight state from success-only completion events; focused watcher test loop, full `internal/index`, full `go test ./... -timeout 240s -parallel 4`, and dogfood `pincher doctor` all passed | Covered by current-head hosted green run [`9479037`](https://github.com/kwad77/pincher/commit/9479037) |
 
 These commits are useful v0.99 hardening. Push-triggered hosted validation
-passed on descendant
-[`604c721`](https://github.com/kwad77/pincher/commit/604c721): CI
-[`26449531612`](https://github.com/kwad77/pincher/actions/runs/26449531612),
+passed on current head
+[`9479037`](https://github.com/kwad77/pincher/commit/9479037): CI
+[`26449895956`](https://github.com/kwad77/pincher/actions/runs/26449895956),
 Host conformance
-[`26449531505`](https://github.com/kwad77/pincher/actions/runs/26449531505),
+[`26449895760`](https://github.com/kwad77/pincher/actions/runs/26449895760),
 govulncheck
-[`26449531597`](https://github.com/kwad77/pincher/actions/runs/26449531597),
+[`26449895765`](https://github.com/kwad77/pincher/actions/runs/26449895765),
 and Pages
-[`26449530113`](https://github.com/kwad77/pincher/actions/runs/26449530113)
+[`26449894492`](https://github.com/kwad77/pincher/actions/runs/26449894492)
 are green.
 
 Hosted reruns on 2026-05-26 for
@@ -171,13 +171,13 @@ commit, issue, or artifact URL.
 | Requirement | Evidence | Status |
 |---|---|---|
 | All open v0.98/v0.99 release-scope issues dispositioned | #1716, #1390, #676 | Pending |
-| Hosted Actions setup + validation for current release-prep commits | [`604c721`](https://github.com/kwad77/pincher/commit/604c721): CI [`26449531612`](https://github.com/kwad77/pincher/actions/runs/26449531612), Host conformance [`26449531505`](https://github.com/kwad77/pincher/actions/runs/26449531505), govulncheck [`26449531597`](https://github.com/kwad77/pincher/actions/runs/26449531597), Pages [`26449530113`](https://github.com/kwad77/pincher/actions/runs/26449530113) | Green |
+| Hosted Actions setup + validation for current release-prep commits | [`9479037`](https://github.com/kwad77/pincher/commit/9479037): CI [`26449895956`](https://github.com/kwad77/pincher/actions/runs/26449895956), Host conformance [`26449895760`](https://github.com/kwad77/pincher/actions/runs/26449895760), govulncheck [`26449895765`](https://github.com/kwad77/pincher/actions/runs/26449895765), Pages [`26449894492`](https://github.com/kwad77/pincher/actions/runs/26449894492) | Green |
 | Migration guide externally tested by >=2 users | #1390 review comments | Pending |
-| Full CI green on release-prep commit | [`26449531612`](https://github.com/kwad77/pincher/actions/runs/26449531612) on [`604c721`](https://github.com/kwad77/pincher/commit/604c721) | Green |
-| Host conformance green | [`26449531505`](https://github.com/kwad77/pincher/actions/runs/26449531505) on [`604c721`](https://github.com/kwad77/pincher/commit/604c721) | Green |
-| govulncheck green | [`26449531597`](https://github.com/kwad77/pincher/actions/runs/26449531597) on [`604c721`](https://github.com/kwad77/pincher/commit/604c721) | Green |
-| Pages deploy green | [`26449530113`](https://github.com/kwad77/pincher/actions/runs/26449530113) on [`604c721`](https://github.com/kwad77/pincher/commit/604c721) | Green |
-| Migration rehearsal green | Actions run URL | Pending |
+| Full CI green on release-prep commit | [`26449895956`](https://github.com/kwad77/pincher/actions/runs/26449895956) on [`9479037`](https://github.com/kwad77/pincher/commit/9479037) | Green |
+| Host conformance green | [`26449895760`](https://github.com/kwad77/pincher/actions/runs/26449895760) on [`9479037`](https://github.com/kwad77/pincher/commit/9479037) | Green |
+| govulncheck green | [`26449895765`](https://github.com/kwad77/pincher/actions/runs/26449895765) on [`9479037`](https://github.com/kwad77/pincher/commit/9479037) | Green |
+| Pages deploy green | [`26449894492`](https://github.com/kwad77/pincher/actions/runs/26449894492) on [`9479037`](https://github.com/kwad77/pincher/commit/9479037) | Green |
+| Migration rehearsal green | [`26449923037`](https://github.com/kwad77/pincher/actions/runs/26449923037) on [`9479037`](https://github.com/kwad77/pincher/commit/9479037) | Green |
 | Bench baseline decision recorded | Workflow run or explicit no-refresh rationale | Pending |
 | Cross-platform install smoke ready | `install-validation.yml` after tag | Pending tag |
 | Launch artifacts have no stale placeholders | `docs/launch/placeholder-audit.md` | Green |
