@@ -69,14 +69,26 @@ jobs:
             # Linux/macOS: this package gets slower when too many
             # SQLite-backed tests run at once.
             test-flags: -timeout 600s -p 2 -parallel 4
-          - label: windows-latest / index-db
+          - label: windows-latest / index
             os: windows-latest
-            packages: ./internal/index ./internal/db
+            packages: ./internal/index
             build_pinch: false
             coverage: false
-            # index and db are the remaining SQLite-heavy packages; they
-            # can overlap under -p 2 without paying for one runner each.
-            test-flags: -timeout 600s -p 2
+            # After v0.97.2, the combined index-db shard was the CI
+            # tail: setup-go restored a 331MB Windows cache, then
+            # internal/index took ~190s and internal/db ~135s. Split
+            # them so both packages run beside each other instead of
+            # sharing one runner (#1909).
+            test-flags: -timeout 600s
+          - label: windows-latest / db
+            os: windows-latest
+            packages: ./internal/db
+            build_pinch: false
+            coverage: false
+            # See windows-latest / index above; this duplicate runner
+            # cost is intentional while Windows index/db are the wall
+            # clock tail.
+            test-flags: -timeout 600s
           - label: windows-latest / core
             os: windows-latest
             packages: ./internal/ast ./internal/cypher ./internal/init ./internal/supervisor ./internal/supervisor/cmd/probe
