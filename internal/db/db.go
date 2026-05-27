@@ -5020,109 +5020,65 @@ func (s *Store) CountRecentExtractionFailuresAcrossProjects(cutoffUnix int64) (i
 }
 
 // EstimateProjectBytes returns a best-effort per-project on-disk byte
-// estimate, keyed by project_id. The estimate sums the LENGTH of every
-// text column in `symbols`, `edges`, and `pending_edges` plus a flat
-// per-row overhead approximating index + b-tree storage, and includes a
-// rough FTS5 contribution (~50% of the symbols-text payload, since the
-// FTS5 vtab re-stores qualified_name + signature + docstring tokens).
-//
-// This is *not* an exact attribution — SQLite page allocation is whole-
-// page granular and pages are shared across projects on multi-project
-// installs, so the sum across projects will undershoot the real
-// db_size_bytes by 10-40% (the gap is page-fragmentation slack + WAL +
-// schema overhead that can't be cheaply attributed per project). The
-// load-bearing property is *relative ordering*: doctor consumers use
-// these numbers to decide which project to delete first when the DB
-// hits multi-GB. Absolute precision would require parsing the b-tree
-// (out of scope; see #1219 pincher vacuum for that path). #1220.
+// estimate, keyed by project_id. This is not exact attribution: SQLite
+// page allocation is whole-page granular and pages are shared across
+// projects on multi-project installs. The load-bearing property is
+// relative ordering: doctor consumers use these numbers to decide which
+// project to delete first when the DB hits multi-GB. Absolute precision
+// would require parsing the b-tree (out of scope; see #1219 pincher
+// vacuum for that path). #1220.
 //
 // Reads via the reader pool — pure SELECT.
 func (s *Store) EstimateProjectBytes() (map[string]int64, error) {
-	// Symbols contribution: every text column LENGTH'd, plus 64 bytes/row
-	// for index entries (idx_sym_project + idx_sym_file + idx_sym_kind +
-	// idx_sym_name + idx_sym_qn each add ~12 bytes per symbol).
-	symQ := `SELECT project_id, SUM(
-	    LENGTH(id) + LENGTH(file_path) + LENGTH(name) + LENGTH(qualified_name) +
-	    LENGTH(kind) + LENGTH(language) +
-	    LENGTH(COALESCE(signature, '')) + LENGTH(COALESCE(return_type, '')) +
-	    LENGTH(COALESCE(docstring, '')) + LENGTH(COALESCE(parent, '')) +
-	    LENGTH(COALESCE(file_hash, ''))
-	  ) + COUNT(*) * 64 AS bytes
-	  FROM symbols
-	  GROUP BY project_id`
 	out := map[string]int64{}
-	rows, err := s.ro.Query(symQ)
-	if err != nil {
-		return nil, err
+	// #1906: doctor calls this on every run, so avoid LENGTH() over
+	// every payload text column. Count via covering project-first indexes
+	// and use conservative row weights that include row body, secondary
+	// indexes, and symbols' FTS contribution. Relative ordering is the
+	// contract.
+	const (
+		symbolBytesEstimate      int64 = 384
+		edgeBytesEstimate        int64 = 160
+		pendingEdgeBytesEstimate int64 = 192
+	)
+	queries := []struct {
+		sql         string
+		bytesPerRow int64
+	}{
+		{
+			sql:         `SELECT project_id, COUNT(*) FROM symbols INDEXED BY idx_sym_project GROUP BY project_id`,
+			bytesPerRow: symbolBytesEstimate,
+		},
+		{
+			sql:         `SELECT project_id, COUNT(*) FROM edges INDEXED BY idx_edge_kind GROUP BY project_id`,
+			bytesPerRow: edgeBytesEstimate,
+		},
+		{
+			sql:         `SELECT project_id, COUNT(*) FROM pending_edges INDEXED BY idx_pending_edges_project_kind GROUP BY project_id`,
+			bytesPerRow: pendingEdgeBytesEstimate,
+		},
 	}
-	for rows.Next() {
-		var pid string
-		var bytes int64
-		if err := rows.Scan(&pid, &bytes); err != nil {
+	for _, q := range queries {
+		rows, err := s.ro.Query(q.sql)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var pid string
+			var count int64
+			if err := rows.Scan(&pid, &count); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[pid] += count * q.bytesPerRow
+		}
+		if err := rows.Err(); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		// FTS5 contribution: symbols vtabs re-store the searchable text.
-		// 50% of the symbol-text payload is a conservative midpoint of
-		// the typical 40-80% range observed on real corpora.
-		out[pid] = bytes + bytes/2
-	}
-	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil, err
 	}
-	rows.Close()
-
-	// Edges contribution: id-strings + kind + properties + 32 bytes/row
-	// for idx_edge_from + idx_edge_to.
-	edgeQ := `SELECT project_id, SUM(
-	    LENGTH(from_id) + LENGTH(to_id) + LENGTH(kind) + LENGTH(COALESCE(properties, ''))
-	  ) + COUNT(*) * 32 AS bytes
-	  FROM edges
-	  GROUP BY project_id`
-	rows2, err := s.ro.Query(edgeQ)
-	if err != nil {
-		return nil, err
-	}
-	defer rows2.Close()
-	for rows2.Next() {
-		var pid string
-		var bytes int64
-		if err := rows2.Scan(&pid, &bytes); err != nil {
-			return nil, err
-		}
-		out[pid] += bytes
-	}
-	if err := rows2.Err(); err != nil {
-		return nil, err
-	}
-
-	// Pending-edge contribution: persisted resolver candidates are
-	// intentionally durable so incremental re-resolution can repair
-	// edges from hash-skipped files. On resolver-heavy projects this
-	// scratch state can dominate the DB, so include it in the estimate
-	// users consult when deciding what to prune.
-	pendingQ := `SELECT project_id, SUM(
-	    LENGTH(project_id) + LENGTH(from_file) + LENGTH(kind) +
-	    LENGTH(from_qn) + LENGTH(to_name) + LENGTH(receiver_type) +
-	    LENGTH(base_type) + LENGTH(branch)
-	  ) + COUNT(*) * 48 AS bytes
-	  FROM pending_edges
-	  GROUP BY project_id`
-	rows3, err := s.ro.Query(pendingQ)
-	if err != nil {
-		return nil, err
-	}
-	defer rows3.Close()
-	for rows3.Next() {
-		var pid string
-		var bytes int64
-		if err := rows3.Scan(&pid, &bytes); err != nil {
-			return nil, err
-		}
-		out[pid] += bytes
-	}
-	return out, rows3.Err()
+	return out, nil
 }
 
 // ExtractionFailureCountsByReason returns a map of reason → count for the

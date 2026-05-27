@@ -10,9 +10,8 @@ import (
 
 // #1220: doctor's projects array now carries a per-project
 // db_bytes_estimate so multi-GB DB users can see WHICH project to delete
-// first. Estimate sums column LENGTH + row overhead + a rough FTS5
-// contribution; the load-bearing property is *relative ordering*, not
-// absolute byte precision.
+// first. The estimate uses count-based table weights; the load-bearing
+// property is *relative ordering*, not absolute byte precision.
 
 // Positive: a seeded project shows non-zero db_bytes_estimate that
 // scales with symbol payload size.
