@@ -67,8 +67,10 @@ jobs:
             # in front of the longest package.
             # Cap per-package test parallelism for the same reason as
             # Linux/macOS: this package gets slower when too many
-            # SQLite-backed tests run at once.
-            test-flags: -timeout 600s -p 2 -parallel 4
+            # SQLite-backed tests run at once. Local timing during
+            # #1909 found -parallel 2 faster than 1/4/8/12 for the
+            # server package, so keep the Windows shard conservative.
+            test-flags: -timeout 600s -p 2 -parallel 2
           - label: windows-latest / index-db
             os: windows-latest
             packages: ./internal/index ./internal/db
