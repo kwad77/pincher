@@ -7,6 +7,22 @@ minors.
 
 ## [Unreleased]
 
+## [0.97.2] — 2026-05-26 — Release workflow + architecture cache patch
+
+v0.97.2 is a narrow dogfood patch on top of v0.97.1. It repairs the release
+workflow issue that forced the v0.97.1 GitHub Release to be published manually,
+and cuts repeated `architecture` latency for dashboard/agent polling.
+
+### Fixed
+- Pin the optional release-signing setup to `sigstore/cosign-installer@v4.1.2` instead of the non-existent `@v4` alias, so GitHub can resolve the Release workflow even when signing is skipped because `COSIGN_PRIVATE_KEY` is unset (#1907).
+- Add a short project-scoped cache for `architecture` orientation summaries and avoid `path.Dir`/path-cleaning work while deriving surprising-connection packages from symbol IDs. Repeated dashboard/agent polls now avoid re-scanning large graph tables, and `@external/...` endpoints no longer appear as surprising internal package pairs (#1908).
+
+### DOGFOOD
+- **Release publishing failure** — v0.97.1 proved the Release workflow could build artifacts but still fail before publishing because GitHub resolves every action reference before step conditions. Pinning the cosign installer action to `v4.1.2` keeps unsigned dev releases publishable when signing secrets are absent (#1907).
+- **Repeated architecture polling latency** — slow-query telemetry against the Hermes graph showed repeated `architecture` calls in the 500-700ms range. A short project-scoped cache drops repeated dashboard/agent polls to near-zero latency after the cold scan (#1908).
+
+Filed-not-fixed in window: #1909 (Windows server CI shard still dominates wall-clock; a local `-parallel 2` tuning probe was rejected after hosted CI showed it was slower on the Windows runner).
+
 ## [0.97.1] — 2026-05-26 — Dogfood diagnostics + doctor performance patch
 
 v0.97.1 is a dogfood patch on top of v0.97.0. It focuses on reducing local
@@ -3733,7 +3749,13 @@ Highlights:
 - `docs/index.html`: single-file GitHub Pages landing page.
 - CI coverage gate lowered to 83% to match reality.
 
-[Unreleased]: https://github.com/kwad77/pincher/compare/v0.94.0...HEAD
+[Unreleased]: https://github.com/kwad77/pincher/compare/v0.97.2...HEAD
+[0.97.2]: https://github.com/kwad77/pincher/compare/v0.97.1...v0.97.2
+[0.97.1]: https://github.com/kwad77/pincher/compare/v0.97.0...v0.97.1
+[0.97.0]: https://github.com/kwad77/pincher/compare/v0.96.1...v0.97.0
+[0.96.1]: https://github.com/kwad77/pincher/compare/v0.96.0...v0.96.1
+[0.96.0]: https://github.com/kwad77/pincher/compare/v0.95.0...v0.96.0
+[0.95.0]: https://github.com/kwad77/pincher/compare/v0.94.0...v0.95.0
 [0.94.0]: https://github.com/kwad77/pincher/compare/v0.93.0...v0.94.0
 [0.93.0]: https://github.com/kwad77/pincher/compare/v0.92.0...v0.93.0
 [0.92.0]: https://github.com/kwad77/pincher/compare/v0.91.0...v0.92.0
