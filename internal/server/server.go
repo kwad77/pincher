@@ -240,6 +240,13 @@ type Server struct {
 	// follow-up.
 	toolLatency sync.Map
 
+	// architectureCache stores short-lived orientation summaries keyed by
+	// project + include_tests. architecture is commonly polled repeatedly
+	// by dashboards and dogfood loops; the payload is stable between
+	// index passes, so a bounded in-process cache avoids re-scanning large
+	// graph tables on every identical request.
+	architectureCache sync.Map
+
 	// Query-failure / retry-rate counters (#241). Incremented from
 	// jsonResultWithMeta only when the tool is "query-shaped"
 	// (search/query/trace/neighborhood) — admin tools like list,
@@ -9455,6 +9462,11 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 	}
 
 	p, _ := s.store.GetProject(projectID)
+	includeTests := boolArg(args, "include_tests")
+	if cached, ok := s.getArchitectureCache(projectID, includeTests, p); ok {
+		s.attachDriftWarning(cached, projectID)
+		return s.jsonResultWithMeta(cached, start, tool, args, 0), nil
+	}
 
 	// Language breakdown
 	langs := make(map[string]int)
@@ -9513,7 +9525,6 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 	// callers depending on them as a change-risk surface.
 	// Fetch over-quota and post-filter so the top-10 stays at the
 	// intended size after dropping tests + non-hotspot kinds.
-	includeTests := boolArg(args, "include_tests")
 	hotspotFetchLimit := 100
 	if includeTests {
 		hotspotFetchLimit = 50 // legacy path keeps tests; still filter kinds
@@ -9552,8 +9563,23 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 	// CALLS edges — package pairs joined by just one or two calls. Always
 	// a non-nil slice so JSON consumers can iterate without a null check.
 	surprising := []surprisingConnection{}
-	if callEdges, err := s.store.ListCallEdgesForProject(projectID); err == nil {
-		surprising = computeSurprisingConnections(callEdges)
+	if rows, err := s.store.RO().QueryContext(ctx,
+		`SELECT from_id, to_id
+		   FROM edges INDEXED BY idx_edge_kind
+		  WHERE project_id=? AND kind='CALLS'`, projectID); err == nil {
+		acc := newSurprisingConnectionsAccumulator()
+		for rows.Next() {
+			var fromID, toID string
+			if scanErr := rows.Scan(&fromID, &toID); scanErr == nil {
+				acc.add(fromID, toID)
+			}
+		}
+		if rows.Err() == nil {
+			if got := acc.result(); got != nil {
+				surprising = got
+			}
+		}
+		rows.Close()
 	}
 
 	data := map[string]any{
@@ -9701,6 +9727,7 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 	// jsonResultWithMeta — users see exactly what this call cost; they
 	// just no longer see fictional savings.
 	//
+	s.setArchitectureCache(projectID, includeTests, p, data)
 	// F1: drift warning, same rationale as handleSearch.
 	s.attachDriftWarning(data, projectID)
 	return s.jsonResultWithMeta(data, start, tool, args, 0), nil

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"path"
 	"sort"
 	"strings"
 
@@ -40,44 +39,75 @@ func packageOfSymbolID(id string) string {
 	if i <= 0 {
 		return ""
 	}
-	file := strings.ReplaceAll(id[:i], "\\", "/")
+	return packageOfFilePath(id[:i])
+}
+
+func packageOfFilePath(file string) string {
 	if file == "" || file == "external" {
 		return ""
 	}
-	return path.Dir(file)
+	if strings.HasPrefix(file, "@external") {
+		return ""
+	}
+	slash := strings.LastIndexByte(file, '/')
+	backslash := strings.LastIndexByte(file, '\\')
+	if backslash > slash {
+		slash = backslash
+	}
+	if slash < 0 {
+		return "."
+	}
+	dir := file[:slash]
+	if dir == "" {
+		return "."
+	}
+	if strings.IndexByte(dir, '\\') >= 0 {
+		dir = strings.ReplaceAll(dir, "\\", "/")
+	}
+	return dir
 }
 
-// computeSurprisingConnections ranks directed cross-package CALLS edges
-// by rarity. The rarest `surprisingConnectionsCap` package pairs are
-// returned, lowest edge count first. Edges within a package, edges
-// touching an external/malformed endpoint, and non-CALLS edges are
-// excluded.
-func computeSurprisingConnections(edges []db.Edge) []surprisingConnection {
-	type pair struct{ from, to string }
-	counts := make(map[pair]int)
-	example := make(map[pair]db.Edge)
+type surprisingConnectionsAccumulator struct {
+	counts  map[surprisingPackagePair]int
+	example map[surprisingPackagePair]surprisingConnectionExample
+}
 
-	for _, e := range edges {
-		if e.Kind != "CALLS" {
-			continue
-		}
-		fromPkg := packageOfSymbolID(e.FromID)
-		toPkg := packageOfSymbolID(e.ToID)
-		if fromPkg == "" || toPkg == "" || fromPkg == toPkg {
-			continue
-		}
-		p := pair{fromPkg, toPkg}
-		counts[p]++
-		if _, seen := example[p]; !seen {
-			example[p] = e
-		}
+type surprisingPackagePair struct{ from, to string }
+type surprisingConnectionExample struct {
+	fromID string
+	toID   string
+}
+
+func newSurprisingConnectionsAccumulator() *surprisingConnectionsAccumulator {
+	return &surprisingConnectionsAccumulator{
+		counts:  make(map[surprisingPackagePair]int),
+		example: make(map[surprisingPackagePair]surprisingConnectionExample),
 	}
+}
 
-	out := make([]surprisingConnection, 0, len(counts))
-	for p, n := range counts {
+func (a *surprisingConnectionsAccumulator) add(fromID, toID string) {
+	fromPkg := packageOfSymbolID(fromID)
+	toPkg := packageOfSymbolID(toID)
+	if fromPkg == "" || toPkg == "" || fromPkg == toPkg {
+		return
+	}
+	p := surprisingPackagePair{fromPkg, toPkg}
+	a.counts[p]++
+	if _, seen := a.example[p]; !seen {
+		a.example[p] = surprisingConnectionExample{fromID: fromID, toID: toID}
+	}
+}
+
+func (a *surprisingConnectionsAccumulator) result() []surprisingConnection {
+	if a == nil || len(a.counts) == 0 {
+		return nil
+	}
+	out := make([]surprisingConnection, 0, len(a.counts))
+	for p, n := range a.counts {
+		ex := a.example[p]
 		out = append(out, surprisingConnection{
 			FromPackage: p.from, ToPackage: p.to, EdgeCount: n,
-			ExampleFrom: example[p].FromID, ExampleTo: example[p].ToID,
+			ExampleFrom: ex.fromID, ExampleTo: ex.toID,
 		})
 	}
 	// Rarest first; ties broken deterministically by package names.
@@ -94,4 +124,20 @@ func computeSurprisingConnections(edges []db.Edge) []surprisingConnection {
 		out = out[:surprisingConnectionsCap]
 	}
 	return out
+}
+
+// computeSurprisingConnections ranks directed cross-package CALLS edges
+// by rarity. The rarest `surprisingConnectionsCap` package pairs are
+// returned, lowest edge count first. Edges within a package, edges
+// touching an external/malformed endpoint, and non-CALLS edges are
+// excluded.
+func computeSurprisingConnections(edges []db.Edge) []surprisingConnection {
+	acc := newSurprisingConnectionsAccumulator()
+	for _, e := range edges {
+		if e.Kind != "CALLS" {
+			continue
+		}
+		acc.add(e.FromID, e.ToID)
+	}
+	return acc.result()
 }

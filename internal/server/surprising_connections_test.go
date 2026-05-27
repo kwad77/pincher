@@ -12,6 +12,7 @@ func TestPackageOfSymbolID(t *testing.T) {
 		{"main.go::main.main#Function", "."},
 		{"internal\\server\\server.go::server.New#Function", "internal/server"},
 		{"external::fmt.Println#Function", ""},
+		{"@external/pathlib.Path::pathlib.Path#Module", ""},
 		{"no-separator", ""},
 	}
 	for _, c := range cases {
