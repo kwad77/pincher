@@ -127,6 +127,8 @@ type DoctorProjectSummary struct {
 	SchemaVersionAtIndex *int   `json:"schema_version_at_index,omitempty"`
 	Stale                bool   `json:"stale,omitempty"`
 	StaleReason          string `json:"stale_reason,omitempty"`
+	IndexState           string `json:"index_state,omitempty"`
+	IndexStartedAt       string `json:"index_started_at,omitempty"`
 }
 
 type DoctorFailureRow struct {
@@ -230,6 +232,7 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 				SchemaVersionAtIndex: p.SchemaVersionAtIndex,
 			}
 			summary.Stale, summary.StaleReason = staleness(p.SchemaVersionAtIndex, current)
+			summary.IndexState, summary.IndexStartedAt = projectIndexStateFields(p.IndexState, p.IndexStartedAt)
 			r.Projects = append(r.Projects, summary)
 		}
 	}
@@ -314,6 +317,24 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 	sort.Slice(r.Projects, func(i, j int) bool {
 		return r.Projects[i].Symbols > r.Projects[j].Symbols
 	})
+	allIndexProjects := []DoctorProjectSummary{}
+	if err == nil {
+		for _, p := range projects {
+			summary := DoctorProjectSummary{
+				ID:      p.ID,
+				Name:    p.Name,
+				Path:    p.Path,
+				Files:   p.FileCount,
+				Symbols: p.SymCount,
+				Edges:   p.EdgeCount,
+			}
+			summary.IndexState, summary.IndexStartedAt = projectIndexStateFields(p.IndexState, p.IndexStartedAt)
+			allIndexProjects = append(allIndexProjects, summary)
+		}
+		sort.Slice(allIndexProjects, func(i, j int) bool {
+			return allIndexProjects[i].Symbols > allIndexProjects[j].Symbols
+		})
+	}
 
 	// #732: health advisories. Always a non-nil slice (JSON invariant).
 	r.Advisories = []string{}
@@ -359,6 +380,9 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 		r.Advisories = append(r.Advisories, a)
 	}
 	if a := nestedProjectAdvisory(r.Projects); a != "" {
+		r.Advisories = append(r.Advisories, a)
+	}
+	if a := staleIndexRunningAdvisory(allIndexProjects, time.Now().UTC()); a != "" {
 		r.Advisories = append(r.Advisories, a)
 	}
 	// #1635 v0.85: PreToolUse hook missing. When Claude Code looks
@@ -509,6 +533,58 @@ func branchDriftAdvisory(projects []db.Project) string {
 		"so symbol byte-offsets may point at the wrong spans for the current working tree. " +
 		"Run `pincher index <path>` against each drifted project to refresh. See #1303.")
 	return b.String()
+}
+
+const staleIndexRunningThreshold = 30 * time.Minute
+
+func projectIndexStateFields(state string, startedAt int64) (string, string) {
+	if state == "" || state == "complete" {
+		return "", ""
+	}
+	started := ""
+	if startedAt > 0 {
+		started = time.Unix(startedAt, 0).UTC().Format(time.RFC3339)
+	}
+	return state, started
+}
+
+// staleIndexRunningAdvisory mirrors internal/server/admin.go's copy.
+// Bounded-duplication convention documented on largeDBAdvisory.
+func staleIndexRunningAdvisory(projects []DoctorProjectSummary, now time.Time) string {
+	type staleProject struct {
+		project DoctorProjectSummary
+		age     time.Duration
+	}
+	var stale []staleProject
+	for _, p := range projects {
+		if p.IndexState != "running" || p.IndexStartedAt == "" {
+			continue
+		}
+		started, err := time.Parse(time.RFC3339, p.IndexStartedAt)
+		if err != nil {
+			continue
+		}
+		age := now.Sub(started)
+		if age < staleIndexRunningThreshold {
+			continue
+		}
+		stale = append(stale, staleProject{project: p, age: age.Truncate(time.Minute)})
+	}
+	if len(stale) == 0 {
+		return ""
+	}
+	if len(stale) > 3 {
+		stale = stale[:3]
+	}
+	parts := make([]string, 0, len(stale))
+	for _, s := range stale {
+		label := s.project.Name
+		if label == "" {
+			label = s.project.ID
+		}
+		parts = append(parts, fmt.Sprintf("%q marked running for %s", label, s.age))
+	}
+	return fmt.Sprintf("Index state looks interrupted: %s. Rerun `pincher index --force <path>` (or POST /v1/index with force=true) for the affected project to refresh data and clear the marker. See #1905.", strings.Join(parts, "; "))
 }
 
 // toolMixStuckAdvisory mirrors internal/server/admin.go's copy.
@@ -1034,6 +1110,9 @@ func formatDoctorMarkdown(r *DoctorReport) string {
 			marker := ""
 			if p.Stale {
 				marker = " [stale]"
+			}
+			if p.IndexState != "" {
+				marker += fmt.Sprintf(" [index:%s]", p.IndexState)
 			}
 			size := ""
 			if p.DBBytesEstimate > 0 {

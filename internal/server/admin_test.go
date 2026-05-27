@@ -242,6 +242,79 @@ func TestHandleDoctor_WithProject(t *testing.T) {
 	}
 }
 
+func TestStaleIndexRunningAdvisory(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 5, 27, 2, 30, 0, 0, time.UTC)
+	recent := now.Add(-10 * time.Minute).Format(time.RFC3339)
+	old := now.Add(-2 * time.Hour).Format(time.RFC3339)
+
+	if got := staleIndexRunningAdvisory([]doctorProjectSummary{
+		{Name: "active", IndexState: "running", IndexStartedAt: recent},
+	}, now); got != "" {
+		t.Fatalf("recent running marker should stay silent, got %q", got)
+	}
+	if got := staleIndexRunningAdvisory([]doctorProjectSummary{
+		{Name: "done", IndexState: "complete", IndexStartedAt: old},
+	}, now); got != "" {
+		t.Fatalf("complete marker should stay silent, got %q", got)
+	}
+
+	got := staleIndexRunningAdvisory([]doctorProjectSummary{
+		{Name: "hermes-agent", IndexState: "running", IndexStartedAt: old},
+	}, now)
+	if got == "" {
+		t.Fatal("old running marker should produce an advisory")
+	}
+	for _, want := range []string{"hermes-agent", "running", "pincher index --force", "/v1/index", "#1905"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("advisory missing %q\n  got: %s", want, got)
+		}
+	}
+}
+
+func TestHandleDoctor_IndexStateRunningAdvisory(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	if err := store.UpsertProject(db.Project{
+		ID: "p1", Path: "/tmp/p1", Name: "hermes-agent",
+		IndexedAt: time.Now(), FileCount: 3, SymCount: 42, EdgeCount: 17,
+	}); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	started := time.Now().Add(-2 * time.Hour)
+	if err := store.MarkProjectIndexStarted("p1", started); err != nil {
+		t.Fatalf("MarkProjectIndexStarted: %v", err)
+	}
+
+	result, err := srv.handleDoctor(context.Background(), makeReq(map[string]any{"top": 5}))
+	if err != nil {
+		t.Fatalf("handleDoctor: %v", err)
+	}
+	body := decode(t, result)
+	projects, ok := body["projects"].([]any)
+	if !ok || len(projects) != 1 {
+		t.Fatalf("expected 1 project, got %v", body["projects"])
+	}
+	p := projects[0].(map[string]any)
+	if got := p["index_state"]; got != "running" {
+		t.Fatalf("index_state = %v, want running; project=%v", got, p)
+	}
+	if got, ok := p["index_started_at"].(string); !ok || got == "" {
+		t.Fatalf("index_started_at missing: %v", p)
+	}
+	advisories, _ := body["advisories"].([]any)
+	var joined []string
+	for _, a := range advisories {
+		joined = append(joined, fmt.Sprint(a))
+	}
+	got := strings.Join(joined, "\n")
+	for _, want := range []string{"hermes-agent", "pincher index --force", "/v1/index"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("advisories missing %q\n  got: %s", want, got)
+		}
+	}
+}
+
 // TestHandleDoctor_ProjectFilter (#1401) — `project` arg restricts the
 // projects + extraction_failures sections to projects whose name or id
 // contains the case-insensitive substring. Database-level advisories

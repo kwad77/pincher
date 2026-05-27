@@ -33,12 +33,12 @@ import (
 // Package-level (not function-local) so largeDBAdvisory can take a slice
 // of them.
 type doctorProjectSummary struct {
-	ID                   string `json:"id"`
-	Name                 string `json:"name"`
-	Path                 string `json:"path"`
-	Files                int    `json:"files"`
-	Symbols              int    `json:"symbols"`
-	Edges                int    `json:"edges"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	Files   int    `json:"files"`
+	Symbols int    `json:"symbols"`
+	Edges   int    `json:"edges"`
 	// DBBytesEstimate is a best-effort per-project on-disk byte
 	// estimate. Sum across projects undershoots db_size_bytes by
 	// 10-40% (the gap is page slack + WAL + schema overhead that
@@ -50,6 +50,58 @@ type doctorProjectSummary struct {
 	IndexedAt            string `json:"indexed_at"`
 	SchemaVersionAtIndex *int   `json:"schema_version_at_index,omitempty"`
 	BinaryVersion        string `json:"binary_version,omitempty"`
+	IndexState           string `json:"index_state,omitempty"`
+	IndexStartedAt       string `json:"index_started_at,omitempty"`
+}
+
+const staleIndexRunningThreshold = 30 * time.Minute
+
+func projectIndexStateFields(state string, startedAt int64) (string, string) {
+	if state == "" || state == "complete" {
+		return "", ""
+	}
+	started := ""
+	if startedAt > 0 {
+		started = time.Unix(startedAt, 0).UTC().Format(time.RFC3339)
+	}
+	return state, started
+}
+
+func staleIndexRunningAdvisory(projects []doctorProjectSummary, now time.Time) string {
+	type staleProject struct {
+		project doctorProjectSummary
+		age     time.Duration
+	}
+	var stale []staleProject
+	for _, p := range projects {
+		if p.IndexState != "running" || p.IndexStartedAt == "" {
+			continue
+		}
+		started, err := time.Parse(time.RFC3339, p.IndexStartedAt)
+		if err != nil {
+			continue
+		}
+		age := now.Sub(started)
+		if age < staleIndexRunningThreshold {
+			continue
+		}
+		stale = append(stale, staleProject{project: p, age: age.Truncate(time.Minute)})
+	}
+	if len(stale) == 0 {
+		return ""
+	}
+	if len(stale) > 3 {
+		stale = stale[:3]
+	}
+	parts := make([]string, 0, len(stale))
+	for _, s := range stale {
+		label := s.project.Name
+		if label == "" {
+			label = s.project.ID
+		}
+		parts = append(parts, fmt.Sprintf("%q marked running for %s", label, s.age))
+	}
+	return fmt.Sprintf("Index state looks interrupted: %s. Rerun `pincher index --force <path>` (or POST /v1/index with force=true) for the affected project to refresh data and clear the marker. See #1905.", strings.Join(parts, "; "))
 }
 
 // ghostProjectAdvisory returns a human-readable health advisory when a
@@ -423,9 +475,10 @@ func largeDBAdvisory(dbSizeBytes int64, projects []doctorProjectSummary) string 
 // decide if `guide` (or whichever tool) needs a per-call cap.
 //
 // Thresholds chosen for typical agent workloads:
-//   ratio ≥ 10×   "loud outlier" relative to that tool's normal payload
-//   max  ≥ 100 KB the absolute floor for "this would meaningfully
-//                  consume an agent's context window"
+//
+//	ratio ≥ 10×   "loud outlier" relative to that tool's normal payload
+//	max  ≥ 100 KB the absolute floor for "this would meaningfully
+//	               consume an agent's context window"
 //
 // Returns "" when nothing crosses both bars — silent on healthy data.
 func payloadOutlierAdvisory(rows []db.ToolCallPayloadRow) string {
@@ -665,8 +718,8 @@ func branchDriftSuppressedPath(path string) bool {
 //
 // Suppression patterns:
 //   - testdata/corpus/      pincher's pinned corpus convention; matches
-//                            k8s-ops, terraform-stack, probe, etc.
-//                            (#1644).
+//     k8s-ops, terraform-stack, probe, etc.
+//     (#1644).
 //   - testdata/__fixtures__/  broader trace include_fixtures convention.
 //   - .atrium/work/         slopbuster worktree convention.
 //
@@ -794,8 +847,8 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 	inv, migFrom, migTo := s.store.LastStartupMigrationInvalidates()
 	if migFrom != migTo {
 		migInfo := map[string]any{
-			"from_version":         migFrom,
-			"to_version":           migTo,
+			"from_version":          migFrom,
+			"to_version":            migTo,
 			"requires_full_reindex": inv.All,
 		}
 		if len(inv.Languages) > 0 {
@@ -845,7 +898,7 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 					continue
 				}
 			}
-			projects = append(projects, doctorProjectSummary{
+			summary := doctorProjectSummary{
 				ID:                   p.ID,
 				Name:                 p.Name,
 				Path:                 p.Path,
@@ -856,7 +909,9 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 				IndexedAt:            p.IndexedAt.Format(time.RFC3339),
 				SchemaVersionAtIndex: p.SchemaVersionAtIndex,
 				BinaryVersion:        p.BinaryVersion,
-			})
+			}
+			summary.IndexState, summary.IndexStartedAt = projectIndexStateFields(p.IndexState, p.IndexStartedAt)
+			projects = append(projects, summary)
 		}
 		sort.Slice(projects, func(i, j int) bool {
 			return projects[i].Symbols > projects[j].Symbols
@@ -913,19 +968,25 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 	{
 		all := []doctorProjectSummary{}
 		for _, p := range plist {
-			all = append(all, doctorProjectSummary{
+			summary := doctorProjectSummary{
+				ID:      p.ID,
 				Name:    p.Name,
 				Path:    p.Path,
 				Files:   p.FileCount,
 				Symbols: p.SymCount,
 				Edges:   p.EdgeCount,
-			})
+			}
+			summary.IndexState, summary.IndexStartedAt = projectIndexStateFields(p.IndexState, p.IndexStartedAt)
+			all = append(all, summary)
 		}
 		sort.Slice(all, func(i, j int) bool { return all[i].Symbols > all[j].Symbols })
 		if a := ghostProjectAdvisory(all); a != "" {
 			advisories = append(advisories, a)
 		}
 		if a := nestedProjectAdvisory(all); a != "" {
+			advisories = append(advisories, a)
+		}
+		if a := staleIndexRunningAdvisory(all, time.Now().UTC()); a != "" {
 			advisories = append(advisories, a)
 		}
 	}
@@ -1185,9 +1246,9 @@ func (s *Server) handleRebuildFTS(ctx context.Context, req *mcp.CallToolRequest)
 		return errResult(fmt.Sprintf("rebuild_fts: %v", err)), nil
 	}
 	return s.jsonResultWithMeta(map[string]any{
-		"dry_run":          false,
-		"rebuilt_rows":     rows,
-		"duration_ms":      time.Since(t0).Milliseconds(),
+		"dry_run":      false,
+		"rebuilt_rows": rows,
+		"duration_ms":  time.Since(t0).Milliseconds(),
 	}, start, tool, args, 0), nil
 }
 

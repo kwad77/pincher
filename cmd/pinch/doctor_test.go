@@ -81,6 +81,91 @@ func TestDoctorReport_EmptyDatabase(t *testing.T) {
 	}
 }
 
+func TestDoctorReport_IndexStateRunningAdvisory(t *testing.T) {
+	withNoClaudeCodeDetected(t)
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.UpsertProject(db.Project{
+		ID: "p1", Path: "/tmp/p1", Name: "hermes-agent",
+		IndexedAt: time.Now(), FileCount: 3, SymCount: 42, EdgeCount: 17,
+	}); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	if err := store.MarkProjectIndexStarted("p1", time.Now().Add(-2*time.Hour)); err != nil {
+		t.Fatalf("MarkProjectIndexStarted: %v", err)
+	}
+
+	r, err := buildDoctorReport(store, dir, 168, 10, "")
+	if err != nil {
+		t.Fatalf("buildDoctorReport: %v", err)
+	}
+	if len(r.Projects) != 1 {
+		t.Fatalf("projects = %d, want 1", len(r.Projects))
+	}
+	p := r.Projects[0]
+	if p.IndexState != "running" {
+		t.Fatalf("IndexState = %q, want running", p.IndexState)
+	}
+	if p.IndexStartedAt == "" {
+		t.Fatal("IndexStartedAt should be populated")
+	}
+	joined := strings.Join(r.Advisories, "\n")
+	for _, want := range []string{"hermes-agent", "running", "pincher index --force", "/v1/index", "#1905"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("advisories missing %q\n  got: %s", want, joined)
+		}
+	}
+	md := formatDoctorMarkdown(r)
+	if !strings.Contains(md, "[index:running]") {
+		t.Errorf("markdown missing running marker:\n%s", md)
+	}
+
+	filtered, err := buildDoctorReport(store, dir, 168, 10, "not-this-project")
+	if err != nil {
+		t.Fatalf("buildDoctorReport filtered: %v", err)
+	}
+	if len(filtered.Projects) != 0 {
+		t.Fatalf("filtered projects = %d, want 0", len(filtered.Projects))
+	}
+	if !strings.Contains(strings.Join(filtered.Advisories, "\n"), "hermes-agent") {
+		t.Fatalf("stale running advisory should remain store-wide under --project filter; got %v", filtered.Advisories)
+	}
+}
+
+func TestStaleIndexRunningAdvisory_CLI(t *testing.T) {
+	now := time.Date(2026, 5, 27, 2, 30, 0, 0, time.UTC)
+	recent := now.Add(-10 * time.Minute).Format(time.RFC3339)
+	old := now.Add(-2 * time.Hour).Format(time.RFC3339)
+
+	if got := staleIndexRunningAdvisory([]DoctorProjectSummary{
+		{Name: "active", IndexState: "running", IndexStartedAt: recent},
+	}, now); got != "" {
+		t.Fatalf("recent running marker should stay silent, got %q", got)
+	}
+	if got := staleIndexRunningAdvisory([]DoctorProjectSummary{
+		{Name: "done", IndexState: "complete", IndexStartedAt: old},
+	}, now); got != "" {
+		t.Fatalf("complete marker should stay silent, got %q", got)
+	}
+
+	got := staleIndexRunningAdvisory([]DoctorProjectSummary{
+		{Name: "hermes-agent", IndexState: "running", IndexStartedAt: old},
+	}, now)
+	if got == "" {
+		t.Fatal("old running marker should produce an advisory")
+	}
+	for _, want := range []string{"hermes-agent", "running", "pincher index --force", "/v1/index", "#1905"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("advisory missing %q\n  got: %s", want, got)
+		}
+	}
+}
+
 // TestDoctorReport_WithFailuresAndSlowQueries — populated state. Each
 // section MUST appear in the rendered Markdown with the right counts.
 func TestDoctorReport_WithFailuresAndSlowQueries(t *testing.T) {
