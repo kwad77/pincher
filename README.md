@@ -134,7 +134,7 @@ Aggregate session savings land around **70-90%** on large Go/JS projects, **40-7
 - **[CHANGELOG](CHANGELOG.md)** — release-by-release history. Milestone burndown: <https://github.com/kwad77/pincher/milestones>.
 - **[Migration guide](docs/migration/v0.4-to-v1.0.md)** — v0.4 → v1.0.
 
-Current release: **v0.97.2** — release-workflow and dogfood performance patch for the v1.0 path: release publishing no longer depends on an invalid cosign action alias, and repeated `architecture` polls are cached after the cold scan. Latest stable: **v0.90**. v1.0 freezes tool schemas and ships schema attestation + a public launch.
+Current release: **v0.97.3** — Python collision and CI-wall-clock patch for the v1.0 path: repeated framework handlers such as `def _()` keep distinct qualified names without doctor collision rows, and Windows index/database tests run on separate CI shards instead of one serialized tail. Latest stable: **v0.90**. v1.0 freezes tool schemas and ships schema attestation + a public launch.
 
 ---
 

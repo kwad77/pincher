@@ -7,6 +7,21 @@ minors.
 
 ## [Unreleased]
 
+## [0.97.3] — 2026-05-26 — Python collision cleanup + Windows CI sharding
+
+v0.97.3 is a dogfood polish patch on top of v0.97.2. It fixes the Python
+qualified-name collision pattern found in the Hermes corpus and removes the
+serialized Windows `index-db` CI tail by splitting index and database packages
+onto separate runners.
+
+### Fixed
+- Disambiguate same-scope duplicate Python definitions inside the AST extractor before generic collision tracking, preserving repeated framework handlers such as `def _()` without emitting `qualified_name_collision` doctor rows. (#1900)
+- Split the Windows CI index/database shard so the slow `internal/index` and `internal/db` packages run on separate runners instead of serializing behind one combined shard. (#1909)
+
+### DOGFOOD
+- **Hermes Python extractor collisions** — isolated indexing of `/home/kwad77/.hermes/hermes-agent` with the working-tree binary covered 3,919 files and produced zero extraction failures after same-scope Python duplicate definitions were line-disambiguated before generic collision tracking (#1900).
+- **Windows CI wall-clock tail** — hosted CI showed the combined Windows `index-db` shard taking about 5m58s. Splitting `internal/index` and `internal/db` moved those checks to about 2m36s and 2m12s respectively, with the full CI suite green (#1909).
+
 ## [0.97.2] — 2026-05-26 — Release workflow + architecture cache patch
 
 v0.97.2 is a narrow dogfood patch on top of v0.97.1. It repairs the release
@@ -3749,7 +3764,8 @@ Highlights:
 - `docs/index.html`: single-file GitHub Pages landing page.
 - CI coverage gate lowered to 83% to match reality.
 
-[Unreleased]: https://github.com/kwad77/pincher/compare/v0.97.2...HEAD
+[Unreleased]: https://github.com/kwad77/pincher/compare/v0.97.3...HEAD
+[0.97.3]: https://github.com/kwad77/pincher/compare/v0.97.2...v0.97.3
 [0.97.2]: https://github.com/kwad77/pincher/compare/v0.97.1...v0.97.2
 [0.97.1]: https://github.com/kwad77/pincher/compare/v0.97.0...v0.97.1
 [0.97.0]: https://github.com/kwad77/pincher/compare/v0.96.1...v0.97.0
