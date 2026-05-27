@@ -432,6 +432,39 @@ func TestPyAST_CallsScopedToEnclosingFunction(t *testing.T) {
 	}
 }
 
+func TestPyAST_SameScopeDuplicateNamesAreLineDisambiguated(t *testing.T) {
+	pythonASTOrSkip(t)
+	src := []byte(`def helper():
+    pass
+
+@app.get("/one")
+def _():
+    helper()
+
+@app.get("/two")
+def _():
+    helper()
+`)
+	r := Extract(src, "Python", "routes.py")
+	if len(r.QNCollisions) != 0 {
+		t.Fatalf("same-scope Python duplicates should be disambiguated before generic collision tracking; got %v", r.QNCollisions)
+	}
+	byQN := map[string]ExtractedSymbol{}
+	for _, s := range r.Symbols {
+		byQN[s.QualifiedName] = s
+	}
+	if _, ok := byQN["routes._"]; !ok {
+		t.Fatalf("missing first route handler QN routes._; got %v", keys(byQN))
+	}
+	if _, ok := byQN["routes._~8"]; !ok {
+		t.Fatalf("missing line-disambiguated second route handler QN routes._~8; got %v", keys(byQN))
+	}
+	calls := callEdgesByFrom(r.Edges, "routes._~8")
+	if !calls["helper"] {
+		t.Errorf("second route handler CALLS edge should use the disambiguated from_qn; got %v", calls)
+	}
+}
+
 // callEdgesByFrom collects CALLS edges whose FromQN matches fromQN,
 // returning a set of ToNames for easy assertion.
 func callEdgesByFrom(edges []ExtractedEdge, fromQN string) map[string]bool {

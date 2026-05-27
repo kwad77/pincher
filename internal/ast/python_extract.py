@@ -104,6 +104,23 @@ def build_signature(node):
     return "\n".join(lines)
 
 
+def unique_child_qn(parent_qn, name, kind, scope_counts, start_line):
+    """Return a stable QN for same-scope duplicate definitions.
+
+    Python permits a later `def name()` to rebind an earlier one in the
+    same scope, and frameworks often intentionally capture each object via
+    decorators before the rebinding happens (for example repeated FastAPI
+    route handlers named `_`). Preserve every definition by suffixing the
+    second and later same-scope same-kind symbols with their source line.
+    """
+    base = parent_qn + "." + name if parent_qn else name
+    key = (name, kind)
+    scope_counts[key] = scope_counts.get(key, 0) + 1
+    if scope_counts[key] == 1:
+        return base
+    return base + "~" + str(start_line)
+
+
 def collect(node, parent_qn, dunder_all, line_offsets, source_len,
             in_class, class_qn, imports_map, symbols, edges):
     """Walk child nodes; emit one record per FunctionDef/AsyncFunctionDef/ClassDef.
@@ -113,13 +130,13 @@ def collect(node, parent_qn, dunder_all, line_offsets, source_len,
     is the QN of the immediately-enclosing class (or "" outside any class),
     used to rewrite `self.X` callers into resolvable absolute paths.
     """
+    scope_counts = {}
     for child in ast.iter_child_nodes(node):
         if not isinstance(
             child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
         ):
             continue
         name = child.name
-        qn = parent_qn + "." + name if parent_qn else name
 
         if isinstance(child, ast.ClassDef):
             kind = "Class"
@@ -140,6 +157,8 @@ def collect(node, parent_qn, dunder_all, line_offsets, source_len,
         end_byte = byte_offset(line_offsets, end_line, end_col)
         if end_byte > source_len:
             end_byte = source_len
+
+        qn = unique_child_qn(parent_qn, name, kind, scope_counts, start_line)
 
         if dunder_all is not None:
             is_exp = name in dunder_all

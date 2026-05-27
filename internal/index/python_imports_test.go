@@ -78,6 +78,54 @@ def run():
 	}
 }
 
+func TestIndex_PythonSameScopeDuplicateNames_NoQNCollisionFailure(t *testing.T) {
+	if !ast.PythonAvailable() {
+		t.Skip("python3 not on PATH; Python AST resolution test skipped")
+	}
+
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+
+	writeFile(t, dir, "routes.py", `def helper():
+    pass
+
+@app.get("/one")
+def _():
+    helper()
+
+@app.get("/two")
+def _():
+    helper()
+`)
+
+	if _, err := idx.Index(context.Background(), dir, true); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	projectID := db.ProjectIDFromPath(dir)
+
+	counts, err := store.ExtractionFailureCountsByReason(projectID)
+	if err != nil {
+		t.Fatalf("ExtractionFailureCountsByReason: %v", err)
+	}
+	if counts["qualified_name_collision"] != 0 {
+		t.Fatalf("qualified_name_collision count = %d, want 0", counts["qualified_name_collision"])
+	}
+
+	syms, err := store.GetSymbolsByName(projectID, "_", 10)
+	if err != nil {
+		t.Fatalf("GetSymbolsByName: %v", err)
+	}
+	gotQNs := map[string]bool{}
+	for _, s := range syms {
+		gotQNs[s.QualifiedName] = true
+	}
+	for _, want := range []string{"routes._", "routes._~8"} {
+		if !gotQNs[want] {
+			t.Fatalf("missing QN %q from duplicate route handlers; got %v", want, gotQNs)
+		}
+	}
+}
+
 // #860: a Python import whose name collides with a config-file key must
 // not false-bind to that key's Setting symbol. `import os` has no
 // in-project target — it's a stdlib import — but a top-level `os` key in
