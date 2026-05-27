@@ -134,7 +134,7 @@ Aggregate session savings land around **70-90%** on large Go/JS projects, **40-7
 - **[CHANGELOG](CHANGELOG.md)** — release-by-release history. Milestone burndown: <https://github.com/kwad77/pincher/milestones>.
 - **[Migration guide](docs/migration/v0.4-to-v1.0.md)** — v0.4 → v1.0.
 
-Current release: **v0.97** — launch-prep slice for the v1.0 path: full race-detector coverage moved to a standalone advisory workflow so release CI stops waiting on non-blocking work, and the v1.0 announcement, demo scripts, channel checklist, internal Slack draft, press-kit inventory, and changelog hero are drafted for final tag-day fill-in. Latest stable: **v0.90**. v1.0 freezes tool schemas and ships schema attestation + a public launch.
+Current release: **v0.97.1** — dogfood diagnostics and doctor-performance patch for the v1.0 path: trace traversals stay on endpoint-first indexes, managed services can enable slow-query telemetry with `PINCHER_SLOW_QUERY_MS`, and doctor surfaces interrupted index markers while avoiding payload-text scans on large DBs. Latest stable: **v0.90**. v1.0 freezes tool schemas and ships schema attestation + a public launch.
 
 ---
 

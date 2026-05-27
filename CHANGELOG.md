@@ -7,6 +7,34 @@ minors.
 
 ## [Unreleased]
 
+## [0.97.1] — 2026-05-26 — Dogfood diagnostics + doctor performance patch
+
+v0.97.1 is a dogfood patch on top of v0.97.0. It focuses on reducing local
+diagnostic latency, making interrupted index state visible, and keeping the
+v1.0 review path honest without prematurely closing the remaining sign-off
+gates.
+
+### Changed
+- Forward-port the v0.4 → v1.0 migration guide through v0.99, fix stale schema-v32 walkthrough text, add an external-review packet and v0.98 sign-off checklist for the #1390/#1716 review gates, harden migration rehearsal so the HTTP probe uses loopback-only HTTP without stdio and fails after a bounded readiness wait, align local service/dashboard docs with the default-deny HTTP bind rule, and correct migration-review backup paths to the current `pincherMCP` data directory.
+- Codex troubleshooting now documents the host-side `Transport closed` recovery path (#1901) and refreshes the tutorial's managed `pincher supervised` config example.
+- Managed Pincher launches can now enable slow-query telemetry with `PINCHER_SLOW_QUERY_MS`, matching the existing env-fallback pattern for deployment/runtime knobs.
+- doctor now uses count-based per-project byte estimates instead of scanning payload text, reducing repeated diagnostic latency on large local databases.
+- Add the v0.99 final-hardening sign-off scaffold, recording current green evidence, advisory perf run status, launch-placeholder audit results, a pinned time-to-first-success baseline, a faster CI coverage flow, better doctor DB-size attribution, refreshed Node 24-compatible GitHub Actions workflow dependencies, and the remaining external-review, perf-baseline, install-smoke, backlog, and seven-day-hold gates without prematurely approving the release.
+
+### Fixed
+- Defer live session-stat flushes quietly when SQLite is busy with a maintenance index, and requeue buffered per-call dashboard events on `SQLITE_BUSY` instead of dropping them, reducing dogfood-visible damage from forced binary-drift reindexes against a shared DB.
+- CLI `pincher doctor` now uses the cross-project recent extraction-failure query and reports `extraction_failures_truncated`, avoiding per-project query fanout on multi-project installs.
+- Trace CTEs now force the endpoint-first covering indexes for outbound and inbound traversal, preventing SQLite from scanning large project/kind edge buckets on multi-project graphs.
+- doctor now surfaces stale `index_state=running` project markers in CLI and MCP/HTTP output, with a force-reindex remediation hint.
+- Fix `pincher doctor --help` so the `--project` flag prints a useful `NAME` placeholder instead of leaking Go's backtick placeholder parsing, add `pincher project prune-dead` as a CLI fallback for dead-path cleanup when MCP hosts are unavailable, teach standalone `pincher update` to install published release archives without falling back to `go install`, prevent standalone prerelease builds from downgrading to the older stable `/releases/latest` result, harden shared-database project resolution so same-name sessions and `symbols(cross_project=true)` read from the owning project root, reduce high-contention server reads by using cached project totals and project-scoped edge indexes for ghost, edge-coverage, hotspot, and architecture checks, add a project-scoped inbound edge grouping index so hotspot ranking avoids a temp grouping B-tree, document the doctor DB-size triage fields used during v0.99 hardening, correct stale docs that described `search`, `query`, `symbol`, `context`, and `trace` as removed CLI subcommands instead of MCP/HTTP tools, trim CI coverage setup, cap CI server-test parallelism, shorten watcher tests, repair the per-tool latency harness for the default-deny HTTP gateway and current endpoint contracts, repair the multi-project ceiling harness so it times the supported `pincher project list --json` path instead of an ignored invalid command, repair the time-to-first-success harness so it uses an isolated DB and the current loopback `/v1/search` tool surface instead of the removed `pincher search` CLI, and stabilize the watcher serialization regression by measuring the indexer's actual active map instead of inferring concurrency from success-only completion events.
+
+### DOGFOOD
+- **Interrupted Hermes index visibility** — surfaced when the dashboard DB had a Hermes project stuck in `index_state=running` for hours with no obvious operator signal. doctor now reports the stale marker in CLI and MCP/HTTP responses with a force-reindex remediation hint (#1905).
+- **Doctor latency on large local DBs** — surfaced while repeatedly polling the dashboard and CLI doctor paths during v0.97 hardening. Per-project byte estimates now use count-based approximations instead of scanning payload text, cutting repeated diagnostic calls from roughly 0.8s to roughly 0.2-0.3s on the local dogfood database (#1906).
+- **Trace traversal on multi-project graphs** — surfaced by slow-query telemetry against Hermes gateway traces. Trace CTEs now stay on endpoint-first covering indexes instead of drifting into broad project/kind edge scans.
+- **Managed slow-query telemetry** — surfaced while the supervised service was running outside the CLI flag path. Managed launches can now set `PINCHER_SLOW_QUERY_MS`, so dogfood services can capture slow tool calls without changing their unit files.
+- **Release memory** — release prep now requires both changelog updates and a GitHub release "What's New" section describing the actual work landed since the previous release.
+
 ## [0.97.0] — 2026-05-26 — Launch prep + CI release-time cleanup
 
 ### Changed
