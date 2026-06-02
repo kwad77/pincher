@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -241,6 +242,24 @@ type IndexResult struct {
 // project. 1000 sets a conservative floor so the gate is a win, not
 // a loss, on YAML/JSON-heavy corpora where pending counts stay low.
 const qnPreloadThreshold = 1000
+
+func indexWorkerLimit() int {
+	return indexWorkerLimitForProcs(runtime.GOMAXPROCS(0))
+}
+
+func indexWorkerLimitForProcs(procs int) int {
+	if procs < 1 {
+		procs = 1
+	}
+	limit := procs * 2
+	if limit < 2 {
+		return 2
+	}
+	if limit > 16 {
+		return 16
+	}
+	return limit
+}
 
 // Index indexes a repository at the given path (incremental by default).
 // If force=true, all files are re-parsed regardless of content hash.
@@ -490,6 +509,25 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 	if err := idx.store.MarkProjectIndexStarted(projectID, start); err != nil {
 		return nil, fmt.Errorf("mark project index started: %w", err)
 	}
+	fullReindexCleared := force || binaryDriftForce || crashRecoveryForce
+	flushSymbolThreshold := 500
+	if fullReindexCleared {
+		flushSymbolThreshold = 5000
+	}
+	if fullReindexCleared {
+		clearStart := time.Now()
+		if err := idx.store.ClearProjectIndexData(projectID); err != nil {
+			return nil, fmt.Errorf("clear project index data: %w", err)
+		}
+		_ = idx.store.UpdateProjectCounts(projectID, 0, 0, 0)
+		slog.Info("pincher.index.full_reindex_clear",
+			"project_id", projectID,
+			"force", force,
+			"binary_drift_force", binaryDriftForce,
+			"crash_recovery_force", crashRecoveryForce,
+			"duration_ms", time.Since(clearStart).Milliseconds(),
+		)
+	}
 
 	// Best-effort Go module path (from go.mod). Used by the Go extractor to
 	// rewrite intra-module imports to within-module paths so IMPORTS edges
@@ -571,7 +609,31 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 		deleteSymsNS  atomic.Int64
 		extractNS     atomic.Int64
 		postExtractNS atomic.Int64
+		flushFailed   atomic.Bool
+		flushErrMu    sync.Mutex
+		firstFlushErr error
 	)
+	workerSlots := make(chan struct{}, indexWorkerLimit())
+	recordFlushErr := func(label string, err error) {
+		if err == nil {
+			return
+		}
+		flushErrMu.Lock()
+		if firstFlushErr == nil {
+			firstFlushErr = fmt.Errorf("%s: %w", label, err)
+		}
+		flushErrMu.Unlock()
+		flushFailed.Store(true)
+		slog.Warn("pincher.index.flush.err", "phase", label, "err", err)
+	}
+	getFlushErr := func() error {
+		flushErrMu.Lock()
+		defer flushErrMu.Unlock()
+		if firstFlushErr != nil {
+			return firstFlushErr
+		}
+		return fmt.Errorf("index flush failed")
+	}
 
 	// #1772 v0.91: snapshot the CALLS edge count at Index() entry, BEFORE
 	// the per-file extraction goroutines run. The #1792 detector's other
@@ -593,6 +655,14 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 	for fileJob := range fileListQueue {
 		// Respect context cancellation (e.g. graceful shutdown).
 		// Drain the remaining channel items so the walker goroutine can exit.
+		if flushFailed.Load() {
+			go func() {
+				for range fileListQueue {
+				}
+			}()
+			wg.Wait()
+			return nil, getFlushErr()
+		}
 		if ctx.Err() != nil {
 			go func() {
 				for range fileListQueue {
@@ -701,9 +771,23 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 			}
 		}
 		prog.FilesTotal.Add(1)
+		select {
+		case workerSlots <- struct{}{}:
+		case <-ctx.Done():
+			go func() {
+				for range fileListQueue {
+				}
+			}()
+			wg.Wait()
+			return nil, ctx.Err()
+		}
 		wg.Add(1)
 		go func(path, relPath, hash string, content []byte) {
-			defer func() { prog.FilesDone.Add(1); wg.Done() }()
+			defer func() {
+				<-workerSlots
+				prog.FilesDone.Add(1)
+				wg.Done()
+			}()
 
 			lang := ast.DetectLanguageFromContent(path, content)
 			if lang == "" {
@@ -728,8 +812,10 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 			// less wrong than emitting nothing at all.
 			// #1627 v0.85 follow-up: time the pre-extract DB delete.
 			deleteStart := time.Now()
-			if delErr := idx.store.DeleteSymbolsForFile(projectID, relPath); delErr != nil {
-				slog.Warn("pincher.index.delete_stale.err", "err", delErr, "file", relPath)
+			if !fullReindexCleared {
+				if delErr := idx.store.DeleteSymbolsForFile(projectID, relPath); delErr != nil {
+					slog.Warn("pincher.index.delete_stale.err", "err", delErr, "file", relPath)
+				}
 			}
 			deleteSymsNS.Add(int64(time.Since(deleteStart)))
 
@@ -1027,12 +1113,16 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 			// symlink loop the gocodewalker default doesn't catch).
 			expectedPerFile[relPath] += len(syms)
 			// Flush when buffer is large enough
-			if len(symBuf) >= 500 {
-				totalSymbols += len(symBuf)
-				totalEdges += len(edgeBuf)
+			if len(symBuf) >= flushSymbolThreshold {
+				flushedSymbols := len(symBuf)
+				flushedEdges := len(edgeBuf)
 				if flushErr := idx.flushBuffers(projectID, &symBuf, &edgeBuf); flushErr != nil {
-					slog.Warn("pincher.index.flush.err", "err", flushErr)
+					recordFlushErr("batch", flushErr)
+					bufMu.Unlock()
+					return
 				}
+				totalSymbols += flushedSymbols
+				totalEdges += flushedEdges
 				// Refresh the cached projects.* counts at most once every 5s
 				// per project so `pincher list` reflects in-flight progress
 				// during long index runs instead of reporting zeros.
@@ -1052,15 +1142,21 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 	}
 
 	wg.Wait()
+	if flushFailed.Load() {
+		return nil, getFlushErr()
+	}
 
 	// Final flush
 	bufMu.Lock()
 	if len(symBuf) > 0 || len(edgeBuf) > 0 {
-		totalSymbols += len(symBuf)
-		totalEdges += len(edgeBuf)
+		flushedSymbols := len(symBuf)
+		flushedEdges := len(edgeBuf)
 		if flushErr := idx.flushBuffers(projectID, &symBuf, &edgeBuf); flushErr != nil {
-			slog.Warn("pincher.index.final_flush.err", "err", flushErr)
+			bufMu.Unlock()
+			return nil, fmt.Errorf("final flush: %w", flushErr)
 		}
+		totalSymbols += flushedSymbols
+		totalEdges += flushedEdges
 	}
 	bufMu.Unlock()
 
@@ -3813,6 +3909,8 @@ var polymorphicMethodNamesByLanguage = map[string]map[string]struct{}{
 		"Deadline": {}, "Done": {}, "Err": {}, "Value": {},
 		// errors.Is / errors.As / errors.Unwrap
 		"Is": {}, "As": {}, "Unwrap": {},
+		// database/sql DBStats and other telemetry/status APIs
+		"Stats": {},
 		// #567: *exec.Cmd / *http.Server / *cron.Cron / pool workers
 		"Run": {},
 	},
@@ -4012,8 +4110,10 @@ func resolveMethodByName(store *db.Store, projectID, name string) string {
 // short name) fall back to a name-only lookup. Self-edges and duplicates
 // are dropped. Returns the number of edges actually persisted.
 //
-// Only Go CALLS reach this path; non-Go regex extractors emit noisy ToName
-// values that would create false-positive cross-package edges.
+// Go, Python, and bounded JS/TS CALLS reach this path. Keep the language-
+// specific fallbacks scoped: Go's bare-name and receiver-method heuristics are
+// too broad for Python/JS and can otherwise bind builtins or receiver calls to
+// unrelated same-named Go symbols.
 // scopeFiles works the same way it does in resolveImports (#1629
 // v0.87 slice 2): when non-empty, the resolver wipes only the
 // resolve_pass CALLS edges from those source files. Caller must
@@ -4141,6 +4241,7 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 	// string means "tried, no unique match" so we don't re-query.
 	methodCache := make(map[string]string)
 	nameCache := make(map[string]string)
+	nameDirCache := make(map[string]string)
 	lookupName := func(name string) string {
 		if name == "" {
 			return ""
@@ -4185,6 +4286,45 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 		// and absolutely need this caching path.
 		if len(syms) > 1 {
 			if sibs := siblingsForCanonical(syms, canonical); len(sibs) > 0 {
+				qnSiblings[name] = sibs
+			}
+		}
+		return canonical
+	}
+	lookupNameInFileDir := func(name, fromFile string) string {
+		if name == "" {
+			return ""
+		}
+		if fromFile == "" {
+			return lookupName(name)
+		}
+		fromDir := filepath.ToSlash(filepath.Dir(fromFile))
+		cacheKey := name + "\x00" + fromDir
+		if id, ok := nameDirCache[cacheKey]; ok {
+			return id
+		}
+		syms, err := idx.store.GetSymbolsByName(projectID, name, 200)
+		if err != nil || len(syms) == 0 {
+			nameDirCache[cacheKey] = ""
+			return ""
+		}
+		syms = preferNonFixtureSyms(syms)
+		syms = excludeMethodSyms(syms)
+		syms = excludeNonCodeSyms(syms)
+		scoped := make([]db.Symbol, 0, len(syms))
+		for _, s := range syms {
+			if s.Language == "Go" && filepath.ToSlash(filepath.Dir(s.FilePath)) == fromDir {
+				scoped = append(scoped, s)
+			}
+		}
+		if len(scoped) == 0 {
+			nameDirCache[cacheKey] = ""
+			return ""
+		}
+		canonical := pickCanonical(scoped)
+		nameDirCache[cacheKey] = canonical
+		if len(scoped) > 1 {
+			if sibs := siblingsForCanonical(scoped, canonical); len(sibs) > 0 {
 				qnSiblings[name] = sibs
 			}
 		}
@@ -4429,6 +4569,9 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 	// pre-dedupe), dedupe (same (from,to) pair already counted).
 	var droppedFromMissing, droppedToMissing, droppedSelfEdge, dedupedDuplicate int
 	for _, e := range pending {
+		fromIsGo := strings.HasSuffix(e.FromFile, ".go")
+		fromIsPython := isPythonFile(e.FromFile)
+		fromIsJSorTS := isJSorTSFile(e.FromFile)
 		fromID := lookupFromQN(e.FromQN, e.FromFile)
 		if fromID == "" && !strings.Contains(e.FromQN, ".") {
 			fromID = lookupName(e.FromQN)
@@ -4438,20 +4581,17 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 			continue
 		}
 		var toID string
-		if isPythonFile(e.FromFile) {
+		if fromIsPython {
 			toID = lookupPythonCall(e.ToName, e.FromFile)
-			if toID == "" && !strings.Contains(e.ToName, ".") {
-				toID = lookupName(e.ToName)
-			}
 		} else {
 			toID = lookupQN(e.ToName)
-			if toID == "" && !strings.Contains(e.ToName, ".") {
-				toID = lookupName(e.ToName)
+			if toID == "" && fromIsGo && !strings.Contains(e.ToName, ".") {
+				toID = lookupNameInFileDir(e.ToName, e.FromFile)
 			}
 		}
 		// #423 piece 3: precise receiver-type binding before the
 		// looser project-wide receiver-method fallback.
-		if toID == "" {
+		if toID == "" && fromIsGo {
 			toID = resolveByReceiverType(e.ToName, e.ReceiverType, e.FromQN)
 		}
 		// #1778: cross-file package-var singleton. When the call carries
@@ -4459,14 +4599,14 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 		// see the singleton's declaration), recover the receiver type
 		// from the package-level Variable symbol's signature and retry
 		// the #423 binding. Go callers only — the QN shape is Go-specific.
-		if toID == "" && e.ReceiverType == "" && strings.HasSuffix(e.FromFile, ".go") {
+		if toID == "" && e.ReceiverType == "" && fromIsGo {
 			toID = resolveBySingletonVar(e.ToName, e.FromQN)
 		}
 		// #1177 v0.72: TS/JS receiver-type fallback for files where
 		// the Go pkg-prefix path can't reach the real Class.method
 		// QN. Runs after the Go path so Go calls still get the
 		// struct-field-aware behaviour first.
-		if toID == "" && e.ReceiverType != "" && isJSorTSFile(e.FromFile) {
+		if toID == "" && e.ReceiverType != "" && fromIsJSorTS {
 			toID = resolveByReceiverTypeNonGo(e.ToName, e.ReceiverType)
 		}
 		// #285: receiver-method calls (e.g. `idx.Index(...)`) produce
@@ -4479,7 +4619,7 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 		// (so `time.Now()` doesn't accidentally bind to a project
 		// Function named `Now`); resolved unambiguously when there's
 		// exactly one matching Method in the project.
-		if toID == "" {
+		if toID == "" && fromIsGo {
 			if i := strings.LastIndex(e.ToName, "."); i > 0 && i < len(e.ToName)-1 {
 				receiver := e.ToName[:i]
 				trailing := e.ToName[i+1:]

@@ -142,3 +142,37 @@ func TestResolveCalls_AmbiguousMethodNameDoesNotBind(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveCalls_StatsOnSQLDB_NotFalseBound(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "server/tracker.go", `package server
+
+type Tracker struct{}
+
+func (t *Tracker) Stats() {}
+`)
+	writeFile(t, dir, "store/store_test.go", `package store
+
+import "database/sql"
+
+func TestDBStats(db *sql.DB) {
+	_ = db.Stats()
+}
+`)
+
+	if _, err := idx.Index(context.Background(), dir, false); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	testID := db.MakeSymbolID("store/store_test.go", "store.TestDBStats", "Function")
+	statsID := db.MakeSymbolID("server/tracker.go", "server.*Tracker.Stats", "Method")
+
+	inbound, err := store.EdgesTo(statsID, []string{"CALLS"})
+	if err != nil {
+		t.Fatalf("EdgesTo Tracker.Stats: %v", err)
+	}
+	if hasEdge(inbound, testID, "CALLS") {
+		t.Fatalf("database/sql DB.Stats false-bound to server.Tracker.Stats; inbound=%+v", inbound)
+	}
+}

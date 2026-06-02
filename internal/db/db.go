@@ -276,6 +276,10 @@ func Open(dir string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := s.ConfigureFTSMergePolicy(); err != nil {
+		s.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -478,6 +482,29 @@ func (s *Store) CheckpointTruncate() error {
 	return err
 }
 
+// VacuumReclaimThresholdBytes is the shared threshold for surfacing or
+// applying VACUUM-based space reclamation. Below this, the exclusive-lock
+// cost of VACUUM is usually not worth the disk saved.
+const VacuumReclaimThresholdBytes int64 = 50 * 1024 * 1024
+
+// EstimateReclaimableBytes returns SQLite's best-effort estimate of
+// reclaimable space from free pages in the main DB file. SQLite does not
+// shrink the database file after large deletes or full re-index clears until
+// VACUUM rewrites it, so doctor uses this as a proactive maintenance signal.
+func (s *Store) EstimateReclaimableBytes() (int64, error) {
+	var pageSize, freelistCount int64
+	if err := s.RO().QueryRow("PRAGMA page_size").Scan(&pageSize); err != nil {
+		return 0, err
+	}
+	if err := s.RO().QueryRow("PRAGMA freelist_count").Scan(&freelistCount); err != nil {
+		return 0, err
+	}
+	if pageSize <= 0 || freelistCount <= 0 {
+		return 0, nil
+	}
+	return pageSize * freelistCount, nil
+}
+
 // Vacuum runs SQLite's VACUUM — it rewrites the entire database file,
 // reclaiming pages freed by DeleteProject / DeleteSymbolsForFile so the
 // file on disk actually shrinks. This is the sharp edge: VACUUM holds an
@@ -671,6 +698,35 @@ type FTS5CorpusFragmentation struct {
 // the threshold deserves another revisit — but we'd need a third
 // data point first.
 const FTS5FragmentationThreshold = 25.0
+
+const ftsCrisisMergeThreshold = 4096
+const ftsAutomergeThreshold = 4
+
+// ConfigureFTSMergePolicy prevents large index writes from stalling inside a
+// single FTS5 crisis merge. SQLite's default crisismerge threshold is 16, and
+// a force reindex can create enough new FTS segments that one symbol insert
+// pays the whole merge bill. Automerge stays at SQLite's default so ordinary
+// query performance does not degrade after many small writes.
+func (s *Store) ConfigureFTSMergePolicy() error {
+	for _, table := range []string{"symbols_code_fts", "symbols_config_fts", "symbols_docs_fts"} {
+		var exists int
+		if err := s.db.QueryRow(`SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ?`, table).Scan(&exists); err == sql.ErrNoRows {
+			continue
+		} else if err != nil {
+			return fmt.Errorf("check %s exists: %w", table, err)
+		}
+		for option, value := range map[string]int{
+			"automerge":   ftsAutomergeThreshold,
+			"crisismerge": ftsCrisisMergeThreshold,
+		} {
+			q := fmt.Sprintf(`INSERT INTO %s(%s, rank) VALUES('%s', %d)`, table, table, option, value)
+			if _, err := s.db.Exec(q); err != nil {
+				return fmt.Errorf("configure %s %s: %w", table, option, err)
+			}
+		}
+	}
+	return nil
+}
 
 // FTS5Fragmentation returns per-corpus fragmentation stats for the
 // three per-corpus FTS5 virtual tables (`symbols_code_fts`,
@@ -3359,6 +3415,33 @@ func (s *Store) DeleteProject(id string) error {
 	})
 }
 
+// ClearProjectIndexData removes the rows rebuilt by a full index pass while
+// preserving project metadata and user-authored project state such as ADRs.
+//
+// Full reindex paths call this once before extraction so they do not pay the
+// per-file DeleteSymbolsForFile cascade N times. If the pass is interrupted,
+// the project-level incomplete marker remains set and the next run clears +
+// rebuilds again.
+func (s *Store) ClearProjectIndexData(projectID string) error {
+	return s.withTx(func(tx *sql.Tx) error {
+		for _, q := range []string{
+			`DELETE FROM closure             WHERE project_id=?`,
+			`DELETE FROM edges               WHERE project_id=?`,
+			`DELETE FROM pending_edges       WHERE project_id=?`,
+			`DELETE FROM struct_fields       WHERE project_id=?`,
+			`DELETE FROM interface_methods   WHERE project_id=?`,
+			`DELETE FROM symbols             WHERE project_id=?`,
+			`DELETE FROM files               WHERE project_id=?`,
+			`DELETE FROM extraction_failures WHERE project_id=?`,
+		} {
+			if _, err := tx.Exec(q, projectID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // DeleteEmptyProjects removes every project with zero symbols AND zero edges
 // (the "ghost" projects that accumulate from SessionStart hooks running in
 // non-code directories). Returns the number of projects deleted.
@@ -5691,6 +5774,41 @@ func (s *Store) ToolCallStatsByTool(windowSeconds int64, limit int) ([]ToolCallT
 		 LIMIT ?`,
 		cutoff, limit,
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ToolCallTallyRow{}
+	for rows.Next() {
+		var r ToolCallTallyRow
+		if err := rows.Scan(
+			&r.Tool, &r.CallCount, &r.AvgTokensUsed,
+			&r.SumTokensSaved, &r.AvgTokensSavedPct, &r.AvgResponseBytes,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// AllTimeToolCallStatsByTool aggregates every persisted session_tool_calls
+// row by tool. Unlike ToolCallStatsByTool, this intentionally has no trailing
+// window and no limit; it feeds CLI all-time summaries such as the
+// baseline-method breakdown in `pincher stats`.
+//
+// Reader-routed (pure SELECT).
+func (s *Store) AllTimeToolCallStatsByTool() ([]ToolCallTallyRow, error) {
+	rows, err := s.ro.Query(`
+		SELECT tool,
+		       COUNT(*)                                       AS call_count,
+		       AVG(CAST(tokens_used AS REAL))                 AS avg_tokens_used,
+		       COALESCE(SUM(tokens_saved), 0)                 AS sum_tokens_saved,
+		       COALESCE(AVG(tokens_saved_pct), 0)             AS avg_tokens_saved_pct,
+		       AVG(CAST(response_bytes AS REAL))              AS avg_response_bytes
+		  FROM session_tool_calls
+		 GROUP BY tool
+		 ORDER BY call_count DESC, tool ASC`)
 	if err != nil {
 		return nil, err
 	}

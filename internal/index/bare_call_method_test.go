@@ -16,9 +16,10 @@ import (
 //
 // Repro shape (deterministic — the method's file sorts before the
 // function's, so pickCanonical picked the method pre-fix):
-//   proc/aaa_worker.go : package proc — func (w *worker) Process() {}
-//   proc/fn.go         : package proc — func Process() {}            (real target)
-//   proc/run.go        : package proc — func Caller() { Process() }
+//
+//	proc/aaa_worker.go : package proc — func (w *worker) Process() {}
+//	proc/fn.go         : package proc — func Process() {}            (real target)
+//	proc/run.go        : package proc — func Caller() { Process() }
 func TestIndex_BareCall_ResolvesToFunctionNotMethod(t *testing.T) {
 	idx, store := newTestIndexer(t)
 	dir := t.TempDir()
@@ -50,6 +51,37 @@ func TestIndex_BareCall_ResolvesToFunctionNotMethod(t *testing.T) {
 	}
 	if hasEdge(inboundMethod, callerID, "CALLS") {
 		t.Errorf("bare call Process() false-bound to a Method — methods need a receiver:\n  inbound: %v", inboundMethod)
+	}
+}
+
+func TestIndex_BareCall_DoesNotBindAcrossGoPackageDirs(t *testing.T) {
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/job/job.go", `package job
+
+func Caller(run func() int) int {
+	return run()
+}
+`)
+	writeFile(t, dir, "cmd/tool/main.go", `package main
+
+func run() int {
+	return 0
+}
+`)
+
+	if _, err := idx.Index(context.Background(), dir, false); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	callerID := db.MakeSymbolID("internal/job/job.go", "job.Caller", "Function")
+	cmdRunID := db.MakeSymbolID("cmd/tool/main.go", "main.run", "Function")
+	inbound, err := store.EdgesTo(cmdRunID, nil)
+	if err != nil {
+		t.Fatalf("EdgesTo cmd run: %v", err)
+	}
+	if hasEdge(inbound, callerID, "CALLS") {
+		t.Errorf("local function value run() false-bound to cmd/tool run():\n  inbound: %v", inbound)
 	}
 }
 

@@ -176,6 +176,35 @@ func TestOpen_DSNPragmasApplied(t *testing.T) {
 	}
 }
 
+func TestOpen_RepairsFTSMergePolicy(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	for _, table := range []string{"symbols_code_fts", "symbols_config_fts", "symbols_docs_fts"} {
+		if _, err := s.db.Exec(fmt.Sprintf(`INSERT INTO %s(%s, rank) VALUES('automerge', 0)`, table, table)); err != nil {
+			t.Fatalf("set %s automerge=0: %v", table, err)
+		}
+	}
+	s.Close()
+
+	s, err = Open(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s.Close()
+	for _, table := range []string{"symbols_code_fts", "symbols_config_fts", "symbols_docs_fts"} {
+		var got int
+		if err := s.db.QueryRow(fmt.Sprintf(`SELECT v FROM %s_config WHERE k='automerge'`, table)).Scan(&got); err != nil {
+			t.Fatalf("read %s automerge: %v", table, err)
+		}
+		if got != ftsAutomergeThreshold {
+			t.Fatalf("%s automerge = %d, want %d", table, got, ftsAutomergeThreshold)
+		}
+	}
+}
+
 func TestOpen_Idempotent(t *testing.T) {
 	dir := t.TempDir()
 	s1, err := Open(dir)
@@ -595,6 +624,7 @@ var readerRoutedStoreMethods = map[string]bool{
 	"ListRecentExtractionFailuresAcrossProjects":  true, // #1205 doctor cross-project query
 	"CountRecentExtractionFailuresAcrossProjects": true, // #1205 doctor truncation-count
 	"EstimateProjectBytes":                        true, // #1220 doctor per-project byte estimate (pure SELECT)
+	"EstimateReclaimableBytes":                    true, // doctor/VACUUM freelist estimate; PRAGMA reads only.
 	"ExtractionFailureCountsByReason":             true,
 	"ListSlowQueries":                             true,
 	// HealthCheck is pure SELECT — previously misclassified under writer
@@ -632,6 +662,8 @@ var readerRoutedStoreMethods = map[string]bool{
 	// #635 v0.67: per-tool aggregate over the trailing window. Pure
 	// SELECT with GROUP BY — reader-routed.
 	"ToolCallStatsByTool": true,
+	// All-time per-tool aggregate for CLI persisted stats.
+	"AllTimeToolCallStatsByTool": true,
 	// #635 v0.67 panel 2: per-tier aggregate, same shape as above.
 	"ToolCallStatsByTier": true,
 	// #635 v0.67 panel 3: per-tool payload-size distribution (min/avg/max
@@ -656,7 +688,9 @@ var writerRoutedStoreMethods = map[string]bool{
 	"MarkProjectIndexStarted":                    true,
 	"MarkProjectIndexComplete":                   true,
 	"DeleteProject":                              true,
+	"ClearProjectIndexData":                      true,
 	"DeleteEmptyProjects":                        true,
+	"ConfigureFTSMergePolicy":                    true,
 	"BulkUpsertSymbols":                          true,
 	"DeleteSymbolsForFile":                       true,
 	"BulkUpsertEdges":                            true,
@@ -2156,6 +2190,35 @@ func TestFormatSize(t *testing.T) {
 	}
 }
 
+func TestEstimateReclaimableBytes(t *testing.T) {
+	store := newTestStore(t)
+
+	fresh, err := store.EstimateReclaimableBytes()
+	if err != nil {
+		t.Fatalf("EstimateReclaimableBytes fresh: %v", err)
+	}
+	if fresh < 0 {
+		t.Fatalf("fresh reclaimable bytes = %d, want >= 0", fresh)
+	}
+
+	if _, err := store.DB().Exec(`CREATE TABLE reclaim_probe (payload BLOB)`); err != nil {
+		t.Fatalf("create reclaim_probe: %v", err)
+	}
+	if _, err := store.DB().Exec(`INSERT INTO reclaim_probe(payload) VALUES (zeroblob(?))`, 4*1024*1024); err != nil {
+		t.Fatalf("insert reclaim_probe: %v", err)
+	}
+	if _, err := store.DB().Exec(`DELETE FROM reclaim_probe`); err != nil {
+		t.Fatalf("delete reclaim_probe: %v", err)
+	}
+	reclaimable, err := store.EstimateReclaimableBytes()
+	if err != nil {
+		t.Fatalf("EstimateReclaimableBytes after delete: %v", err)
+	}
+	if reclaimable <= fresh {
+		t.Fatalf("reclaimable bytes after delete = %d, want > fresh %d", reclaimable, fresh)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DB accessor
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2304,6 +2367,71 @@ func TestDeleteProject_RemovesAll(t *testing.T) {
 	syms, _ := store.GetSymbolsForFile(pid, "a.go")
 	if len(syms) != 0 {
 		t.Errorf("expected 0 symbols after deletion, got %d", len(syms))
+	}
+}
+
+func TestClearProjectIndexData_PreservesProjectAndADRs(t *testing.T) {
+	store := newTestStore(t)
+	pid := "proj-clear"
+	other := "proj-other"
+	store.UpsertProject(testProject(pid))
+	store.UpsertProject(testProject(other))
+	if err := store.SetADR(pid, "decision", "keep me"); err != nil {
+		t.Fatalf("SetADR: %v", err)
+	}
+	store.BulkUpsertSymbols([]Symbol{
+		{ID: "clear-a", ProjectID: pid, FilePath: "a.go", Name: "A", QualifiedName: "pkg.A", Kind: "Function", Language: "Go", StartByte: 0, EndByte: 10, StartLine: 1, EndLine: 2},
+		{ID: "clear-b", ProjectID: pid, FilePath: "b.go", Name: "B", QualifiedName: "pkg.B", Kind: "Function", Language: "Go", StartByte: 0, EndByte: 10, StartLine: 1, EndLine: 2},
+		{ID: "other-a", ProjectID: other, FilePath: "a.go", Name: "A", QualifiedName: "pkg.A", Kind: "Function", Language: "Go", StartByte: 0, EndByte: 10, StartLine: 1, EndLine: 2},
+	})
+	store.BulkUpsertEdges([]Edge{
+		{ProjectID: pid, FromID: "clear-a", ToID: "clear-b", Kind: "CALLS", Confidence: 1.0},
+		{ProjectID: other, FromID: "other-a", ToID: "other-a", Kind: "CALLS", Confidence: 1.0},
+	})
+	if err := store.SetFileHash(pid, "a.go", "hash-a"); err != nil {
+		t.Fatalf("SetFileHash project: %v", err)
+	}
+	if err := store.SetFileHash(other, "a.go", "hash-other"); err != nil {
+		t.Fatalf("SetFileHash other: %v", err)
+	}
+	if err := store.ReplacePendingEdgesForFile(pid, "a.go", []PendingEdge{{Kind: "CALLS", FromQN: "pkg.A", ToName: "B", Confidence: 1}}); err != nil {
+		t.Fatalf("ReplacePendingEdgesForFile: %v", err)
+	}
+	if err := store.RecordExtractionFailureWithBinary(pid, "a.go", "Go", "parse", "bad", "test"); err != nil {
+		t.Fatalf("RecordExtractionFailureWithBinary: %v", err)
+	}
+
+	if err := store.ClearProjectIndexData(pid); err != nil {
+		t.Fatalf("ClearProjectIndexData: %v", err)
+	}
+
+	if project, err := store.GetProject(pid); err != nil || project == nil {
+		t.Fatalf("project should be preserved, project=%+v err=%v", project, err)
+	}
+	if got, ok, err := store.GetADR(pid, "decision"); err != nil || !ok || got != "keep me" {
+		t.Fatalf("ADR should be preserved, got=%q ok=%v err=%v", got, ok, err)
+	}
+	syms, edges, _, _, err := store.GraphStats(pid)
+	if err != nil {
+		t.Fatalf("GraphStats: %v", err)
+	}
+	if syms != 0 || edges != 0 {
+		t.Fatalf("index graph rows should be cleared, symbols=%d edges=%d", syms, edges)
+	}
+	if hash := store.GetFileHash(pid, "a.go"); hash != "" {
+		t.Fatalf("project file hash should be cleared, got %q", hash)
+	}
+	if pending, err := store.LoadPendingEdges(pid, "CALLS"); err != nil || len(pending) != 0 {
+		t.Fatalf("pending edges should be cleared, len=%d err=%v", len(pending), err)
+	}
+	if failures, err := store.ListExtractionFailures(pid, 10); err != nil || len(failures) != 0 {
+		t.Fatalf("extraction failures should be cleared, len=%d err=%v", len(failures), err)
+	}
+	if otherSym, err := store.GetSymbolScoped(other, "other-a"); err != nil || otherSym == nil {
+		t.Fatalf("other project symbol should be preserved, sym=%+v err=%v", otherSym, err)
+	}
+	if hash := store.GetFileHash(other, "a.go"); hash != "hash-other" {
+		t.Fatalf("other project file hash = %q, want hash-other", hash)
 	}
 }
 

@@ -2,6 +2,7 @@ package index
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/kwad77/pincher/internal/ast"
@@ -235,6 +236,73 @@ def run():
 	}
 	if !found {
 		t.Errorf("expected CALLS edge run→helper across files; got edges=%+v", edges)
+	}
+}
+
+// Python CALLS are AST-grade and defer through resolveCalls for cross-file
+// binding, but they must not use Go's project-wide bare-name / receiver-method
+// fallbacks. Builtins like str() and receiver calls like values.add() otherwise
+// bind to unrelated same-named Go symbols when those are unique in the project.
+func TestIndex_PythonCallsDoNotBindToGoFallbacks(t *testing.T) {
+	if !ast.PythonAvailable() {
+		t.Skip("python3 not on PATH; Python CALLS resolution test skipped")
+	}
+
+	idx, store := newTestIndexer(t)
+	dir := t.TempDir()
+
+	writeFile(t, dir, "app.py", `def local():
+    return 1
+
+def run(values):
+    str("x")
+    min([1, 2])
+    values.add(3)
+    return local()
+`)
+	writeFile(t, dir, "gocollide/collide.go", `package gocollide
+
+func str(v string) string { return v }
+func min(v int) int { return v }
+
+type Bag struct{}
+func (b *Bag) add(v int) {}
+`)
+
+	if _, err := idx.Index(context.Background(), dir, true); err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	projectID := db.ProjectIDFromPath(dir)
+
+	runSyms, err := store.GetSymbolsByQN(projectID, "app.run")
+	if err != nil || len(runSyms) == 0 {
+		t.Fatalf("expected app.run symbol, got %d (err=%v)", len(runSyms), err)
+	}
+	localSyms, err := store.GetSymbolsByQN(projectID, "app.local")
+	if err != nil || len(localSyms) == 0 {
+		t.Fatalf("expected app.local symbol, got %d (err=%v)", len(localSyms), err)
+	}
+
+	edges, err := store.EdgesFrom(runSyms[0].ID, []string{"CALLS"})
+	if err != nil {
+		t.Fatalf("EdgesFrom app.run: %v", err)
+	}
+	var foundLocal bool
+	for _, e := range edges {
+		if e.ToID == localSyms[0].ID {
+			foundLocal = true
+			break
+		}
+	}
+	if !foundLocal {
+		t.Fatalf("expected same-file Python CALLS edge run→local to remain; edges=%+v", edges)
+	}
+	for _, e := range edges {
+		if strings.HasSuffix(e.ToID, ".str#Function") ||
+			strings.HasSuffix(e.ToID, ".min#Function") ||
+			strings.HasSuffix(e.ToID, ".add#Method") {
+			t.Fatalf("Python call false-bound to Go fallback target %s; edges=%+v", e.ToID, edges)
+		}
 	}
 }
 

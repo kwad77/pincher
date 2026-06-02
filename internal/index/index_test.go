@@ -39,6 +39,26 @@ func writeFile(t *testing.T, dir, name, content string) string {
 	return path
 }
 
+func TestIndexWorkerLimitForProcs(t *testing.T) {
+	tests := []struct {
+		name  string
+		procs int
+		want  int
+	}{
+		{name: "invalid", procs: 0, want: 2},
+		{name: "single", procs: 1, want: 2},
+		{name: "four", procs: 4, want: 8},
+		{name: "caps large machines", procs: 64, want: 16},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := indexWorkerLimitForProcs(tt.procs); got != tt.want {
+				t.Fatalf("indexWorkerLimitForProcs(%d) = %d, want %d", tt.procs, got, tt.want)
+			}
+		})
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ReadSymbolSource
 // ─────────────────────────────────────────────────────────────────────────────
