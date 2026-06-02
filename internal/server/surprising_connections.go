@@ -42,6 +42,14 @@ func packageOfSymbolID(id string) string {
 	return packageOfFilePath(id[:i])
 }
 
+func filePathOfSymbolID(id string) string {
+	i := strings.Index(id, "::")
+	if i <= 0 {
+		return ""
+	}
+	return id[:i]
+}
+
 func packageOfFilePath(file string) string {
 	if file == "" || file == "external" {
 		return ""
@@ -65,6 +73,46 @@ func packageOfFilePath(file string) string {
 		dir = strings.ReplaceAll(dir, "\\", "/")
 	}
 	return dir
+}
+
+type surprisingConnectionFilter struct {
+	includeTests bool
+	endpoints    map[string]bool
+}
+
+func newSurprisingConnectionFilter(includeTests bool) *surprisingConnectionFilter {
+	return &surprisingConnectionFilter{
+		includeTests: includeTests,
+		endpoints:    make(map[string]bool),
+	}
+}
+
+func (f *surprisingConnectionFilter) includeEndpoint(id string) bool {
+	if f == nil {
+		return true
+	}
+	if allowed, ok := f.endpoints[id]; ok {
+		return allowed
+	}
+	filePath := filePathOfSymbolID(id)
+	if filePath == "" {
+		f.endpoints[id] = true
+		return true
+	}
+	if isTestFixturePath(filePath) {
+		f.endpoints[id] = false
+		return false
+	}
+	if !f.includeTests && isTestFile(filePath) {
+		f.endpoints[id] = false
+		return false
+	}
+	f.endpoints[id] = true
+	return true
+}
+
+func (f *surprisingConnectionFilter) includeEdge(fromID, toID string) bool {
+	return f.includeEndpoint(fromID) && f.includeEndpoint(toID)
 }
 
 type surprisingConnectionsAccumulator struct {
@@ -130,11 +178,16 @@ func (a *surprisingConnectionsAccumulator) result() []surprisingConnection {
 // by rarity. The rarest `surprisingConnectionsCap` package pairs are
 // returned, lowest edge count first. Edges within a package, edges
 // touching an external/malformed endpoint, and non-CALLS edges are
-// excluded.
-func computeSurprisingConnections(edges []db.Edge) []surprisingConnection {
+// excluded. Test-file edges follow includeTests; fixture edges are
+// always excluded.
+func computeSurprisingConnections(edges []db.Edge, includeTests bool) []surprisingConnection {
 	acc := newSurprisingConnectionsAccumulator()
+	filter := newSurprisingConnectionFilter(includeTests)
 	for _, e := range edges {
 		if e.Kind != "CALLS" {
+			continue
+		}
+		if !filter.includeEdge(e.FromID, e.ToID) {
 			continue
 		}
 		acc.add(e.FromID, e.ToID)

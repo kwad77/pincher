@@ -682,7 +682,7 @@ func (s *Server) startSchemaDriftWatcher(ctx context.Context, interval time.Dura
 // without invoking os.Exit. A read error is NOT drift — return false
 // so a transient DB hiccup doesn't trigger a respawn loop. The next
 // poll tick (60s later) retries; a persistent read failure surfaces
-// via the /v1/health probe instead.
+// via the health tool or readiness probe instead.
 func (s *Server) detectSchemaDrift(expected int) bool {
 	var stored int
 	if err := s.store.DB().QueryRow(`SELECT version FROM schema_version`).Scan(&stored); err != nil {
@@ -1653,6 +1653,10 @@ func (w *headResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
 // Allowed with `Allow: GET, HEAD` instead of the misleading
 // "unknown tool" 404 when a client POSTs to a known GET endpoint
 // (#609). Keep in sync with the GET handlers in ServeHTTP.
+//
+// Deliberately excludes `health`: GET /v1/health is a public liveness
+// probe, while POST /v1/health is the registered tool endpoint with the
+// richer schema/index/observability report.
 var httpGetOnlyRoutes = map[string]bool{
 	"dashboard":          true,
 	"dashboard.js":       true,
@@ -1665,7 +1669,6 @@ var httpGetOnlyRoutes = map[string]bool{
 	"tool-tier-stats":    true, // v0.67 per-tier aggregate panel (#635 panel 2)
 	"tool-payload-stats": true, // v0.67 per-tool payload-size panel (#635 panel 3 — outlier finder)
 	"openapi.json":       true,
-	"health":             true,
 	"ready":              true, // #660: k8s readiness probe (200 vs 503)
 	"metrics":            true, // #1163: Prometheus exposition endpoint
 }
@@ -1744,16 +1747,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// the latter takes one less SHA-256 byte to ingest. Edge-case
 	// timing distinguishability. Post-fix: identical work in both.
 	// #588: container orchestrators (Docker, Kubernetes, fly.io,
-	// ECS) ping /v1/health and /v1/openapi.json as liveness probes
-	// and they can't carry a bearer token without significant config
-	// gymnastics (mount the secret, sidecar, etc.). Both paths are
-	// documentation-shaped — health surfaces version + auth_required
-	// + binary_stale; openapi.json surfaces the dynamic spec built
-	// from registered tools. Neither leaks project state. Skip the
-	// bearer check for them so liveness probes work alongside
-	// --http-key. Every other endpoint still enforces auth.
+	// ECS) ping GET /v1/health, GET /v1/ready, and GET /v1/openapi.json
+	// as probes and they can't carry a bearer token without significant
+	// config gymnastics (mount the secret, sidecar, etc.). These GET
+	// paths are documentation/probe-shaped and do not leak project state.
+	// Skip the bearer check for them so liveness probes work alongside
+	// --http-key. Tool calls such as POST /v1/health still enforce auth.
 	pathTrimmed := strings.TrimPrefix(r.URL.Path, "/v1/")
-	isPublicProbe := pathTrimmed == "health" || pathTrimmed == "openapi.json" || pathTrimmed == "ready"
+	isPublicProbe := r.Method == http.MethodGet &&
+		(pathTrimmed == "health" || pathTrimmed == "openapi.json" || pathTrimmed == "ready")
 	if s.httpKey != "" && !isPublicProbe {
 		auth := r.Header.Get("Authorization")
 		tok, hasBearer := strings.CutPrefix(auth, "Bearer ")
@@ -1859,7 +1861,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if path == "health" {
+	if path == "health" && r.Method == http.MethodGet {
 		// auth_required surfaces whether --http-key is set. The dashboard
 		// reads it to decide whether to show a "no auth in place" notice
 		// (#203). Server-side enforcement is unchanged — this is purely
@@ -1880,6 +1882,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"dashboard_version": s.version,
 			"auth_required":     s.httpKey != "",
 		})
+		return
+	}
+	if path == "health" && r.Method != http.MethodPost {
+		w.Header().Set("Allow", "GET, HEAD, POST")
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed",
+			"endpoint /v1/health requires GET/HEAD for liveness or POST for the health tool")
 		return
 	}
 	if path == "openapi.json" {
@@ -2741,14 +2749,18 @@ func (s *Server) openAPISpec(r *http.Request) map[string]any {
 			},
 		}
 	}
-	paths[prefix+"/v1/health"] = map[string]any{
-		"get": map[string]any{
-			"operationId":    "health",
-			"summary":        "Liveness probe",
-			"x-pincher-tier": toolComplexityTier("health"),
-			"responses":      map[string]any{"200": map[string]any{"description": "ok"}},
-		},
+	healthPath := prefix + "/v1/health"
+	healthOps, _ := paths[healthPath].(map[string]any)
+	if healthOps == nil {
+		healthOps = map[string]any{}
 	}
+	healthOps["get"] = map[string]any{
+		"operationId":    "health_probe",
+		"summary":        "Liveness probe",
+		"x-pincher-tier": toolComplexityTier("health"),
+		"responses":      map[string]any{"200": map[string]any{"description": "ok"}},
+	}
+	paths[healthPath] = healthOps
 	// #660: GET /v1/ready — readiness probe distinct from /v1/health.
 	// k8s deployments need to separate liveness ("process is alive,
 	// don't restart me") from readiness ("can serve traffic, route to me").
@@ -3361,6 +3373,9 @@ func (s *Server) resolveProjectID(projectArg string) (string, error) {
 		}
 		return s.sessionID, nil
 	}
+	if trimmed := strings.TrimSpace(projectArg); trimmed != "" && filepath.Clean(trimmed) == "." {
+		return s.resolveProjectID("")
+	}
 	// #1056: explicit reject for "*" with a clear-rejection error.
 	// "*" is the documented cross-project sentinel on `search` and
 	// `query` — those handlers branch BEFORE calling resolveProjectID,
@@ -3751,7 +3766,7 @@ func computeCapabilities(s *Server) []string {
 
 		// SSE event stream at GET /v1/events (#654, v0.56). Dashboards
 		// and CI bots can subscribe to index_started / index_complete /
-		// binary_drift instead of polling /v1/health or
+		// binary_drift instead of polling the health tool or
 		// /v1/index-progress. Always wired when the HTTP gateway is up.
 		"sse",
 
@@ -4234,11 +4249,11 @@ func (s *Server) registerTools() {
 	// 10. architecture — agent-facing orient tool. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
 		Name:        "architecture",
-		Description: "**Call once at the start of unfamiliar work** to orient. Returns: project metadata, `languages` (per-language symbol count), `entry_points` (up to 20, scratch/fixture paths filtered), `hotspots` (top-10 most-called Function/Method/Class/Interface/Type/Module symbols — highest change risk), `node_kinds` (per-kind symbol count), `edge_kinds` (per-kind edge count), and `surprising_connections` (up to 10 rarest cross-package CALLS pairs — packages joined by just one or two calls, the fragile/hidden coupling points worth a reviewer's eye). Hotspots default to production code only (test files filtered); pass `include_tests=true` to surface test helpers too. Much cheaper than reading files to understand the structure.",
+		Description: "**Call once at the start of unfamiliar work** to orient. Returns: project metadata, `languages` (per-language symbol count), `entry_points` (up to 20, scratch/fixture paths filtered), `hotspots` (top-10 most-called Function/Method/Class/Interface/Type/Module symbols — highest change risk), `node_kinds` (per-kind symbol count), `edge_kinds` (per-kind edge count), and `surprising_connections` (up to 10 rarest cross-package CALLS pairs — packages joined by just one or two calls, the fragile/hidden coupling points worth a reviewer's eye). Hotspots and surprising connections default to production code only (test files filtered); pass `include_tests=true` to surface test helpers too. Much cheaper than reading files to understand the structure.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string"},
-				"include_tests":{"type":"boolean","description":"If true, include hotspots from test files (*_test.go, *.spec.ts, etc.). Default false — test helpers like newTestServer dominate raw call counts but aren't useful for orientation."}
+				"include_tests":{"type":"boolean","description":"If true, include hotspots and surprising connections from test files (*_test.go, *.spec.ts, etc.). Default false — test helpers like newTestServer dominate raw call counts and test-only cross-package edges aren't useful for production orientation."}
 			}
 		}`),
 	}, s.handleArchitecture)
@@ -4505,7 +4520,7 @@ func (s *Server) registerTools() {
 	// 19. doctor — drift + sanity diagnostics. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
 		Name:        "doctor",
-		Description: "**Diagnostic report from the local pincher database**. Returns: `schema_version` (current migration head), `binary_version` (running pincher), `db_size_bytes` + `wal_size_bytes`, `projects` (per-project rows with `schema_version_at_index` + `binary_version` so the agent can spot per-project drift against the running binary, plus `db_bytes_estimate` — a best-effort per-project on-disk byte estimate so you can see WHICH project to delete first when the DB crosses GB; relative ordering is load-bearing, absolute precision is not (#1220) — top-N by symbol count), `advisories` (advisory strings naming pathological states: large-DB > 1GB with sizing hint #732, ghost-project where the indexer ran but extraction produced near-zero symbols #1009), `extraction_failures` (recent failure rows from the lookback window), `slow_queries` (recent slow-query log). Same data the `pincher doctor --json` CLI returns; exposed via MCP so dashboards and ops automations can poll without shelling out. Read-only; safe to call repeatedly.",
+		Description: "**Diagnostic report from the local pincher database**. Returns: `schema_version` (current migration head), `binary_version` (running pincher), `db_size_bytes` + `wal_size_bytes`, `projects` (per-project rows with `schema_version_at_index`, `binary_version`, and `stale` / `stale_reason` so the agent can spot per-project drift against the running binary, plus `db_bytes_estimate` — a best-effort per-project on-disk byte estimate so you can see WHICH project to delete first when the DB crosses GB; relative ordering is load-bearing, absolute precision is not (#1220) — top-N by symbol count), `advisories` (advisory strings naming pathological states: large-DB > 1GB with sizing hint #732, ghost-project where the indexer ran but extraction produced near-zero symbols #1009), `extraction_failures` (recent failure rows from the lookback window), `slow_queries` (recent slow-query log). Same data the `pincher doctor --json` CLI returns; exposed via MCP so dashboards and ops automations can poll without shelling out. Read-only; safe to call repeatedly.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"lookback_hours":{"type":"integer","description":"Hours of history to include in failures + slow-query lists. Default 168 (7 days)."},
@@ -4556,7 +4571,7 @@ func diagnoseEmptyIndex(result *index.IndexResult, force bool) map[string]any {
 		return map[string]any{
 			"empty_reason": EmptyReasonNoProjectIndexed,
 			"diagnosis":    "no indexable source files found at this path",
-			"hint":         "verify the path is a project root (contains code in a recognised language) or check `pincher health` for indexing failures",
+			"hint":         "verify the path is a project root (contains code in a recognised language) or check the MCP/HTTP `health` tool for indexing failures",
 		}
 	case result.Files == 0 && result.Blocked > 0 && result.Skipped == 0:
 		// #1773: all_files_blocked requires Skipped==0 — blocked must be
@@ -4590,7 +4605,7 @@ func diagnoseEmptyIndex(result *index.IndexResult, force bool) map[string]any {
 		return map[string]any{
 			"empty_reason": EmptyReasonExtractorEmittedNothing,
 			"diagnosis":    "files were processed but no symbols extracted",
-			"hint":         "language detection may be missing extension support; check `pincher health` per-language coverage",
+			"hint":         "language detection may be missing extension support; check the MCP/HTTP `health` tool's per-language coverage",
 		}
 	}
 }
@@ -6909,8 +6924,9 @@ func verifyEmptySearchCause(
 //
 //  1. Per-token wrapping for chars that are illegal inside a bare
 //     token but harmless inside a phrase quote: `.`, `-`, `:` (between
-//     alphanumerics), plus `(`, `)`, `,`, `[`, `]`, `{`, `}`, `@`,
-//     `!`, `?`, `/`, `'` anywhere in the token (#424).
+//     alphanumerics), CLI-flag shaped leading `-`, plus `(`, `)`, `,`,
+//     `[`, `]`, `{`, `}`, `@`, `!`, `?`, `/`, `'` anywhere in the token
+//     (#424).
 //
 //  2. Whole-query wrapping when a bare FTS5 boolean operator (NOT,
 //     AND, OR — uppercase, FTS5 is case-sensitive) appears as a
@@ -7092,6 +7108,18 @@ func needsQuoting(s string) bool {
 	// string. Wrapping in a phrase quote neutralises all of these.
 	if strings.ContainsAny(s, "()[]{},/@!?'") {
 		return true
+	}
+	// CLI flags (`--version`, `-run`) are common natural search terms in
+	// command-line codebases. Bare leading `-` is FTS5 syntax and can raise
+	// parser errors, so quote flag-shaped tokens rather than expecting
+	// callers to know FTS5 escaping.
+	if len(s) > 1 && s[0] == '-' {
+		if isAlphanum(s[1]) {
+			return true
+		}
+		if len(s) > 2 && s[1] == '-' && isAlphanum(s[2]) {
+			return true
+		}
 	}
 	// #887: phrase-quote mixed-case identifiers (CamelCase like
 	// `handleSearch`). Without the quotes, FTS5 returns ZERO rows when
@@ -9560,17 +9588,23 @@ func (s *Server) handleArchitecture(ctx context.Context, req *mcp.CallToolReques
 	_, _, kindCounts, edgeKindCounts, _ := s.store.GraphStats(projectID)
 
 	// Surprising connections (#1846 follow-up): the rarest cross-package
-	// CALLS edges — package pairs joined by just one or two calls. Always
-	// a non-nil slice so JSON consumers can iterate without a null check.
+	// CALLS edges — package pairs joined by just one or two calls. Mirrors
+	// hotspot filtering: production-oriented by default, test edges only
+	// when include_tests=true, fixtures always hidden. Always a non-nil
+	// slice so JSON consumers can iterate without a null check.
 	surprising := []surprisingConnection{}
 	if rows, err := s.store.RO().QueryContext(ctx,
 		`SELECT from_id, to_id
 		   FROM edges INDEXED BY idx_edge_kind
-		  WHERE project_id=? AND kind='CALLS'`, projectID); err == nil {
+	  WHERE project_id=? AND kind='CALLS'`, projectID); err == nil {
 		acc := newSurprisingConnectionsAccumulator()
+		filter := newSurprisingConnectionFilter(includeTests)
 		for rows.Next() {
 			var fromID, toID string
 			if scanErr := rows.Scan(&fromID, &toID); scanErr == nil {
+				if !filter.includeEdge(fromID, toID) {
+					continue
+				}
 				acc.add(fromID, toID)
 			}
 		}
@@ -12950,6 +12984,15 @@ var baselineMethodForTool = map[string]string{
 	"doctor":         baselineMethodNone, // diagnostic report — no Read alternative
 	"rebuild_fts":    baselineMethodNone, // admin: rebuild FTS5 indexes
 	"self_test":      baselineMethodNone, // smoke test — no Read alternative
+}
+
+// BaselineMethodForTool exposes the server's frozen baseline classification
+// to CLI/reporting code that needs to aggregate persisted per-call rows.
+func BaselineMethodForTool(tool string) string {
+	if m := baselineMethodForTool[tool]; m != "" {
+		return m
+	}
+	return baselineMethodFullFileRead
 }
 
 // humanInt formats an int with thousands separators ("14200" -> "14,200").

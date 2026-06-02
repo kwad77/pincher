@@ -34,11 +34,11 @@
   },
   {
     "name": "architecture",
-    "description": "**Call once at the start of unfamiliar work** to orient. Returns: project metadata, `languages` (per-language symbol count), `entry_points` (up to 20, scratch/fixture paths filtered), `hotspots` (top-10 most-called Function/Method/Class/Interface/Type/Module symbols — highest change risk), `node_kinds` (per-kind symbol count), `edge_kinds` (per-kind edge count), and `surprising_connections` (up to 10 rarest cross-package CALLS pairs — packages joined by just one or two calls, the fragile/hidden coupling points worth a reviewer's eye). Hotspots default to production code only (test files filtered); pass `include_tests=true` to surface test helpers too. Much cheaper than reading files to understand the structure.",
+    "description": "**Call once at the start of unfamiliar work** to orient. Returns: project metadata, `languages` (per-language symbol count), `entry_points` (up to 20, scratch/fixture paths filtered), `hotspots` (top-10 most-called Function/Method/Class/Interface/Type/Module symbols — highest change risk), `node_kinds` (per-kind symbol count), `edge_kinds` (per-kind edge count), and `surprising_connections` (up to 10 rarest cross-package CALLS pairs — packages joined by just one or two calls, the fragile/hidden coupling points worth a reviewer's eye). Hotspots and surprising connections default to production code only (test files filtered); pass `include_tests=true` to surface test helpers too. Much cheaper than reading files to understand the structure.",
     "input_schema": {
       "properties": {
         "include_tests": {
-          "description": "If true, include hotspots from test files (*_test.go, *.spec.ts, etc.). Default false — test helpers like newTestServer dominate raw call counts but aren't useful for orientation.",
+          "description": "If true, include hotspots and surprising connections from test files (*_test.go, *.spec.ts, etc.). Default false — test helpers like newTestServer dominate raw call counts and test-only cross-package edges aren't useful for production orientation.",
           "type": "boolean"
         },
         "project": {
@@ -229,7 +229,7 @@
   },
   {
     "name": "doctor",
-    "description": "**Diagnostic report from the local pincher database**. Returns: `schema_version` (current migration head), `binary_version` (running pincher), `db_size_bytes` + `wal_size_bytes`, `projects` (per-project rows with `schema_version_at_index` + `binary_version` so the agent can spot per-project drift against the running binary, plus `db_bytes_estimate` — a best-effort per-project on-disk byte estimate so you can see WHICH project to delete first when the DB crosses GB; relative ordering is load-bearing, absolute precision is not (#1220) — top-N by symbol count), `advisories` (advisory strings naming pathological states: large-DB \u003e 1GB with sizing hint #732, ghost-project where the indexer ran but extraction produced near-zero symbols #1009), `extraction_failures` (recent failure rows from the lookback window), `slow_queries` (recent slow-query log). Same data the `pincher doctor --json` CLI returns; exposed via MCP so dashboards and ops automations can poll without shelling out. Read-only; safe to call repeatedly.",
+    "description": "**Diagnostic report from the local pincher database**. Returns: `schema_version` (current migration head), `binary_version` (running pincher), `db_size_bytes` + `wal_size_bytes`, `projects` (per-project rows with `schema_version_at_index`, `binary_version`, and `stale` / `stale_reason` so the agent can spot per-project drift against the running binary, plus `db_bytes_estimate` — a best-effort per-project on-disk byte estimate so you can see WHICH project to delete first when the DB crosses GB; relative ordering is load-bearing, absolute precision is not (#1220) — top-N by symbol count), `advisories` (advisory strings naming pathological states: large-DB \u003e 1GB with sizing hint #732, ghost-project where the indexer ran but extraction produced near-zero symbols #1009), `extraction_failures` (recent failure rows from the lookback window), `slow_queries` (recent slow-query log). Same data the `pincher doctor --json` CLI returns; exposed via MCP so dashboards and ops automations can poll without shelling out. Read-only; safe to call repeatedly.",
     "input_schema": {
       "properties": {
         "lookback_hours": {

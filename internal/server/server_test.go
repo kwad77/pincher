@@ -2671,6 +2671,23 @@ func TestResolveProjectID_SessionIDUsedWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestResolveProjectID_DotUsesSessionProject(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "my-session-proj"
+	store.UpsertProject(db.Project{
+		ID: "my-session-proj", Path: "/tmp/session", Name: "session", IndexedAt: time.Now(),
+	})
+
+	id, err := srv.resolveProjectID(".")
+	if err != nil {
+		t.Fatalf("resolveProjectID dot: %v", err)
+	}
+	if id != "my-session-proj" {
+		t.Errorf("resolveProjectID dot = %q, want my-session-proj", id)
+	}
+}
+
 func TestHandleSymbol_StaleID(t *testing.T) {
 	t.Parallel()
 	srv, store, _ := newTestServer(t)
@@ -2896,16 +2913,16 @@ func TestServeHTTP_RootRedirectsToDashboard(t *testing.T) {
 	}
 }
 
-// #588: /v1/health + /v1/openapi.json must be reachable without
-// bearer auth even when --http-key is set, so container
-// orchestrators can liveness-probe the server without sharing the
-// bearer secret. Every other endpoint still enforces auth.
+// #588: GET probes must be reachable without bearer auth even when
+// --http-key is set, so container orchestrators can liveness-probe the
+// server without sharing the bearer secret. Tool calls on colliding
+// names (POST /v1/health) still enforce auth.
 func TestServeHTTP_HealthAndOpenAPIBypassBearerAuth(t *testing.T) {
 	t.Parallel()
 	srv, _, _ := newTestServer(t)
 	srv.SetHTTPKey("secret123")
 
-	for _, path := range []string{"/v1/health", "/v1/openapi.json"} {
+	for _, path := range []string{"/v1/health", "/v1/ready", "/v1/openapi.json"} {
 		w := httpGet(t, srv, path)
 		if w.Code != http.StatusOK {
 			t.Errorf("%s with no bearer: got %d, want 200 (public probe carve-out, #588)", path, w.Code)
@@ -2916,6 +2933,20 @@ func TestServeHTTP_HealthAndOpenAPIBypassBearerAuth(t *testing.T) {
 	w := httpPost(t, srv, "/v1/list", "{}")
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("/v1/list with no bearer: got %d, want 401 — auth carve-out leaked", w.Code)
+	}
+
+	w = httpPost(t, srv, "/v1/health", "{}")
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("POST /v1/health with no bearer: got %d, want 401 — tool call leaked through public probe carve-out", w.Code)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/health", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret123")
+	w = httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("POST /v1/health with bearer: got %d, want 200; body=%s", w.Code, w.Body.String())
 	}
 }
 

@@ -108,6 +108,26 @@ func TestHTTPRoutes_AllNonToolEndpointsDocumented(t *testing.T) {
 	}
 }
 
+func TestDeploymentDocsUseCanonicalProbeAndMetricsRoutes(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		"../../docs/deployment/README.md",
+		"../../docs/deployment/docker.md",
+		"../../docs/adr/0002-v1-frozen-surface.md",
+	} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, stale := range []string{"/v1/healthz", "/v1/readyz", "`/metrics`"} {
+			if strings.Contains(string(body), stale) {
+				t.Fatalf("%s references stale route %s", path, stale)
+			}
+		}
+	}
+}
+
 // TestHTTPRoutes_ReadyEndpointActuallyServes is the runtime-probe
 // half of the audit: documenting `/v1/ready` is one half; the route
 // must actually respond. Pin against silent removal — if someone
@@ -120,5 +140,19 @@ func TestHTTPRoutes_ReadyEndpointActuallyServes(t *testing.T) {
 	srv.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK && rr.Code != http.StatusServiceUnavailable {
 		t.Errorf("/v1/ready returned %d; expected 200 (ready) or 503 (not ready), not anything else", rr.Code)
+	}
+}
+
+func TestHTTPRoutes_MetricsEndpointActuallyServes(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	req := httptest.NewRequest("GET", "/v1/metrics", nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("/v1/metrics returned %d; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "pincher_") {
+		t.Fatalf("/v1/metrics response does not look like Prometheus exposition:\n%s", rr.Body.String())
 	}
 }

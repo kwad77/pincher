@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/kwad77/pincher/internal/db"
@@ -42,7 +43,7 @@ func TestComputeSurprisingConnections(t *testing.T) {
 		{FromID: "pkgA/a.go::a.F8#Function", ToID: "external::fmt.Println#Function", Kind: "CALLS"},
 	}
 
-	got := computeSurprisingConnections(edges)
+	got := computeSurprisingConnections(edges, false)
 	if len(got) != 3 {
 		t.Fatalf("expected 3 cross-package pairs; got %d: %+v", len(got), got)
 	}
@@ -71,14 +72,57 @@ func TestComputeSurprisingConnections_CapsOutput(t *testing.T) {
 			Kind:   "CALLS",
 		})
 	}
-	got := computeSurprisingConnections(edges)
+	got := computeSurprisingConnections(edges, false)
 	if len(got) > surprisingConnectionsCap {
 		t.Errorf("output not capped: got %d, cap %d", len(got), surprisingConnectionsCap)
 	}
 }
 
 func TestComputeSurprisingConnections_Empty(t *testing.T) {
-	if got := computeSurprisingConnections(nil); len(got) != 0 {
+	if got := computeSurprisingConnections(nil, false); len(got) != 0 {
 		t.Errorf("nil edges should yield no connections; got %+v", got)
+	}
+}
+
+func TestComputeSurprisingConnections_FiltersTestsAndFixtures(t *testing.T) {
+	edges := []db.Edge{
+		{
+			FromID: "internal/app/app.go::app.Run#Function",
+			ToID:   "internal/db/db.go::db.Open#Function",
+			Kind:   "CALLS",
+		},
+		{
+			FromID: "internal/app/app_test.go::app.TestRun#Function",
+			ToID:   "internal/testutil/testutil.go::testutil.Open#Function",
+			Kind:   "CALLS",
+		},
+		{
+			FromID: "internal/app/app.go::app.FromProdToTest#Function",
+			ToID:   "internal/testutil/testutil_test.go::testutil.Helper#Function",
+			Kind:   "CALLS",
+		},
+		{
+			FromID: "testdata/corpus/app.go::fixture.Run#Function",
+			ToID:   "internal/db/db.go::db.OpenFixture#Function",
+			Kind:   "CALLS",
+		},
+	}
+
+	got := computeSurprisingConnections(edges, false)
+	if len(got) != 1 {
+		t.Fatalf("default should keep only production non-fixture pair; got %+v", got)
+	}
+	if got[0].FromPackage != "internal/app" || got[0].ToPackage != "internal/db" {
+		t.Fatalf("default pair = %+v, want internal/app -> internal/db", got[0])
+	}
+
+	got = computeSurprisingConnections(edges, true)
+	for _, c := range got {
+		if strings.Contains(c.ExampleFrom, "testdata/") || strings.Contains(c.ExampleTo, "testdata/") {
+			t.Fatalf("fixture edge leaked even with includeTests=true: %+v", c)
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("includeTests=true should keep production and test package pairs but not fixture; got %+v", got)
 	}
 }

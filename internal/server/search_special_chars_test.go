@@ -25,6 +25,9 @@ func TestSanitizeFTS5Query_DottedIdentifier(t *testing.T) {
 		// Bare hyphenated identifiers get wrapped (FTS5 treats `-` as NOT).
 		{"my-component", `"my-component"`},
 		{"a-b", `"a-b"`},
+		{"--version", `"--version"`},
+		{"-run", `"-run"`},
+		{"Version doctor --version", `"Version" doctor "--version"`},
 
 		// Prefix wildcard preserved across the quoting.
 		{"os.Stat*", `"os.Stat"*`},
@@ -113,11 +116,12 @@ func TestSanitizeFTS5Query_DottedIdentifier(t *testing.T) {
 		{"a:b", `"a:b"`},
 		{"a:b:c", `"a:b:c"`},
 
-		// Edge cases: leading/trailing dot or hyphen don't trigger wrap
-		// (a token like `.foo` or `-foo` isn't a normal identifier; if it's
-		// a real query it almost certainly came from FTS5 syntax).
+		// Edge cases: leading/trailing dot or trailing hyphen don't trigger wrap
+		// (a token like `.foo` or `foo-` isn't a normal identifier; if it's
+		// a real query it almost certainly came from FTS5 syntax). Leading
+		// flag-shaped hyphens are handled above because CLI flags are common
+		// search terms.
 		{".foo", ".foo"},
-		{"-foo", "-foo"},
 		{"foo.", "foo."},
 		{"foo-", "foo-"},
 
@@ -183,5 +187,23 @@ func TestHandleSearch_HyphenatedIdentifier_DoesNotError(t *testing.T) {
 	}
 	if result.IsError {
 		t.Fatalf("search returned error for hyphenated identifier: %v", decode(t, result))
+	}
+}
+
+func TestHandleSearch_CLIFlag_DoesNotError(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "proj1"
+	store.UpsertProject(db.Project{ID: "proj1", Path: "/tmp/proj1", Name: "proj1", IndexedAt: time.Now()})
+
+	result, err := srv.handleSearch(context.Background(), makeReq(map[string]any{
+		"query":   "Version doctor --version",
+		"project": "proj1",
+	}))
+	if err != nil {
+		t.Fatalf("handleSearch: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("search returned error for CLI flag query: %v", decode(t, result))
 	}
 }

@@ -84,6 +84,10 @@ func TestDiagnoseEmptyIndex_NoIndexableFiles(t *testing.T) {
 	if !strings.Contains(diag, "no indexable source files") {
 		t.Errorf("diagnosis = %q, want 'no indexable source files'", diag)
 	}
+	hint, _ := meta["hint"].(string)
+	if strings.Contains(hint, "pincher health") || !strings.Contains(hint, "MCP/HTTP `health` tool") {
+		t.Errorf("hint should reference MCP/HTTP health, not removed CLI command; got %q", hint)
+	}
 }
 
 func TestDiagnoseEmptyIndex_AllBlocked(t *testing.T) {
@@ -157,5 +161,9 @@ func TestDiagnoseEmptyIndex_ForceSkipsAllUnchangedBranch(t *testing.T) {
 	diag, _ := meta["diagnosis"].(string)
 	if strings.Contains(diag, "all 100 files unchanged") {
 		t.Errorf("force=true should not produce 'all unchanged' diagnosis, got: %q", diag)
+	}
+	hint, _ := meta["hint"].(string)
+	if strings.Contains(hint, "pincher health") || !strings.Contains(hint, "per-language coverage") {
+		t.Errorf("hint should reference health tool coverage, not removed CLI command; got %q", hint)
 	}
 }

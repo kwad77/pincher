@@ -92,6 +92,41 @@ func TestNextStepsAdherence_KeyOrderingInvariant_1631(t *testing.T) {
 	}
 }
 
+func TestNextStepsAdherence_ActualArgsMayCarryScopeExtras_1631(t *testing.T) {
+	t.Parallel()
+	tr := &nextStepsAdherenceTracker{}
+	tr.RecordEmitted("sess-extra", []map[string]string{
+		{"tool": "trace", "args": `{"name":"Target","direction":"inbound"}`},
+	})
+	matched := tr.CheckAndConsume("sess-extra", "trace", map[string]any{
+		"name":      "Target",
+		"direction": "inbound",
+		"project":   "pincher",
+		"meta":      "lite",
+	})
+	if !matched {
+		t.Fatal("recommended args should match when the actual call only adds scope/envelope args")
+	}
+}
+
+func TestNextStepsAdherence_EmptyRecommendationOnlyAllowsIgnorableExtras_1631(t *testing.T) {
+	t.Parallel()
+	tr := &nextStepsAdherenceTracker{}
+	tr.RecordEmitted("sess-empty-extra", []map[string]string{
+		{"tool": "health", "args": `{}`},
+	})
+	if !tr.CheckAndConsume("sess-empty-extra", "health", map[string]any{"project": "pincher"}) {
+		t.Fatal("empty recommended args should match a scoped health call")
+	}
+
+	tr.RecordEmitted("sess-empty-extra", []map[string]string{
+		{"tool": "health", "args": `{}`},
+	})
+	if tr.CheckAndConsume("sess-empty-extra", "health", map[string]any{"force": true}) {
+		t.Fatal("empty recommended args should not match behavior-changing extras")
+	}
+}
+
 func TestNextStepsAdherence_CrossSessionIsolation_1631(t *testing.T) {
 	t.Parallel()
 	tr := &nextStepsAdherenceTracker{}
@@ -193,11 +228,9 @@ func TestNextStepsAdherence_EndToEnd_StashThenMatch_1631(t *testing.T) {
 		t.Fatalf("after RecordEmitted: emitted=%d followed=%d, want (1,0)", emitted, followed)
 	}
 
-	// Agent re-issues the recommended call VERBATIM. Adding extra
-	// args (even hermetic ones like project=) would break the
-	// canonical-args match — the agent is expected to copy-paste the
-	// suggested args. Session project is set above so the call still
-	// scopes correctly without an explicit project field.
+	// Agent re-issues the recommended call. Extra scope/envelope args
+	// are allowed by the tracker, but the session project is set above
+	// so this path also exercises the exact recommendation shape.
 	//
 	// Note: makeReq leaves req.Params.Name unset; CheckAndConsume runs
 	// from recordQueryMetrics which gates on queryShapedTools[tool] —

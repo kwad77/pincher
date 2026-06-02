@@ -85,6 +85,35 @@ func TestOpenAPI_ParityWithRegisteredHandlers(t *testing.T) {
 	}
 }
 
+func TestOpenAPI_HealthPathCarriesProbeAndTool(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/v1/openapi.json", nil)
+	srv.ServeHTTP(w, r)
+
+	var spec map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &spec); err != nil {
+		t.Fatalf("openapi.json parse: %v", err)
+	}
+	paths := spec["paths"].(map[string]any)
+	health, ok := paths["/v1/health"].(map[string]any)
+	if !ok {
+		t.Fatal("/v1/health missing from openapi paths")
+	}
+	if _, ok := health["get"].(map[string]any); !ok {
+		t.Fatalf("/v1/health missing GET liveness operation: %#v", health)
+	}
+	post, ok := health["post"].(map[string]any)
+	if !ok {
+		t.Fatalf("/v1/health missing POST tool operation: %#v", health)
+	}
+	if got := post["operationId"]; got != "health" {
+		t.Errorf("/v1/health POST operationId=%v, want health", got)
+	}
+}
+
 // TestOpenAPI_PerToolSchemaIsRealNotPlaceholder pins that the
 // dynamic spec uses the tool's actual InputSchema (with properties,
 // required fields, enums) rather than the bare {type: object}

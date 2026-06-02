@@ -64,10 +64,10 @@ func TestIsTestFile_RecognisedConventions(t *testing.T) {
 		{"test/integration/foo.go", true},
 
 		// Negatives — paths that look testy but aren't.
-		{"src/featuretest/main.go", false},   // `featuretest` is part of a name, not a directory
-		{"specfile.txt", false},              // no recognised extension
-		{"testdata/corpus/foo.go", false},    // testdata is fixtures, not tests
-		{"contest_winner.go", false},         // `contest` is not `_test`
+		{"src/featuretest/main.go", false}, // `featuretest` is part of a name, not a directory
+		{"specfile.txt", false},            // no recognised extension
+		{"testdata/corpus/foo.go", false},  // testdata is fixtures, not tests
+		{"contest_winner.go", false},       // `contest` is not `_test`
 	}
 	for _, c := range cases {
 		t.Run(c.path, func(t *testing.T) {
@@ -182,6 +182,82 @@ func TestHandleArchitecture_IncludeTestsTrue_SurfacesTestHotspots(t *testing.T) 
 	}
 }
 
+func TestHandleArchitecture_SurprisingConnectionsExcludeTestsByDefault(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p-surprise-prod"
+	store.UpsertProject(db.Project{ID: "p-surprise-prod", Path: "/tmp/p-surprise-prod", Name: "p-surprise-prod", IndexedAt: time.Now()})
+
+	edges := []db.Edge{
+		{ProjectID: "p-surprise-prod", FromID: "internal/app/app.go::app.Run#Function", ToID: "internal/db/db.go::db.Open#Function", Kind: "CALLS", Confidence: 1},
+		{ProjectID: "p-surprise-prod", FromID: "internal/app/app_test.go::app.TestRun#Function", ToID: "internal/testutil/testutil.go::testutil.Open#Function", Kind: "CALLS", Confidence: 1},
+		{ProjectID: "p-surprise-prod", FromID: "testdata/corpus/app.go::fixture.Run#Function", ToID: "internal/db/db.go::db.OpenFixture#Function", Kind: "CALLS", Confidence: 1},
+	}
+	if err := store.BulkUpsertEdges(edges); err != nil {
+		t.Fatalf("BulkUpsertEdges: %v", err)
+	}
+
+	result, err := srv.handleArchitecture(context.Background(), makeReq(map[string]any{}))
+	if err != nil {
+		t.Fatalf("handleArchitecture: %v", err)
+	}
+	body := decode(t, result)
+	connections, _ := body["surprising_connections"].([]any)
+	if len(connections) != 1 {
+		t.Fatalf("default should keep only production surprising connection; got %+v", connections)
+	}
+	entry, _ := connections[0].(map[string]any)
+	for _, key := range []string{"example_from", "example_to"} {
+		id, _ := entry[key].(string)
+		if strings.Contains(id, "_test.") || strings.Contains(id, "testdata/") {
+			t.Fatalf("test or fixture endpoint leaked into default surprising connection: %+v", entry)
+		}
+	}
+}
+
+func TestHandleArchitecture_IncludeTestsTrue_SurfacesTestSurprisingConnections(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p-surprise-test"
+	store.UpsertProject(db.Project{ID: "p-surprise-test", Path: "/tmp/p-surprise-test", Name: "p-surprise-test", IndexedAt: time.Now()})
+
+	edges := []db.Edge{
+		{ProjectID: "p-surprise-test", FromID: "internal/app/app.go::app.Run#Function", ToID: "internal/db/db.go::db.Open#Function", Kind: "CALLS", Confidence: 1},
+		{ProjectID: "p-surprise-test", FromID: "internal/app/app_test.go::app.TestRun#Function", ToID: "internal/testutil/testutil.go::testutil.Open#Function", Kind: "CALLS", Confidence: 1},
+		{ProjectID: "p-surprise-test", FromID: "testdata/corpus/app.go::fixture.Run#Function", ToID: "internal/db/db.go::db.OpenFixture#Function", Kind: "CALLS", Confidence: 1},
+	}
+	if err := store.BulkUpsertEdges(edges); err != nil {
+		t.Fatalf("BulkUpsertEdges: %v", err)
+	}
+
+	result, err := srv.handleArchitecture(context.Background(), makeReq(map[string]any{
+		"include_tests": true,
+	}))
+	if err != nil {
+		t.Fatalf("handleArchitecture: %v", err)
+	}
+	body := decode(t, result)
+	connections, _ := body["surprising_connections"].([]any)
+	if len(connections) != 2 {
+		t.Fatalf("include_tests=true should keep production and test surprising connections, excluding fixtures; got %+v", connections)
+	}
+	foundTest := false
+	for _, raw := range connections {
+		entry, _ := raw.(map[string]any)
+		from, _ := entry["example_from"].(string)
+		to, _ := entry["example_to"].(string)
+		if strings.Contains(from, "testdata/") || strings.Contains(to, "testdata/") {
+			t.Fatalf("fixture endpoint leaked with include_tests=true: %+v", entry)
+		}
+		if strings.Contains(from, "_test.") || strings.Contains(to, "_test.") {
+			foundTest = true
+		}
+	}
+	if !foundTest {
+		t.Fatalf("include_tests=true did not surface test surprising connection: %+v", connections)
+	}
+}
+
 // #380: hotspots filter out non-code kinds (Variable, Setting, Section).
 // Pure helper — pin the kind decisions so a future tweak doesn't
 // silently let JS-script `var result` accumulators back into the list.
@@ -251,11 +327,11 @@ func TestHandleArchitecture_HotspotsExcludeVariableKind(t *testing.T) {
 	}
 	for i := 0; i < 8; i++ {
 		syms = append(syms, db.Symbol{
-			ID: "s::caller" + string(rune('0'+i)) + "#Function",
+			ID:        "s::caller" + string(rune('0'+i)) + "#Function",
 			ProjectID: "p380v", FilePath: "plugin/scripts/install.js",
-			Name: "caller" + string(rune('0'+i)),
+			Name:          "caller" + string(rune('0'+i)),
 			QualifiedName: "scripts.install.caller" + string(rune('0'+i)),
-			Kind: "Function", Language: "JavaScript", ExtractionConfidence: 1,
+			Kind:          "Function", Language: "JavaScript", ExtractionConfidence: 1,
 		})
 	}
 	if err := store.BulkUpsertSymbols(syms); err != nil {
@@ -378,9 +454,9 @@ func TestIsTestFixturePath(t *testing.T) {
 		{`internal\foo\testdata\snapshot.json`, true}, // Windows path separator
 		// Negatives — real production code, real tests, lookalikes.
 		{"internal/server/server.go", false},
-		{"server_test.go", false}, // tests, not fixtures — handled by isTestFile
-		{"testdataloader/loader.go", false},   // `testdata` prefix without `/`
-		{"src/fixturesly/main.go", false},     // `fixtures` prefix without trailing `/`
+		{"server_test.go", false},           // tests, not fixtures — handled by isTestFile
+		{"testdataloader/loader.go", false}, // `testdata` prefix without `/`
+		{"src/fixturesly/main.go", false},   // `fixtures` prefix without trailing `/`
 		{"cmd/main.go", false},
 	}
 	for _, c := range cases {

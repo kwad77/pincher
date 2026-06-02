@@ -33,6 +33,14 @@ func TestEndpointShape_Health(t *testing.T) {
 	requireKeys(t, w.Body.Bytes(), "GET /v1/health", "ok", "version", "auth_required")
 }
 
+func TestEndpointShape_HealthToolPost(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	w := httpPost(t, srv, "/v1/health", "{}")
+	requireStatus(t, w.Code, 200, "POST /v1/health")
+	requireKeys(t, w.Body.Bytes(), "POST /v1/health", "schema_version", "observability", "_meta")
+}
+
 func TestEndpointShape_Stats(t *testing.T) {
 	t.Parallel()
 	srv, _, _ := newTestServer(t)
@@ -154,18 +162,16 @@ func TestEndpointNegative_MethodNotAllowed_StaysJSON(t *testing.T) {
 	// Wrong-method requests on the ad-hoc routes (the ones in the if path == "..." chain)
 	// should fall through to the tool-dispatch path which returns 405
 	// with a JSON error envelope, not an HTML error page.
-	w := httpPost(t, srv, "/v1/health", "{}")
+	w := httpDo(t, srv, http.MethodPut, "/v1/health")
 	if w.Code == http.StatusInternalServerError {
-		t.Errorf("POST /v1/health: 5xx on wrong method, want 4xx\nresp: %s", w.Body.String())
+		t.Errorf("PUT /v1/health: 5xx on wrong method, want 4xx\nresp: %s", w.Body.String())
 	}
-	if w.Code != 200 {
-		// Either the route accepts POST (current: yes, since the health
-		// handler doesn't gate on Method) OR returns 4xx with JSON error.
-		// Reject HTML error pages either way.
-		ct := w.Header().Get("Content-Type")
-		if strings.HasPrefix(ct, "text/html") {
-			t.Errorf("POST /v1/health: Content-Type %q, want JSON error envelope", ct)
-		}
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("PUT /v1/health: status %d, want 405\nresp: %s", w.Code, w.Body.String())
+	}
+	ct := w.Header().Get("Content-Type")
+	if strings.HasPrefix(ct, "text/html") {
+		t.Errorf("PUT /v1/health: Content-Type %q, want JSON error envelope", ct)
 	}
 }
 

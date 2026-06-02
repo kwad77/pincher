@@ -37,12 +37,15 @@ import (
 //   - Args canonicalization. Pincher emits `next_steps[].args` as a
 //     JSON string; the agent's actual call carries args as a map.
 //     Both are normalized to JSON-with-sorted-keys so equivalent
-//     inputs (different key order, whitespace) match.
+//     inputs (different key order, whitespace) match. Actual calls may
+//     carry extra scoping/envelope args (`project`, `meta`, `verbose`) or
+//     narrowing args as long as every recommended key/value is present.
 
 // nextStepRecommendation is one stashed entry in the per-session ring.
 type nextStepRecommendation struct {
 	tool    string
-	argsKey string // JSON-with-sorted-keys, computed once at record time
+	argsKey string         // JSON-with-sorted-keys, computed once at record time
+	args    map[string]any // parsed recommended args; nil when recommendation args are malformed
 }
 
 // nextStepsAdherenceTracker counts emitted and followed recommendations.
@@ -82,9 +85,11 @@ func (n *nextStepsAdherenceTracker) RecordEmitted(sessionID string, steps []map[
 		if tool == "" {
 			continue
 		}
+		argsMap, argsKey := parseRecommendedArgs(st["args"])
 		bucket = append(bucket, nextStepRecommendation{
 			tool:    tool,
-			argsKey: canonicalArgsJSON(st["args"]),
+			argsKey: argsKey,
+			args:    argsMap,
 		})
 		atomic.AddInt64(&n.statsEmitted, 1)
 	}
@@ -117,7 +122,7 @@ func (n *nextStepsAdherenceTracker) CheckAndConsume(sessionID, tool string, args
 		return false
 	}
 	for i, rec := range bucket {
-		if rec.tool == tool && rec.argsKey == key {
+		if rec.tool == tool && recommendationArgsMatch(rec, args, key) {
 			n.perSession[sessionID] = append(bucket[:i], bucket[i+1:]...)
 			atomic.AddInt64(&n.statsFollowed, 1)
 			return true
@@ -133,20 +138,63 @@ func (n *nextStepsAdherenceTracker) Stats() (emitted, followed int64) {
 	return atomic.LoadInt64(&n.statsEmitted), atomic.LoadInt64(&n.statsFollowed)
 }
 
+func recommendationArgsMatch(rec nextStepRecommendation, actual map[string]any, actualKey string) bool {
+	if rec.args == nil {
+		return rec.argsKey == actualKey
+	}
+	if len(rec.args) == 0 {
+		for k := range actual {
+			if !adherenceIgnorableExtraArg(k) {
+				return false
+			}
+		}
+		return true
+	}
+	for k, want := range rec.args {
+		got, ok := actual[k]
+		if !ok {
+			return false
+		}
+		gotJSON, _ := json.Marshal(got)
+		wantJSON, _ := json.Marshal(want)
+		if string(gotJSON) != string(wantJSON) {
+			return false
+		}
+	}
+	return true
+}
+
+func adherenceIgnorableExtraArg(k string) bool {
+	switch k {
+	case "project", "meta", "verbose":
+		return true
+	default:
+		return false
+	}
+}
+
 // canonicalArgsJSON parses a JSON args string and re-emits with sorted
 // keys. Falls back to the raw string when the input doesn't parse as
 // an object — preserves the recommendation's recordability rather than
 // dropping it on a malformed args field.
 func canonicalArgsJSON(s string) string {
+	_, key := parseRecommendedArgs(s)
+	return key
+}
+
+func parseRecommendedArgs(s string) (map[string]any, string) {
 	trimmed := s
 	if trimmed == "" || trimmed == "{}" {
-		return "{}"
+		return map[string]any{}, "{}"
 	}
 	var m map[string]any
 	if err := json.Unmarshal([]byte(trimmed), &m); err != nil {
-		return trimmed
+		return nil, trimmed
 	}
-	return canonicalArgsMap(m)
+	if m == nil {
+		m = map[string]any{}
+	}
+	return m, canonicalArgsMap(m)
 }
 
 // canonicalArgsMap serializes a map to JSON with keys sorted
