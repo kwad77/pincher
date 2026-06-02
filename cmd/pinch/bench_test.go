@@ -141,6 +141,12 @@ func TestBench_RunSuite_PositivePath(t *testing.T) {
 	if report.ProjectID != pid {
 		t.Errorf("project_id = %q, want %q", report.ProjectID, pid)
 	}
+	if report.ProjectName != "bench-test" {
+		t.Errorf("project_name = %q, want bench-test", report.ProjectName)
+	}
+	if report.ProjectPath == "" {
+		t.Errorf("project_path is empty, want seeded project path")
+	}
 	if report.Samples != len(sample) {
 		t.Errorf("samples = %d, want %d", report.Samples, len(sample))
 	}
@@ -253,22 +259,27 @@ func TestBench_ExtractFilePathFromSymbolID(t *testing.T) {
 // table header must include every column and each tool gets one row.
 func TestBench_FormatBenchText(t *testing.T) {
 	r := &BenchReport{
-		ProjectID:  "proj1",
-		Samples:    5,
-		TraceDepth: 2,
+		ProjectID:   "proj1",
+		ProjectName: "demo",
+		ProjectPath: "/tmp/demo",
+		Samples:     5,
+		TraceDepth:  2,
 		Tools: []ToolBench{
 			{Name: "search", Calls: 5, P50LatencyMs: 1.0, MeanTokensActual: 100, MeanTokensBaseline: 1000, SavingsPct: 90.0},
 		},
 	}
 	out := formatBenchText(r)
-	if !strings.Contains(out, "proj1") {
-		t.Errorf("output missing project_id; got:\n%s", out)
+	if !strings.Contains(out, "demo (/tmp/demo)") {
+		t.Errorf("output missing project label; got:\n%s", out)
 	}
 	if !strings.Contains(out, "search") {
 		t.Errorf("output missing tool name; got:\n%s", out)
 	}
 	if !strings.Contains(out, "savings") {
 		t.Errorf("output missing 'savings' header column; got:\n%s", out)
+	}
+	if !strings.Contains(out, "90.0%") || strings.Contains(out, "90.0     %") {
+		t.Errorf("output should render savings as a compact percentage; got:\n%s", out)
 	}
 	if !strings.Contains(out, "Baseline:") {
 		t.Errorf("output missing footer explanation; got:\n%s", out)

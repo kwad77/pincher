@@ -8,10 +8,9 @@ import (
 )
 
 // completion.go — `pincher completion <shell>` prints a shell
-// completion script (#1710 v0.92). pincher has 18 subcommands;
-// without completion, `pincher <TAB>` offers nothing. The script
-// completes the subcommand at position 1 — the 80% of the value —
-// for bash, zsh, and fish.
+// completion script (#1710 v0.92). Without completion, `pincher <TAB>`
+// offers nothing. The script completes the subcommand at position 1 —
+// the 80% of the value — for bash, zsh, and fish.
 //
 // pincherSubcommands is the single source of truth for the completion
 // scripts. TestCompletion_ListsEveryDispatchedSubcommand keeps it in

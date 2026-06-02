@@ -452,20 +452,10 @@ func pickAssetForPlatform(rel gitRelease) releaseAsset {
 	return releaseAsset{}
 }
 
-// downloadAndSwap fetches url, writes it to a temp file next to the
-// running binary, and atomically renames it over the running binary.
-// On Windows the running .exe cannot be deleted; we move it aside first
-// (mirrors the gh and rustup self-update strategy).
-// downloadAndSwap is the production entry point: it locates the running
-// binary's path via os.Executable() and delegates the actual download +
-// atomic install to downloadAndInstallAt, which is exercised directly by
-// tests against an httptest.Server + a temp exePath. The split keeps
-// the test path from having to override os.Executable() and from
-// risking the test binary being renamed mid-run.
-func downloadAndSwap(out io.Writer, url string) error {
-	return downloadAssetAndSwap(out, "", url)
-}
-
+// downloadAssetAndSwap is the production entry point: it locates the running
+// binary and delegates the actual download + atomic install to
+// downloadAndInstallAssetAt. Tests exercise the install half directly against
+// an httptest.Server and temp exePath so they never rename the test binary.
 func downloadAssetAndSwap(out io.Writer, assetName, url string) error {
 	exePath, err := os.Executable()
 	if err != nil {
@@ -477,13 +467,16 @@ func downloadAssetAndSwap(out io.Writer, assetName, url string) error {
 	return downloadAndInstallAssetAt(out, assetName, url, exePath)
 }
 
-// downloadAndInstallAt fetches `url` and atomically replaces the file at
-// `exePath` with the response body. Inner half of downloadAndSwap; see
-// that function's doc for why the split exists.
+// downloadAndInstallAt fetches `url` and atomically replaces `exePath` with the
+// response body. It is the non-archive compatibility path used by tests.
 func downloadAndInstallAt(out io.Writer, url, exePath string) error {
 	return downloadAndInstallAssetAt(out, "", url, exePath)
 }
 
+// downloadAndInstallAssetAt fetches url, writes it to a temp file next to
+// exePath, and atomically renames it over exePath. Archive assets are extracted
+// first. On Windows the running .exe cannot be deleted, so we move it aside
+// before replacement.
 func downloadAndInstallAssetAt(out io.Writer, assetName, url, exePath string) error {
 	dir := filepath.Dir(exePath)
 	tmp, err := os.CreateTemp(dir, "pincher-update-*.tmp")

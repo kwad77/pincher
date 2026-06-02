@@ -161,24 +161,26 @@ type BenchReport struct {
 	// RunID is populated when --persist is set; empty otherwise. UUID
 	// derived from the start time + a random suffix so re-running on
 	// the same project surfaces as a new run, not an upsert collision.
-	RunID      string      `json:"run_id,omitempty"`
-	ProjectID  string      `json:"project_id"`
-	Samples    int         `json:"samples"`
-	TraceDepth int         `json:"trace_depth"`
-	StartedAt  time.Time   `json:"started_at"`
-	Tools      []ToolBench `json:"tools"`
+	RunID       string      `json:"run_id,omitempty"`
+	ProjectID   string      `json:"project_id"`
+	ProjectName string      `json:"project_name,omitempty"`
+	ProjectPath string      `json:"project_path,omitempty"`
+	Samples     int         `json:"samples"`
+	TraceDepth  int         `json:"trace_depth"`
+	StartedAt   time.Time   `json:"started_at"`
+	Tools       []ToolBench `json:"tools"`
 }
 
 // ToolBench is the per-tool aggregate of a bench run.
 type ToolBench struct {
-	Name              string  `json:"name"`
-	Calls             int     `json:"calls"`
-	P50LatencyMs      float64 `json:"p50_latency_ms"`
-	P95LatencyMs      float64 `json:"p95_latency_ms"`
-	MeanLatencyMs     float64 `json:"mean_latency_ms"`
-	MeanTokensActual  int64   `json:"mean_tokens_actual"`
-	MeanTokensBaseline int64  `json:"mean_tokens_baseline"`
-	SavingsPct        float64 `json:"savings_pct"`
+	Name               string  `json:"name"`
+	Calls              int     `json:"calls"`
+	P50LatencyMs       float64 `json:"p50_latency_ms"`
+	P95LatencyMs       float64 `json:"p95_latency_ms"`
+	MeanLatencyMs      float64 `json:"mean_latency_ms"`
+	MeanTokensActual   int64   `json:"mean_tokens_actual"`
+	MeanTokensBaseline int64   `json:"mean_tokens_baseline"`
+	SavingsPct         float64 `json:"savings_pct"`
 }
 
 // benchTraceEdgeKinds is the CALLS-family edge set the trace measurement
@@ -199,6 +201,10 @@ func runBenchSuite(store *db.Store, pid string, sample []*db.Symbol, depth int) 
 		Samples:    len(sample),
 		TraceDepth: depth,
 		StartedAt:  time.Now(),
+	}
+	if p, err := store.GetProject(pid); err == nil && p != nil {
+		report.ProjectName = p.Name
+		report.ProjectPath = p.Path
 	}
 
 	var searchM, contextM, traceM []measurement
@@ -499,13 +505,21 @@ func benchSampleSymbolsWithEdges(store *db.Store, projectID string, n int, rng *
 // commands feel like siblings rather than diverged dialects.
 func formatBenchText(r *BenchReport) string {
 	var b []byte
-	b = append(b, fmt.Sprintf("pincher bench — project=%q  samples=%d  trace_depth=%d\n", r.ProjectID, r.Samples, r.TraceDepth)...)
+	label := r.ProjectID
+	if r.ProjectName != "" {
+		label = r.ProjectName
+	}
+	if r.ProjectPath != "" && r.ProjectPath != r.ProjectID {
+		label = fmt.Sprintf("%s (%s)", label, r.ProjectPath)
+	}
+	b = append(b, fmt.Sprintf("pincher bench — project=%q  samples=%d  trace_depth=%d\n", label, r.Samples, r.TraceDepth)...)
 	b = append(b, fmt.Sprintf("  %-9s  %-10s  %-10s  %-12s  %-14s  %-14s  %-10s\n",
 		"tool", "calls", "p50_ms", "p95_ms", "actual_tokens", "baseline_tokens", "savings")...)
 	b = append(b, "  ─────────  ──────────  ──────────  ────────────  ──────────────  ──────────────  ──────────\n"...)
 	for _, t := range r.Tools {
-		b = append(b, fmt.Sprintf("  %-9s  %-10d  %-10.2f  %-12.2f  %-14d  %-14d  %-9.1f%%\n",
-			t.Name, t.Calls, t.P50LatencyMs, t.P95LatencyMs, t.MeanTokensActual, t.MeanTokensBaseline, t.SavingsPct)...)
+		b = append(b, fmt.Sprintf("  %-9s  %-10d  %-10.2f  %-12.2f  %-14d  %-14d  %-10s\n",
+			t.Name, t.Calls, t.P50LatencyMs, t.P95LatencyMs, t.MeanTokensActual, t.MeanTokensBaseline,
+			fmt.Sprintf("%.1f%%", t.SavingsPct))...)
 	}
 	b = append(b, "\n  Baseline: full-file Read for each touched file. Actual: JSON-serialized response bytes/4.\n"...)
 	b = append(b, "  Run `pincher bench --json` for CI-friendly structured output.\n"...)

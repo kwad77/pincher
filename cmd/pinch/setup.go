@@ -58,7 +58,15 @@ const (
 
 // runSetupCLI implements `pincher setup`.
 func runSetupCLI(args []string) {
-	_ = args // setup takes no flags; arg-free by design (interactive only).
+	if setupArgsWantHelp(args) {
+		printSetupUsage(os.Stdout)
+		return
+	}
+	if len(args) > 0 {
+		printSetupUsage(os.Stderr)
+		fmt.Fprintf(os.Stderr, "\npincher setup: unexpected argument %q\n", args[0])
+		os.Exit(2)
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -108,6 +116,20 @@ func runSetupCLI(args []string) {
 		fmt.Println("Indexing this project…")
 		runIndexCLI(nil)
 	}
+}
+
+func setupArgsWantHelp(args []string) bool {
+	return len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help")
+}
+
+func printSetupUsage(out io.Writer) {
+	fmt.Fprintln(out, "usage: pincher setup")
+	fmt.Fprintln(out, "  Interactive install wizard for terminal users.")
+	fmt.Fprintln(out, "  Detects supported agent/editor targets, writes through pincher init,")
+	fmt.Fprintln(out, "  and can optionally index the current project when it finishes.")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "  Requires stdin/stdout TTYs. For scripted or piped installs use:")
+	fmt.Fprintln(out, "    pincher init --target=<name>")
 }
 
 // runSetupLoop drives the render → read-key → transition cycle until

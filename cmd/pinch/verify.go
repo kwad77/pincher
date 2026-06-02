@@ -52,7 +52,7 @@ func runVerifyCLI(args []string) {
 	}
 	fs.Parse(args)
 
-	store, _, err := openStoreReadOnlyOrCreate(*dataDir)
+	store, dir, err := openStoreReadOnlyOrCreate(*dataDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pincher: failed to open database: %v\n", err)
 		os.Exit(1)
@@ -64,6 +64,7 @@ func runVerifyCLI(args []string) {
 		fmt.Fprintf(os.Stderr, "pincher verify: %v\n", err)
 		os.Exit(1)
 	}
+	report.DataDir = dir
 
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)

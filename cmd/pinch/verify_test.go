@@ -286,7 +286,7 @@ func TestVerifyCLI_Binary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pincher verify --json (clean): %v\n%s", err, out)
 	}
-	for _, want := range []string{`"projects":`, `"files_checked": 0`} {
+	for _, want := range []string{`"projects":`, `"files_checked": 0`, fmt.Sprintf(`"data_dir": %q`, dataDir)} {
 		if !strings.Contains(string(out), want) {
 			t.Errorf("clean verify --json missing %q in output:\n%s", want, out)
 		}
@@ -318,7 +318,6 @@ func TestVerifyCLI_Binary(t *testing.T) {
 		t.Errorf("drift report missing 'drifted' in text output:\n%s", out2)
 	}
 }
-
 
 // TestVerify_UnreadableBranch exercises the unreadable classification
 // — distinct from missing — by stamping a hash for a path that

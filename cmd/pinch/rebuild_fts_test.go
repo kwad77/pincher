@@ -104,3 +104,24 @@ func TestRebuildFTSCLI_BadDataDir(t *testing.T) {
 		t.Errorf("rebuild-fts panicked on bad data dir:\n%s", out)
 	}
 }
+
+func TestRebuildFTSCLI_HelpDoesNotReferenceRemovedSearchCLI(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI binary build in -short mode")
+	}
+
+	bin := buildPincherBinary(t)
+	cmd := exec.Command(bin, "rebuild-fts", "--help")
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("rebuild-fts --help: %v\n%s", err, out)
+	}
+	got := string(out)
+	if strings.Contains(got, "pincher search") || strings.Contains(got, "pincher query") {
+		t.Fatalf("help references removed CLI commands:\n%s", got)
+	}
+	if !strings.Contains(got, "search MCP/HTTP tool") {
+		t.Fatalf("help should point to search MCP/HTTP surface:\n%s", got)
+	}
+}

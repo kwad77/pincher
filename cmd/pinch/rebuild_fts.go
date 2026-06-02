@@ -36,7 +36,7 @@ func runRebuildFTSCLI(args []string) {
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: pincher rebuild-fts [--data-dir DIR] [--quiet]")
 		fmt.Fprintln(os.Stderr, "  Drops and rebuilds the FTS5 search index from the canonical symbols table.")
-		fmt.Fprintln(os.Stderr, "  Use this if `pincher search` returns results inconsistent with `pincher query`.")
+		fmt.Fprintln(os.Stderr, "  Use this if the search MCP/HTTP tool returns results inconsistent with query.")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)

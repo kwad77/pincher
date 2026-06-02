@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kwad77/pincher/internal/db"
@@ -17,11 +20,11 @@ import (
 // runSelfTestCLI implements `pincher self-test [--data-dir DIR] [--verbose]`.
 //
 // Smoke-tests the install end-to-end:
-//   1. Open a fresh DB in a temp dir (or the user-supplied --data-dir).
-//   2. Create a tiny synthetic Go project on disk.
-//   3. Index it via the real Indexer.
-//   4. Search for a known symbol via the real db Search path.
-//   5. Fetch the symbol via the real byte-offset retrieval.
+//  1. Open a fresh DB in a temp dir (or the user-supplied --data-dir).
+//  2. Create a tiny synthetic Go project on disk.
+//  3. Index it via the real Indexer.
+//  4. Search for a known symbol via the real db Search path.
+//  5. Fetch the symbol via the real byte-offset retrieval.
 //
 // Reports each step's pass/fail with a one-line summary, and exits 0 on
 // all-green or 1 if any step fails.
@@ -33,9 +36,28 @@ import (
 // suite can't do post-build.
 func runSelfTestCLI(args []string) {
 	log.SetOutput(io.Discard)
-	if exitCode := runSelfTest(args, os.Stderr); exitCode != 0 {
+	out := io.Writer(os.Stderr)
+	if selfTestArgsWantJSON(args) {
+		out = os.Stdout
+	}
+	if exitCode := runSelfTest(args, out); exitCode != 0 {
 		os.Exit(exitCode)
 	}
+}
+
+func selfTestArgsWantJSON(args []string) bool {
+	for _, arg := range args {
+		if arg == "--json" || arg == "-json" {
+			return true
+		}
+		for _, prefix := range []string{"--json=", "-json="} {
+			if strings.HasPrefix(arg, prefix) {
+				v, err := strconv.ParseBool(strings.TrimPrefix(arg, prefix))
+				return err == nil && v
+			}
+		}
+	}
+	return false
 }
 
 // runSelfTest is the testable entrypoint: parses args, runs the steps,
@@ -46,20 +68,21 @@ func runSelfTestCLI(args []string) {
 func runSelfTest(args []string, out io.Writer) int {
 	fs := flag.NewFlagSet("self-test", flag.ExitOnError)
 	dataDirFlag := fs.String("data-dir", "", "Override data directory (default: platform tmp)")
+	jsonOut := fs.Bool("json", false, "Emit machine-readable JSON")
 	verbose := fs.Bool("verbose", false, "Print step timings + intermediate state")
 	fs.Usage = func() {
-		fmt.Fprintln(out, "usage: pincher self-test [--data-dir DIR] [--verbose]")
+		fmt.Fprintln(out, "usage: pincher self-test [--data-dir DIR] [--json] [--verbose]")
 		fmt.Fprintln(out, "  Smoke-tests the install: index a synthetic project, search, retrieve.")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
 
 	steps := []selfTestStep{
-		{"1/5  open database", openDB},
-		{"2/5  create synthetic project", createSynthetic},
-		{"3/5  index the project", indexSynthetic},
-		{"4/5  search for known symbol", searchSynthetic},
-		{"5/5  retrieve symbol source via byte offsets", retrieveSynthetic},
+		{name: "open_database", label: "1/5  open database", fn: openDB},
+		{name: "create_synthetic_project", label: "2/5  create synthetic project", fn: createSynthetic},
+		{name: "index_project", label: "3/5  index the project", fn: indexSynthetic},
+		{name: "search_known_symbol", label: "4/5  search for known symbol", fn: searchSynthetic},
+		{name: "retrieve_symbol_source", label: "5/5  retrieve symbol source via byte offsets", fn: retrieveSynthetic},
 	}
 
 	rt := &selfTestRuntime{dataDir: *dataDirFlag, verbose: *verbose}
@@ -67,6 +90,10 @@ func runSelfTest(args []string, out io.Writer) int {
 	if rt.dataDir == "" {
 		tmp, err := os.MkdirTemp("", "pincher-selftest-*")
 		if err != nil {
+			if *jsonOut {
+				writeSelfTestJSON(out, selfTestReport{OK: false, Error: "setup tmp dir: " + err.Error()})
+				return 1
+			}
 			fmt.Fprintf(out, "FAIL: setup tmp dir: %v\n", err)
 			return 1
 		}
@@ -78,28 +105,47 @@ func runSelfTest(args []string, out io.Writer) int {
 			cleanup()
 		}
 	}()
+	defer cleanupSelfTestRuntime(rt)
 
 	allOK := true
+	report := selfTestReport{OK: true, Steps: []selfTestStepResult{}}
 	for _, step := range steps {
 		t0 := time.Now()
 		err := step.fn(rt)
 		dur := time.Since(t0)
+		stepResult := selfTestStepResult{
+			Name:       step.name,
+			Label:      step.label,
+			OK:         err == nil,
+			DurationMS: dur.Milliseconds(),
+		}
 		if err != nil {
-			fmt.Fprintf(out, "%s  FAIL  (%dms)  %v\n", step.label, dur.Milliseconds(), err)
+			stepResult.Error = err.Error()
 			allOK = false
+			report.OK = false
+			report.Steps = append(report.Steps, stepResult)
+			if !*jsonOut {
+				fmt.Fprintf(out, "%s  FAIL  (%dms)  %v\n", step.label, dur.Milliseconds(), err)
+			}
 			break // bail on first failure — later steps depend on earlier ones
 		}
-		if rt.verbose {
-			fmt.Fprintf(out, "%s  OK    (%dms)\n", step.label, dur.Milliseconds())
-		} else {
-			fmt.Fprintf(out, "%s  OK\n", step.label)
+		report.Steps = append(report.Steps, stepResult)
+		if !*jsonOut {
+			if rt.verbose {
+				fmt.Fprintf(out, "%s  OK    (%dms)\n", step.label, dur.Milliseconds())
+			} else {
+				fmt.Fprintf(out, "%s  OK\n", step.label)
+			}
 		}
 	}
 
-	if rt.store != nil {
-		_ = rt.store.Close()
+	if *jsonOut {
+		writeSelfTestJSON(out, report)
+		if !allOK {
+			return 1
+		}
+		return 0
 	}
-
 	if !allOK {
 		fmt.Fprintln(out, "\nself-test: FAIL")
 		return 1
@@ -121,8 +167,46 @@ type selfTestRuntime struct {
 }
 
 type selfTestStep struct {
+	name  string
 	label string
 	fn    func(*selfTestRuntime) error
+}
+
+type selfTestStepResult struct {
+	Name       string `json:"name"`
+	Label      string `json:"label"`
+	OK         bool   `json:"ok"`
+	DurationMS int64  `json:"duration_ms"`
+	Error      string `json:"error,omitempty"`
+}
+
+type selfTestReport struct {
+	OK    bool                 `json:"ok"`
+	Steps []selfTestStepResult `json:"steps"`
+	Error string               `json:"error,omitempty"`
+}
+
+func writeSelfTestJSON(out io.Writer, report selfTestReport) {
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(report)
+}
+
+func cleanupSelfTestRuntime(rt *selfTestRuntime) {
+	if rt == nil {
+		return
+	}
+	if rt.store != nil {
+		if rt.projectID != "" {
+			_ = rt.store.DeleteProject(rt.projectID)
+		}
+		_ = rt.store.Close()
+		rt.store = nil
+	}
+	if rt.projectDir != "" {
+		_ = os.RemoveAll(rt.projectDir)
+		rt.projectDir = ""
+	}
 }
 
 func openDB(rt *selfTestRuntime) error {

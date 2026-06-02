@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	pinit "github.com/kwad77/pincher/internal/init"
@@ -9,6 +10,29 @@ import (
 // setup_model_test.go — exercises the pure `pincher setup` wizard state
 // machine (#1710 v0.92). Terminal I/O lives in setup.go and is not
 // covered here; this file proves the transitions and selection logic.
+
+func TestSetupUsageAndHelpArgs(t *testing.T) {
+	for _, arg := range []string{"-h", "--help", "help"} {
+		if !setupArgsWantHelp([]string{arg}) {
+			t.Fatalf("setupArgsWantHelp(%q) = false, want true", arg)
+		}
+	}
+	if setupArgsWantHelp(nil) || setupArgsWantHelp([]string{"--target=claude"}) {
+		t.Fatal("setupArgsWantHelp matched non-help args")
+	}
+
+	var out strings.Builder
+	printSetupUsage(&out)
+	for _, want := range []string{
+		"usage: pincher setup",
+		"Interactive install wizard",
+		"pincher init --target=<name>",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("setup usage missing %q:\n%s", want, out.String())
+		}
+	}
+}
 
 func targetIndex(targets []pinit.Target, name string) int {
 	for i, t := range targets {

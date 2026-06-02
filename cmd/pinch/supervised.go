@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -45,6 +46,11 @@ func ensureSessionIDEnv(env []string) []string {
 // flag). The supervisor-only `--inner-binary PATH` flag is stripped before
 // forwarding, so a stable provider can supervise a dirty action binary.
 func runSupervisedCLI(args []string) {
+	if supervisedArgsWantHelp(args) {
+		printSupervisedUsage(os.Stdout)
+		return
+	}
+
 	exe, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pincher supervised: cannot resolve own binary: %v\n", err)
@@ -90,6 +96,21 @@ func runSupervisedCLI(args []string) {
 		fmt.Fprintf(os.Stderr, "pincher supervised: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func supervisedArgsWantHelp(args []string) bool {
+	return len(args) == 1 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help")
+}
+
+func printSupervisedUsage(out io.Writer) {
+	fmt.Fprintln(out, "usage: pincher supervised [--inner-binary PATH] [pincher server flags...]")
+	fmt.Fprintln(out, "  Run the MCP stdio server under an auto-restarting supervisor.")
+	fmt.Fprintln(out, "  The supervisor replays initialize after inner restarts, so agent hosts")
+	fmt.Fprintln(out, "  keep the same stdio session across binary swaps or crashes.")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "  --inner-binary PATH   Supervise this pincher binary instead of the provider")
+	fmt.Fprintln(out, "                        path. Also configurable with PINCHER_SUPERVISED_INNER_BINARY.")
+	fmt.Fprintln(out, "  Remaining args are forwarded to the inner pincher server.")
 }
 
 func supervisedInnerBinary(args []string, defaultPath string, getenv func(string) string) (string, []string, error) {

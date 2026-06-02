@@ -3,8 +3,32 @@ package main
 import (
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestSupervisedUsageAndHelpArgs(t *testing.T) {
+	for _, arg := range []string{"-h", "--help", "help"} {
+		if !supervisedArgsWantHelp([]string{arg}) {
+			t.Fatalf("supervisedArgsWantHelp(%q) = false, want true", arg)
+		}
+	}
+	if supervisedArgsWantHelp(nil) || supervisedArgsWantHelp([]string{"--inner-binary", "/tmp/pincher"}) {
+		t.Fatal("supervisedArgsWantHelp matched non-help args")
+	}
+
+	var out strings.Builder
+	printSupervisedUsage(&out)
+	for _, want := range []string{
+		"usage: pincher supervised",
+		"--inner-binary PATH",
+		"Remaining args are forwarded",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("supervised usage missing %q:\n%s", want, out.String())
+		}
+	}
+}
 
 func TestSupervisedInnerBinary_DefaultsToProvider(t *testing.T) {
 	gotPath, gotArgs, err := supervisedInnerBinary([]string{"--slow-query-ms", "100"}, "/stable/pincher", func(string) string {

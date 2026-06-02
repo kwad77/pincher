@@ -26,10 +26,63 @@ func TestPrintHelpBanner_ListsAllSubcommands(t *testing.T) {
 			t.Errorf("banner missing subcommand mention %q:\n%s", sub, body)
 		}
 	}
+	wantSelfTestLine := "pincher self-test              Smoke-test the install end-to-end (--json, --verbose)"
+	if !strings.Contains(body, wantSelfTestLine) {
+		t.Errorf("banner missing self-test discoverability line %q:\n%s", wantSelfTestLine, body)
+	}
 	// The banner should also include the "Usage:" header so flag's
 	// PrintDefaults output reads as the flag list rather than a continuation.
 	if !strings.Contains(body, "Usage:") {
 		t.Errorf("banner missing 'Usage:' header:\n%s", body)
+	}
+}
+
+func advertisedHelpSubcommands() []string {
+	var out bytes.Buffer
+	printHelpBanner(&out)
+
+	seen := map[string]bool{}
+	var subs []string
+	for _, line := range strings.Split(out.String(), "\n") {
+		if !strings.HasPrefix(line, "  pincher ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		sub := fields[1]
+		if sub == "" || sub[0] < 'a' || sub[0] > 'z' || seen[sub] {
+			continue
+		}
+		seen[sub] = true
+		subs = append(subs, sub)
+	}
+	return subs
+}
+
+func TestAdvertisedSubcommandHelpExitsZero(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI binary build in -short mode")
+	}
+
+	subs := advertisedHelpSubcommands()
+	if len(subs) == 0 {
+		t.Fatal("no advertised subcommands parsed from help banner")
+	}
+	bin := buildPincherBinary(t)
+	for _, sub := range subs {
+		t.Run(sub, func(t *testing.T) {
+			cmd := exec.Command(bin, sub, "--help")
+			cmd.Env = pincherCoverEnv()
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("pincher %s --help: %v\n%s", sub, err, out)
+			}
+			if !strings.Contains(string(out), "usage:") && !strings.Contains(string(out), "Usage:") {
+				t.Fatalf("pincher %s --help did not print usage text:\n%s", sub, out)
+			}
+		})
 	}
 }
 
@@ -299,6 +352,27 @@ func TestDoctorHelpFlagProjectUsage(t *testing.T) {
 	}
 	if strings.Contains(got, "-project pincher project rm") {
 		t.Errorf("doctor help leaked Go flag backtick placeholder parsing; got:\n%s", got)
+	}
+}
+
+func TestSetupHelpFlagBypassesTTYRequirement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI binary build in -short mode")
+	}
+
+	bin := buildPincherBinary(t)
+	cmd := exec.Command(bin, "setup", "--help")
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pincher setup --help: %v\n%s", err, out)
+	}
+	got := string(out)
+	if !strings.Contains(got, "usage: pincher setup") {
+		t.Fatalf("setup help missing usage:\n%s", got)
+	}
+	if strings.Contains(got, "needs a real terminal") {
+		t.Fatalf("setup --help should bypass TTY checks:\n%s", got)
 	}
 }
 
