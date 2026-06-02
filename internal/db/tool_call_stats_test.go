@@ -60,6 +60,40 @@ func TestToolCallStatsByTool_AggregatesPerTool(t *testing.T) {
 	}
 }
 
+func TestAllTimeToolCallStatsByTool_IncludesOldRows(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Now()
+	saved := int64(500)
+	events := []ToolCallEvent{
+		{SessionID: "s1", Tool: "search", TS: now.Add(-30 * time.Minute), TokensUsed: 100, TokensSaved: &saved},
+		{SessionID: "s1", Tool: "search", TS: now.Add(-30 * 24 * time.Hour), TokensUsed: 200, TokensSaved: &saved},
+	}
+	if err := store.RecordToolCalls(events); err != nil {
+		t.Fatalf("RecordToolCalls: %v", err)
+	}
+
+	tallies, err := store.AllTimeToolCallStatsByTool()
+	if err != nil {
+		t.Fatalf("AllTimeToolCallStatsByTool: %v", err)
+	}
+	if len(tallies) != 1 {
+		t.Fatalf("expected 1 tool row; got %d (%+v)", len(tallies), tallies)
+	}
+	if tallies[0].Tool != "search" || tallies[0].CallCount != 2 {
+		t.Fatalf("all-time tally = %+v, want 2 search calls", tallies[0])
+	}
+	if tallies[0].SumTokensSaved != 1000 {
+		t.Errorf("sum_tokens_saved = %d, want 1000", tallies[0].SumTokensSaved)
+	}
+}
+
 // Negative: rows outside the window are excluded.
 func TestToolCallStatsByTool_WindowExcludesOldRows(t *testing.T) {
 	t.Parallel()

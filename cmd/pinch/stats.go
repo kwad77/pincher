@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/kwad77/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/server"
 )
 
 // runStatsCLI implements `pincher stats [--json] [--reset] [--data-dir DIR]`.
@@ -112,9 +114,10 @@ type StatsReport struct {
 
 // AllTimeSavings is the sum across every persisted session row.
 type AllTimeSavings struct {
-	Calls       int64 `json:"calls"`
-	TokensUsed  int64 `json:"tokens_used"`
-	TokensSaved int64 `json:"tokens_saved"`
+	Calls           int64                          `json:"calls"`
+	TokensUsed      int64                          `json:"tokens_used"`
+	TokensSaved     int64                          `json:"tokens_saved"`
+	BaselineMethods map[string]BaselineMethodStats `json:"baseline_methods"`
 	// CallsByLanguage is the per-language call tally summed across every
 	// recorded session that carried the v16 calls_by_language column
 	// (#240). Surfaces "is the agent calling pincher on the file types it
@@ -127,6 +130,12 @@ type AllTimeSavings struct {
 	// RETRIES section that's only rendered when QueriesTotal > 0 — keeps
 	// the output noise-free on healthy projects.
 	QueryMetrics QueryMetricsReport `json:"query_metrics"`
+}
+
+type BaselineMethodStats struct {
+	Calls       int64 `json:"calls"`
+	TokensUsed  int64 `json:"tokens_used"`
+	TokensSaved int64 `json:"tokens_saved"`
 }
 
 // QueryMetricsReport mirrors db.QueryMetrics with JSON tags suited for
@@ -200,7 +209,7 @@ type ProjectStats struct {
 	// current binary's max-known schema version (or unknown / pre-v15).
 	// Computed at render time, not persisted. JSON consumers can use
 	// this directly; the CLI table appends a `[stale]` marker.
-	Stale bool `json:"stale,omitempty"`
+	Stale bool `json:"stale"`
 	// StaleReason carries a short human-readable hint surfaced in
 	// `pincher doctor` ("indexed at v12, current is v15"). Empty when
 	// Stale is false.
@@ -229,21 +238,29 @@ func buildStatsReport(store *db.Store, dir string) (*StatsReport, error) {
 	if err != nil {
 		qm = db.QueryMetrics{}
 	}
+	baselineMethods, err := allTimeBaselineMethods(store, calls, tokensUsed, tokensSaved)
+	if err != nil {
+		baselineMethods = map[string]BaselineMethodStats{}
+	}
 
 	projects, err := store.ListProjects()
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
+	currentSchema := db.CurrentSchemaVersion()
 	projOut := make([]ProjectStats, 0, len(projects))
 	for _, p := range projects {
-		projOut = append(projOut, ProjectStats{
-			ID:      p.ID,
-			Name:    p.Name,
-			Path:    p.Path,
-			Files:   p.FileCount,
-			Symbols: p.SymCount,
-			Edges:   p.EdgeCount,
-		})
+		stats := ProjectStats{
+			ID:                   p.ID,
+			Name:                 p.Name,
+			Path:                 p.Path,
+			Files:                p.FileCount,
+			Symbols:              p.SymCount,
+			Edges:                p.EdgeCount,
+			SchemaVersionAtIndex: p.SchemaVersionAtIndex,
+		}
+		stats.Stale, stats.StaleReason = staleness(p.SchemaVersionAtIndex, currentSchema)
+		projOut = append(projOut, stats)
 	}
 
 	var zeroResultRate float64
@@ -266,6 +283,7 @@ func buildStatsReport(store *db.Store, dir string) (*StatsReport, error) {
 			Calls:           calls,
 			TokensUsed:      tokensUsed,
 			TokensSaved:     tokensSaved,
+			BaselineMethods: baselineMethods,
 			CallsByLanguage: callsByLang,
 			QueryMetrics: QueryMetricsReport{
 				QueriesTotal:            qm.QueriesTotal,
@@ -281,6 +299,44 @@ func buildStatsReport(store *db.Store, dir string) (*StatsReport, error) {
 		},
 		Projects: projOut,
 	}, nil
+}
+
+func allTimeBaselineMethods(store *db.Store, totalCalls, totalTokensUsed, totalTokensSaved int64) (map[string]BaselineMethodStats, error) {
+	rows, err := store.AllTimeToolCallStatsByTool()
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]BaselineMethodStats{}
+	var attributed BaselineMethodStats
+	for _, row := range rows {
+		method := server.BaselineMethodForTool(row.Tool)
+		stats := out[method]
+		stats.Calls += row.CallCount
+		stats.TokensUsed += int64(math.Round(row.AvgTokensUsed * float64(row.CallCount)))
+		stats.TokensSaved += row.SumTokensSaved
+		out[method] = stats
+		attributed.Calls += row.CallCount
+		attributed.TokensUsed += int64(math.Round(row.AvgTokensUsed * float64(row.CallCount)))
+		attributed.TokensSaved += row.SumTokensSaved
+	}
+	legacy := BaselineMethodStats{
+		Calls:       totalCalls - attributed.Calls,
+		TokensUsed:  totalTokensUsed - attributed.TokensUsed,
+		TokensSaved: totalTokensSaved - attributed.TokensSaved,
+	}
+	if legacy.Calls > 0 || legacy.TokensUsed > 0 || legacy.TokensSaved > 0 {
+		if legacy.Calls < 0 {
+			legacy.Calls = 0
+		}
+		if legacy.TokensUsed < 0 {
+			legacy.TokensUsed = 0
+		}
+		if legacy.TokensSaved < 0 {
+			legacy.TokensSaved = 0
+		}
+		out["legacy_unattributed"] = legacy
+	}
+	return out, nil
 }
 
 // dbFileSizeKB returns the size of pincher.db in KB, or 0 if stat fails.
@@ -324,6 +380,29 @@ func formatStatsText(r *StatsReport) string {
 		row{"Tokens saved:", "~" + commify(r.AllTime.TokensSaved)},
 	)
 	allTimeEnd := len(rows)
+
+	if len(r.AllTime.BaselineMethods) > 0 {
+		methods := make([]string, 0, len(r.AllTime.BaselineMethods))
+		for method := range r.AllTime.BaselineMethods {
+			methods = append(methods, method)
+		}
+		sort.Slice(methods, func(i, j int) bool {
+			a := r.AllTime.BaselineMethods[methods[i]]
+			b := r.AllTime.BaselineMethods[methods[j]]
+			if a.Calls != b.Calls {
+				return a.Calls > b.Calls
+			}
+			return methods[i] < methods[j]
+		})
+		for _, method := range methods {
+			stats := r.AllTime.BaselineMethods[method]
+			rows = append(rows, row{
+				method + ":",
+				fmt.Sprintf("%s calls / ~%s saved", commify(stats.Calls), commify(stats.TokensSaved)),
+			})
+		}
+	}
+	baselinesEnd := len(rows)
 
 	rows = append(rows,
 		row{"Data dir:", r.DataDir}, // no truncation; box auto-sizes
@@ -402,8 +481,12 @@ func formatStatsText(r *StatsReport) string {
 	for _, p := range r.Projects {
 		// Two-line project rendering: name on line 1, count value on line 2.
 		// Both contribute to width independently.
+		name := p.Name
+		if p.Stale {
+			name += " [stale]"
+		}
 		rows = append(rows,
-			row{p.Name + ":", ""},
+			row{name + ":", ""},
 			row{"", fmt.Sprintf("%s syms / %s files",
 				commify(int64(p.Symbols)),
 				commify(int64(p.Files)))})
@@ -476,9 +559,17 @@ func formatStatsText(r *StatsReport) string {
 		b.WriteString(line(rows[i].label, rows[i].value))
 	}
 
+	if allTimeEnd < baselinesEnd {
+		b.WriteString(sep)
+		b.WriteString(header("BASELINES"))
+		for i := allTimeEnd; i < baselinesEnd; i++ {
+			b.WriteString(line(rows[i].label, rows[i].value))
+		}
+	}
+
 	b.WriteString(sep)
 	b.WriteString(header("STORAGE"))
-	for i := allTimeEnd; i < storageEnd; i++ {
+	for i := baselinesEnd; i < storageEnd; i++ {
 		b.WriteString(line(rows[i].label, rows[i].value))
 	}
 

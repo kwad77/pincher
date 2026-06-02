@@ -79,6 +79,107 @@ func TestStatsCLI_BuildReport_WithSessions(t *testing.T) {
 	if got, want := report.AllTime.TokensUsed, int64(150); got != want {
 		t.Errorf("tokens_used = %d, want %d", got, want)
 	}
+	legacy := report.AllTime.BaselineMethods["legacy_unattributed"]
+	if legacy.Calls != 15 || legacy.TokensUsed != 150 || legacy.TokensSaved != 1500 {
+		t.Errorf("legacy_unattributed = %+v, want all session totals when no per-call rows exist", legacy)
+	}
+}
+
+func TestStatsCLI_BuildReport_BaselineMethodBreakdown(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	savedSearch := int64(1000)
+	savedContext := int64(500)
+	if err := store.RecordSession("s1", time.Now(), 3, 175, 1500, 0, "", 0, ""); err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+	if err := store.RecordToolCalls([]db.ToolCallEvent{
+		{SessionID: "s1", Tool: "search", TokensUsed: 100, TokensSaved: &savedSearch, TS: time.Now()},
+		{SessionID: "s1", Tool: "context", TokensUsed: 50, TokensSaved: &savedContext, TS: time.Now()},
+		{SessionID: "s1", Tool: "architecture", TokensUsed: 25, TS: time.Now()},
+	}); err != nil {
+		t.Fatalf("RecordToolCalls: %v", err)
+	}
+
+	report, err := buildStatsReport(store, dir)
+	if err != nil {
+		t.Fatalf("buildStatsReport: %v", err)
+	}
+	full := report.AllTime.BaselineMethods["full_file_read"]
+	if full.Calls != 2 || full.TokensUsed != 150 || full.TokensSaved != 1500 {
+		t.Fatalf("full_file_read baseline stats = %+v, want 2 calls / 150 used / 1500 saved", full)
+	}
+	none := report.AllTime.BaselineMethods["none"]
+	if none.Calls != 1 || none.TokensUsed != 25 || none.TokensSaved != 0 {
+		t.Fatalf("none baseline stats = %+v, want 1 call / 25 used / 0 saved", none)
+	}
+	if _, present := report.AllTime.BaselineMethods["legacy_unattributed"]; present {
+		t.Fatalf("legacy_unattributed should be absent when per-call rows reconcile exactly: %+v", report.AllTime.BaselineMethods)
+	}
+
+	blob, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	for _, want := range []string{`"baseline_methods"`, `"full_file_read"`, `"none"`} {
+		if !strings.Contains(string(blob), want) {
+			t.Errorf("stats JSON missing %s:\n%s", want, blob)
+		}
+	}
+	text := formatStatsText(report)
+	for _, want := range []string{"BASELINES", "full_file_read:", "none:"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("stats text missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestStatsCLI_BuildReport_BaselineMethodBreakdownReconcilesLegacyRows(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	savedSearch := int64(1000)
+	if err := store.RecordSession("s1", time.Now(), 3, 175, 1500, 0, "", 0, ""); err != nil {
+		t.Fatalf("RecordSession: %v", err)
+	}
+	if err := store.RecordToolCalls([]db.ToolCallEvent{
+		{SessionID: "s1", Tool: "search", TokensUsed: 100, TokensSaved: &savedSearch, TS: time.Now()},
+	}); err != nil {
+		t.Fatalf("RecordToolCalls: %v", err)
+	}
+
+	report, err := buildStatsReport(store, dir)
+	if err != nil {
+		t.Fatalf("buildStatsReport: %v", err)
+	}
+	legacy := report.AllTime.BaselineMethods["legacy_unattributed"]
+	if legacy.Calls != 2 || legacy.TokensUsed != 75 || legacy.TokensSaved != 500 {
+		t.Fatalf("legacy_unattributed = %+v, want missing 2 calls / 75 used / 500 saved", legacy)
+	}
+
+	var sum BaselineMethodStats
+	for _, stats := range report.AllTime.BaselineMethods {
+		sum.Calls += stats.Calls
+		sum.TokensUsed += stats.TokensUsed
+		sum.TokensSaved += stats.TokensSaved
+	}
+	if sum.Calls != report.AllTime.Calls || sum.TokensUsed != report.AllTime.TokensUsed || sum.TokensSaved != report.AllTime.TokensSaved {
+		t.Fatalf("baseline method sum %+v does not reconcile all-time %+v", sum, report.AllTime)
+	}
+
+	text := formatStatsText(report)
+	if !strings.Contains(text, "legacy_unattributed:") {
+		t.Fatalf("stats text should surface legacy_unattributed bucket:\n%s", text)
+	}
 }
 
 // TestStatsCLI_JSONShape_IsValidJSON pins the JSON output's structural
@@ -115,13 +216,87 @@ func TestStatsCLI_JSONShape_IsValidJSON(t *testing.T) {
 	if !ok {
 		t.Fatalf("all_time is not an object:\n%s", encoded)
 	}
-	for _, key := range []string{"calls", "tokens_used", "tokens_saved"} {
+	for _, key := range []string{"calls", "tokens_used", "tokens_saved", "baseline_methods"} {
 		if _, ok := at[key]; !ok {
 			t.Errorf("all_time missing key %q:\n%s", key, encoded)
 		}
 	}
 	if _, present := at["cost_avoided"]; present {
 		t.Errorf("all_time must NOT carry cost_avoided — removed in #476 SAVINGS_HONESTY")
+	}
+}
+
+func TestStatsCLI_ProjectStalenessSurfaced(t *testing.T) {
+	dir := t.TempDir()
+	store, err := db.Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	current := db.CurrentSchemaVersion()
+	old := current - 1
+	for _, p := range []db.Project{
+		{
+			ID: "fresh", Path: "/fresh", Name: "fresh",
+			IndexedAt: time.Now(), FileCount: 1, SymCount: 2, EdgeCount: 3,
+		},
+		{
+			ID: "old", Path: "/old", Name: "old",
+			IndexedAt: time.Now(), FileCount: 4, SymCount: 5, EdgeCount: 6,
+		},
+	} {
+		if err := store.UpsertProject(p); err != nil {
+			t.Fatalf("UpsertProject %s: %v", p.ID, err)
+		}
+	}
+	// UpsertProject stamps the running schema by design. Backdate one row
+	// directly to model a real project indexed by an older binary.
+	if _, err := store.DB().Exec(`UPDATE projects SET schema_version_at_index = ? WHERE id = ?`, old, "old"); err != nil {
+		t.Fatalf("backdate old project schema: %v", err)
+	}
+
+	report, err := buildStatsReport(store, dir)
+	if err != nil {
+		t.Fatalf("buildStatsReport: %v", err)
+	}
+	byID := map[string]ProjectStats{}
+	for _, p := range report.Projects {
+		byID[p.ID] = p
+	}
+	if byID["fresh"].Stale {
+		t.Fatalf("fresh project marked stale: %+v", byID["fresh"])
+	}
+	oldStats := byID["old"]
+	if !oldStats.Stale {
+		t.Fatalf("old project not marked stale: %+v", oldStats)
+	}
+	if oldStats.SchemaVersionAtIndex == nil || *oldStats.SchemaVersionAtIndex != old {
+		t.Fatalf("old schema_version_at_index = %v, want %d", oldStats.SchemaVersionAtIndex, old)
+	}
+	if !strings.Contains(oldStats.StaleReason, "indexed at v") {
+		t.Fatalf("stale_reason should explain schema drift, got %q", oldStats.StaleReason)
+	}
+
+	blob, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	for _, want := range []string{`"schema_version_at_index":`, `"stale":true`, `"stale_reason":`} {
+		if !strings.Contains(string(blob), want) {
+			t.Errorf("stats JSON missing %s:\n%s", want, blob)
+		}
+	}
+	if !strings.Contains(string(blob), `"stale":false`) {
+		t.Errorf("stats JSON should emit stale=false for fresh projects so consumers can read a boolean directly:\n%s", blob)
+	}
+
+	text := formatStatsText(report)
+	if !strings.Contains(text, "old [stale]") {
+		t.Errorf("stats text should mark stale project:\n%s", text)
+	}
+	if strings.Contains(text, "fresh [stale]") {
+		t.Errorf("stats text marked fresh project stale:\n%s", text)
 	}
 }
 
