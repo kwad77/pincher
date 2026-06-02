@@ -50,6 +50,8 @@ type doctorProjectSummary struct {
 	IndexedAt            string `json:"indexed_at"`
 	SchemaVersionAtIndex *int   `json:"schema_version_at_index,omitempty"`
 	BinaryVersion        string `json:"binary_version,omitempty"`
+	Stale                bool   `json:"stale"`
+	StaleReason          string `json:"stale_reason,omitempty"`
 	IndexState           string `json:"index_state,omitempty"`
 	IndexStartedAt       string `json:"index_started_at,omitempty"`
 }
@@ -65,6 +67,19 @@ func projectIndexStateFields(state string, startedAt int64) (string, string) {
 		started = time.Unix(startedAt, 0).UTC().Format(time.RFC3339)
 	}
 	return state, started
+}
+
+// projectSchemaStaleness mirrors cmd/pinch/project.go's staleness helper.
+// The server package cannot import package main, so this is deliberately
+// duplicated for MCP/HTTP doctor parity with the CLI report.
+func projectSchemaStaleness(at *int, current int) (bool, string) {
+	if at == nil {
+		return true, "predates schema_version_at_index column (pre-v15)"
+	}
+	if *at < current {
+		return true, fmt.Sprintf("indexed at v%d, current is v%d", *at, current)
+	}
+	return false, ""
 }
 
 func staleIndexRunningAdvisory(projects []doctorProjectSummary, now time.Time) string {
@@ -102,6 +117,61 @@ func staleIndexRunningAdvisory(projects []doctorProjectSummary, now time.Time) s
 		parts = append(parts, fmt.Sprintf("%q marked running for %s", label, s.age))
 	}
 	return fmt.Sprintf("Index state looks interrupted: %s. Rerun `pincher index --force <path>` (or POST /v1/index with force=true) for the affected project to refresh data and clear the marker. See #1905.", strings.Join(parts, "; "))
+}
+
+func projectSchemaDriftAdvisory(projects []doctorProjectSummary, currentSchema int) string {
+	if currentSchema <= 0 {
+		return ""
+	}
+	type driftedProject struct {
+		project doctorProjectSummary
+		reason  string
+	}
+	var drifted []driftedProject
+	for _, p := range projects {
+		switch {
+		case p.SchemaVersionAtIndex == nil:
+			drifted = append(drifted, driftedProject{project: p, reason: "pre-v15"})
+		case *p.SchemaVersionAtIndex < currentSchema:
+			drifted = append(drifted, driftedProject{
+				project: p,
+				reason:  fmt.Sprintf("v%d < v%d", *p.SchemaVersionAtIndex, currentSchema),
+			})
+		}
+	}
+	if len(drifted) == 0 {
+		return ""
+	}
+	labelCounts := map[string]int{}
+	for _, d := range drifted {
+		label := d.project.Name
+		if label == "" {
+			label = d.project.ID
+		}
+		labelCounts[label]++
+	}
+	extra := 0
+	if len(drifted) > 3 {
+		extra = len(drifted) - 3
+		drifted = drifted[:3]
+	}
+	parts := make([]string, 0, len(drifted))
+	for _, d := range drifted {
+		label := d.project.Name
+		if label == "" {
+			label = d.project.ID
+		}
+		if labelCounts[label] > 1 && d.project.Path != "" {
+			label += " at " + d.project.Path
+		}
+		parts = append(parts, fmt.Sprintf("%q (%s)", label, d.reason))
+	}
+	if extra > 0 {
+		parts = append(parts, fmt.Sprintf("+%d more", extra))
+	}
+	return "Projects indexed by an older schema: " + strings.Join(parts, "; ") +
+		". Search/trace/context may reflect stale extractor or resolver behavior until they are refreshed. " +
+		"Remediation: rerun `pincher index --force <path>` (or POST /v1/index with force=true) for each affected project."
 }
 
 // ghostProjectAdvisory returns a human-readable health advisory when a
@@ -466,6 +536,22 @@ func largeDBAdvisory(dbSizeBytes int64, projects []doctorProjectSummary) string 
 	return msg
 }
 
+// reclaimableDBAdvisory returns a human-readable health advisory when
+// SQLite's freelist has enough free pages to make an explicit VACUUM
+// worthwhile. This catches the post-prune / post-reindex shape where the
+// DB is below the "large DB" threshold but still has substantial stranded
+// space inside the file.
+func reclaimableDBAdvisory(dbSizeBytes, reclaimableBytes int64) string {
+	if dbSizeBytes <= 0 || reclaimableBytes < db.VacuumReclaimThresholdBytes {
+		return ""
+	}
+	pct := float64(reclaimableBytes) / float64(dbSizeBytes) * 100
+	return fmt.Sprintf("database has %s of reclaimable free pages (%.0f%% of the %s DB). "+
+		"SQLite keeps freed pages inside the file after deletes, FTS rebuilds, and full re-index clears until VACUUM rewrites it. "+
+		"Remediation: run `pincher vacuum` or `pincher doctor --fix` to reclaim the space and refresh planner statistics.",
+		db.FormatSize(int(reclaimableBytes)), pct, db.FormatSize(int(dbSizeBytes)))
+}
+
 // payloadOutlierAdvisory returns a human-readable health advisory when
 // a tool's max response_bytes over the trailing 7d window is many
 // multiples of its average AND the absolute max is large enough to
@@ -481,18 +567,19 @@ func largeDBAdvisory(dbSizeBytes int64, projects []doctorProjectSummary) string 
 //	               consume an agent's context window"
 //
 // Returns "" when nothing crosses both bars — silent on healthy data.
+type payloadOutlierHit struct {
+	tool  string
+	ratio float64
+	max   int64
+	avg   float64
+}
+
 func payloadOutlierAdvisory(rows []db.ToolCallPayloadRow) string {
 	const (
 		minRatio = 10.0
 		minMax   = int64(100 * 1024)
 	)
-	type hit struct {
-		tool  string
-		ratio float64
-		max   int64
-		avg   float64
-	}
-	hits := []hit{}
+	hits := []payloadOutlierHit{}
 	for _, r := range rows {
 		if r.MaxBytes < minMax || r.AvgBytes <= 0 {
 			continue
@@ -501,7 +588,7 @@ func payloadOutlierAdvisory(rows []db.ToolCallPayloadRow) string {
 		if ratio < minRatio {
 			continue
 		}
-		hits = append(hits, hit{tool: r.Tool, ratio: ratio, max: r.MaxBytes, avg: r.AvgBytes})
+		hits = append(hits, payloadOutlierHit{tool: r.Tool, ratio: ratio, max: r.MaxBytes, avg: r.AvgBytes})
 	}
 	if len(hits) == 0 {
 		return ""
@@ -520,8 +607,22 @@ func payloadOutlierAdvisory(rows []db.ToolCallPayloadRow) string {
 		"response than their average. These are the calls that blow up agent context windows: " +
 		strings.Join(parts, "; ") +
 		". Remediation: inspect the offending calls via /v1/tool-payload-stats or the dashboard's " +
-		"Response Payload Size panel; consider narrowing the query (lower min_confidence, smaller k, " +
-		"specific path filter) on calls to that tool to bound payload size."
+		"Response Payload Size panel; " + payloadOutlierRemediation(hits) + "."
+}
+
+func payloadOutlierRemediation(hits []payloadOutlierHit) string {
+	hasTool := func(name string) bool {
+		for _, h := range hits {
+			if h.tool == name {
+				return true
+			}
+		}
+		return false
+	}
+	if hasTool("context") {
+		return "for context outliers, pass lite=true when source-only is enough, or fields=symbol / fields=symbol,callees to drop heavy dependency sections"
+	}
+	return "consider narrowing the query (lower min_confidence, smaller k, specific path filter) on calls to that tool to bound payload size"
 }
 
 // toolMixStuckAdvisory returns a human-readable health advisory when
@@ -819,6 +920,9 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// nested-project, WAL bloat, branch drift) intentionally still walk
 	// every project — they're database-level signals, not project-scoped.
 	projectFilter, _ := args["project"].(string)
+	if trimmed := strings.TrimSpace(projectFilter); trimmed != "" && filepath.Clean(trimmed) == "." && s.sessionID != "" {
+		projectFilter = s.sessionID
+	}
 
 	data := map[string]any{
 		"generated_at":   time.Now().UTC().Format(time.RFC3339),
@@ -876,6 +980,7 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 
 	projects := []doctorProjectSummary{}
 	plist, err := s.store.ListProjects()
+	currentSchema := db.CurrentSchemaVersion()
 	// #1220: one extra reader-pool SELECT (two grouped SUMs against
 	// symbols/edges) so each project summary can carry a best-effort
 	// db_bytes_estimate. Missing entries (e.g. a freshly upserted
@@ -910,6 +1015,7 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 				SchemaVersionAtIndex: p.SchemaVersionAtIndex,
 				BinaryVersion:        p.BinaryVersion,
 			}
+			summary.Stale, summary.StaleReason = projectSchemaStaleness(p.SchemaVersionAtIndex, currentSchema)
 			summary.IndexState, summary.IndexStartedAt = projectIndexStateFields(p.IndexState, p.IndexStartedAt)
 			projects = append(projects, summary)
 		}
@@ -928,16 +1034,40 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 		projects = projects[:top]
 	}
 	data["projects"] = projects
+	allProjects := []doctorProjectSummary{}
+	if err == nil {
+		for _, p := range plist {
+			summary := doctorProjectSummary{
+				ID:                   p.ID,
+				Name:                 p.Name,
+				Path:                 p.Path,
+				Files:                p.FileCount,
+				Symbols:              p.SymCount,
+				Edges:                p.EdgeCount,
+				SchemaVersionAtIndex: p.SchemaVersionAtIndex,
+				BinaryVersion:        p.BinaryVersion,
+			}
+			summary.Stale, summary.StaleReason = projectSchemaStaleness(p.SchemaVersionAtIndex, currentSchema)
+			summary.IndexState, summary.IndexStartedAt = projectIndexStateFields(p.IndexState, p.IndexStartedAt)
+			allProjects = append(allProjects, summary)
+		}
+		sort.Slice(allProjects, func(i, j int) bool { return allProjects[i].Symbols > allProjects[j].Symbols })
+	}
 
 	// #732: failure-as-pedagogy for the diagnostic itself. doctor used
 	// to report db_size_bytes as a bare number — a 4.7 GB store looked
 	// no different from a 4.7 MB one. Surface an actionable advisory
-	// when the DB is pathologically large. `projects` is already sorted
-	// by symbol count desc, so projects[0] is the global heaviest even
-	// after the `top` truncation above.
+	// when the DB is pathologically large. Use the unfiltered project
+	// list so `project=...` only scopes display sections, not store-wide
+	// health signals.
 	advisories := []string{}
-	if a := largeDBAdvisory(dbSizeBytes, projects); a != "" {
+	if a := largeDBAdvisory(dbSizeBytes, allProjects); a != "" {
 		advisories = append(advisories, a)
+	}
+	if reclaimableBytes, err := s.store.EstimateReclaimableBytes(); err == nil {
+		if a := reclaimableDBAdvisory(dbSizeBytes, reclaimableBytes); a != "" {
+			advisories = append(advisories, a)
+		}
 	}
 	// #1206 v0.66 DOGFOOD: WAL bloat advisory. Pincher's WAL is
 	// supposed to be bounded by journal_size_limit=256 MiB (set in
@@ -958,35 +1088,22 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 		advisories = append(advisories, a)
 	}
 	// #1009: ghost-project advisory. Walks the full project list (not
-	// the `top`-truncated one) so a ghost project ranked below `top` by
-	// symbol count is still surfaced. Re-fetch the full list cheaply —
-	// the previous ListProjects round-trip is shadowed by truncation.
-	// #1209: nested-project advisory uses the same full-list pass —
-	// the inner project is often ranked below the outer by symbol count
-	// (the resolver phase failed on the inner so it shows up as a small
-	// ghost), so any `top`-truncated view risks dropping the pair.
+	// the filtered or `top`-truncated one) so a ghost project outside the
+	// display slice is still surfaced. #1209: nested-project advisory uses
+	// the same full-list pass — the inner project is often ranked below
+	// the outer by symbol count, so any filtered/truncated view risks
+	// dropping the pair.
 	{
-		all := []doctorProjectSummary{}
-		for _, p := range plist {
-			summary := doctorProjectSummary{
-				ID:      p.ID,
-				Name:    p.Name,
-				Path:    p.Path,
-				Files:   p.FileCount,
-				Symbols: p.SymCount,
-				Edges:   p.EdgeCount,
-			}
-			summary.IndexState, summary.IndexStartedAt = projectIndexStateFields(p.IndexState, p.IndexStartedAt)
-			all = append(all, summary)
-		}
-		sort.Slice(all, func(i, j int) bool { return all[i].Symbols > all[j].Symbols })
-		if a := ghostProjectAdvisory(all); a != "" {
+		if a := ghostProjectAdvisory(allProjects); a != "" {
 			advisories = append(advisories, a)
 		}
-		if a := nestedProjectAdvisory(all); a != "" {
+		if a := nestedProjectAdvisory(allProjects); a != "" {
 			advisories = append(advisories, a)
 		}
-		if a := staleIndexRunningAdvisory(all, time.Now().UTC()); a != "" {
+		if a := staleIndexRunningAdvisory(allProjects, time.Now().UTC()); a != "" {
+			advisories = append(advisories, a)
+		}
+		if a := projectSchemaDriftAdvisory(allProjects, currentSchema); a != "" {
 			advisories = append(advisories, a)
 		}
 	}

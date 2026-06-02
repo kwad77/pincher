@@ -125,7 +125,8 @@ type DoctorProjectSummary struct {
 	DBBytesEstimate      int64  `json:"db_bytes_estimate"`
 	IndexedAt            string `json:"indexed_at"`
 	SchemaVersionAtIndex *int   `json:"schema_version_at_index,omitempty"`
-	Stale                bool   `json:"stale,omitempty"`
+	BinaryVersion        string `json:"binary_version,omitempty"`
+	Stale                bool   `json:"stale"`
 	StaleReason          string `json:"stale_reason,omitempty"`
 	IndexState           string `json:"index_state,omitempty"`
 	IndexStartedAt       string `json:"index_started_at,omitempty"`
@@ -202,7 +203,7 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 	}
 
 	// Projects
-	projects, err := store.ListProjects()
+	projects, projectsErr := store.ListProjects()
 	projectBytes, _ := store.EstimateProjectBytes()
 	// #1401 / #1404: pre-build the matched-id set so the projects loop
 	// AND the extraction_failures section share one membership predicate.
@@ -212,7 +213,7 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 	// whose id contains the parent path). nil means "no filter — include
 	// everything"; non-nil empty means "filter applied, nothing matched".
 	matchedProjectIDs := matchedProjectIDsForFilter(projects, projectFilter)
-	if err == nil {
+	if projectsErr == nil {
 		current := db.CurrentSchemaVersion()
 		for _, p := range projects {
 			if matchedProjectIDs != nil {
@@ -230,6 +231,7 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 				DBBytesEstimate:      projectBytes[p.ID],
 				IndexedAt:            p.IndexedAt.Format(time.RFC3339),
 				SchemaVersionAtIndex: p.SchemaVersionAtIndex,
+				BinaryVersion:        p.BinaryVersion,
 			}
 			summary.Stale, summary.StaleReason = staleness(p.SchemaVersionAtIndex, current)
 			summary.IndexState, summary.IndexStartedAt = projectIndexStateFields(p.IndexState, p.IndexStartedAt)
@@ -242,7 +244,7 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 	// path mirrors MCP/HTTP doctor's #1205 cross-project query instead of
 	// doing one SELECT per project.
 	cutoff := time.Now().Add(-time.Duration(lookbackHours) * time.Hour)
-	if err == nil {
+	if projectsErr == nil {
 		projectByID := make(map[string]db.Project, len(projects))
 		for _, p := range projects {
 			projectByID[p.ID] = p
@@ -293,8 +295,7 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 	}
 
 	// Slow queries (#42 part 2) — most-recent N within lookback.
-	slow, err := store.ListSlowQueries(top * 5) // pull a few more, filter by cutoff
-	if err == nil {
+	if slow, err := store.ListSlowQueries(top * 5); err == nil { // pull a few more, filter by cutoff
 		for _, sq := range slow {
 			if sq.OccurredAt.Before(cutoff) {
 				continue
@@ -317,29 +318,36 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 	sort.Slice(r.Projects, func(i, j int) bool {
 		return r.Projects[i].Symbols > r.Projects[j].Symbols
 	})
-	allIndexProjects := []DoctorProjectSummary{}
-	if err == nil {
+	allProjects := []DoctorProjectSummary{}
+	if projectsErr == nil {
 		for _, p := range projects {
 			summary := DoctorProjectSummary{
-				ID:      p.ID,
-				Name:    p.Name,
-				Path:    p.Path,
-				Files:   p.FileCount,
-				Symbols: p.SymCount,
-				Edges:   p.EdgeCount,
+				ID:                   p.ID,
+				Name:                 p.Name,
+				Path:                 p.Path,
+				Files:                p.FileCount,
+				Symbols:              p.SymCount,
+				Edges:                p.EdgeCount,
+				SchemaVersionAtIndex: p.SchemaVersionAtIndex,
+				BinaryVersion:        p.BinaryVersion,
 			}
 			summary.IndexState, summary.IndexStartedAt = projectIndexStateFields(p.IndexState, p.IndexStartedAt)
-			allIndexProjects = append(allIndexProjects, summary)
+			allProjects = append(allProjects, summary)
 		}
-		sort.Slice(allIndexProjects, func(i, j int) bool {
-			return allIndexProjects[i].Symbols > allIndexProjects[j].Symbols
+		sort.Slice(allProjects, func(i, j int) bool {
+			return allProjects[i].Symbols > allProjects[j].Symbols
 		})
 	}
 
 	// #732: health advisories. Always a non-nil slice (JSON invariant).
 	r.Advisories = []string{}
-	if a := largeDBAdvisory(r.DBSizeBytes, r.Projects); a != "" {
+	if a := largeDBAdvisory(r.DBSizeBytes, allProjects); a != "" {
 		r.Advisories = append(r.Advisories, a)
+	}
+	if reclaimableBytes, err := store.EstimateReclaimableBytes(); err == nil {
+		if a := reclaimableDBAdvisory(r.DBSizeBytes, reclaimableBytes); a != "" {
+			r.Advisories = append(r.Advisories, a)
+		}
 	}
 	// #635 v0.67 follow-up: payload-outlier advisory. Mirrors the
 	// MCP doctor's logic in internal/server/admin.go — the two copies
@@ -360,8 +368,8 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 	// logic in internal/server/admin.go — the two copies must stay
 	// behaviourally identical (per CLAUDE.md bounded-duplication
 	// convention).
-	if plist, err := store.ListProjects(); err == nil {
-		if a := branchDriftAdvisory(plist); a != "" {
+	if projectsErr == nil {
+		if a := branchDriftAdvisory(projects); a != "" {
 			r.Advisories = append(r.Advisories, a)
 		}
 	}
@@ -373,16 +381,19 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 	// advisory set than an agent calling the same logic via MCP. Each
 	// advisory is a byte-for-byte port of internal/server/admin.go's
 	// copy per the bounded-duplication convention.
-	if a := ghostProjectAdvisory(r.Projects); a != "" {
+	if a := ghostProjectAdvisory(allProjects); a != "" {
 		r.Advisories = append(r.Advisories, a)
 	}
 	if a := walBloatAdvisory(r.DBSizeBytes, r.WALSizeBytes); a != "" {
 		r.Advisories = append(r.Advisories, a)
 	}
-	if a := nestedProjectAdvisory(r.Projects); a != "" {
+	if a := nestedProjectAdvisory(allProjects); a != "" {
 		r.Advisories = append(r.Advisories, a)
 	}
-	if a := staleIndexRunningAdvisory(allIndexProjects, time.Now().UTC()); a != "" {
+	if a := staleIndexRunningAdvisory(allProjects, time.Now().UTC()); a != "" {
+		r.Advisories = append(r.Advisories, a)
+	}
+	if a := projectSchemaDriftAdvisory(allProjects, db.CurrentSchemaVersion()); a != "" {
 		r.Advisories = append(r.Advisories, a)
 	}
 	// #1635 v0.85: PreToolUse hook missing. When Claude Code looks
@@ -587,6 +598,63 @@ func staleIndexRunningAdvisory(projects []DoctorProjectSummary, now time.Time) s
 	return fmt.Sprintf("Index state looks interrupted: %s. Rerun `pincher index --force <path>` (or POST /v1/index with force=true) for the affected project to refresh data and clear the marker. See #1905.", strings.Join(parts, "; "))
 }
 
+// projectSchemaDriftAdvisory mirrors internal/server/admin.go's copy.
+// Bounded-duplication convention documented on largeDBAdvisory.
+func projectSchemaDriftAdvisory(projects []DoctorProjectSummary, currentSchema int) string {
+	if currentSchema <= 0 {
+		return ""
+	}
+	type driftedProject struct {
+		project DoctorProjectSummary
+		reason  string
+	}
+	var drifted []driftedProject
+	for _, p := range projects {
+		switch {
+		case p.SchemaVersionAtIndex == nil:
+			drifted = append(drifted, driftedProject{project: p, reason: "pre-v15"})
+		case *p.SchemaVersionAtIndex < currentSchema:
+			drifted = append(drifted, driftedProject{
+				project: p,
+				reason:  fmt.Sprintf("v%d < v%d", *p.SchemaVersionAtIndex, currentSchema),
+			})
+		}
+	}
+	if len(drifted) == 0 {
+		return ""
+	}
+	labelCounts := map[string]int{}
+	for _, d := range drifted {
+		label := d.project.Name
+		if label == "" {
+			label = d.project.ID
+		}
+		labelCounts[label]++
+	}
+	extra := 0
+	if len(drifted) > 3 {
+		extra = len(drifted) - 3
+		drifted = drifted[:3]
+	}
+	parts := make([]string, 0, len(drifted))
+	for _, d := range drifted {
+		label := d.project.Name
+		if label == "" {
+			label = d.project.ID
+		}
+		if labelCounts[label] > 1 && d.project.Path != "" {
+			label += " at " + d.project.Path
+		}
+		parts = append(parts, fmt.Sprintf("%q (%s)", label, d.reason))
+	}
+	if extra > 0 {
+		parts = append(parts, fmt.Sprintf("+%d more", extra))
+	}
+	return "Projects indexed by an older schema: " + strings.Join(parts, "; ") +
+		". Search/trace/context may reflect stale extractor or resolver behavior until they are refreshed. " +
+		"Remediation: rerun `pincher index --force <path>` (or POST /v1/index with force=true) for each affected project."
+}
+
 // toolMixStuckAdvisory mirrors internal/server/admin.go's copy.
 // Bounded-duplication convention documented on largeDBAdvisory.
 func toolMixStuckAdvisory(rows []db.ToolCallTallyRow) string {
@@ -628,18 +696,19 @@ func toolMixStuckAdvisory(rows []db.ToolCallTallyRow) string {
 // above: the CLI lives in package main and can't import the server
 // package, so each shared advisory exists in both copies and must
 // stay behaviourally identical.
+type payloadOutlierHit struct {
+	tool  string
+	ratio float64
+	max   int64
+	avg   float64
+}
+
 func payloadOutlierAdvisory(rows []db.ToolCallPayloadRow) string {
 	const (
 		minRatio = 10.0
 		minMax   = int64(100 * 1024)
 	)
-	type hit struct {
-		tool  string
-		ratio float64
-		max   int64
-		avg   float64
-	}
-	hits := []hit{}
+	hits := []payloadOutlierHit{}
 	for _, r := range rows {
 		if r.MaxBytes < minMax || r.AvgBytes <= 0 {
 			continue
@@ -648,7 +717,7 @@ func payloadOutlierAdvisory(rows []db.ToolCallPayloadRow) string {
 		if ratio < minRatio {
 			continue
 		}
-		hits = append(hits, hit{tool: r.Tool, ratio: ratio, max: r.MaxBytes, avg: r.AvgBytes})
+		hits = append(hits, payloadOutlierHit{tool: r.Tool, ratio: ratio, max: r.MaxBytes, avg: r.AvgBytes})
 	}
 	if len(hits) == 0 {
 		return ""
@@ -666,8 +735,22 @@ func payloadOutlierAdvisory(rows []db.ToolCallPayloadRow) string {
 		"response than their average. These are the calls that blow up agent context windows: " +
 		strings.Join(parts, "; ") +
 		". Remediation: inspect the offending calls via /v1/tool-payload-stats or the dashboard's " +
-		"Response Payload Size panel; consider narrowing the query (lower min_confidence, smaller k, " +
-		"specific path filter) on calls to that tool to bound payload size."
+		"Response Payload Size panel; " + payloadOutlierRemediation(hits) + "."
+}
+
+func payloadOutlierRemediation(hits []payloadOutlierHit) string {
+	hasTool := func(name string) bool {
+		for _, h := range hits {
+			if h.tool == name {
+				return true
+			}
+		}
+		return false
+	}
+	if hasTool("context") {
+		return "for context outliers, pass lite=true when source-only is enough, or fields=symbol / fields=symbol,callees to drop heavy dependency sections"
+	}
+	return "consider narrowing the query (lower min_confidence, smaller k, specific path filter) on calls to that tool to bound payload size"
 }
 
 // largeDBAdvisory returns a health advisory when the pincher DB is
@@ -698,6 +781,24 @@ func largeDBAdvisory(dbSizeBytes int64, projects []DoctorProjectSummary) string 
 		"30+ days. SQLite does not shrink the file on row deletion, so run `pincher vacuum` " +
 		"afterward to actually reclaim the space."
 	return msg
+}
+
+// reclaimableDBAdvisory mirrors internal/server/admin.go's copy.
+// Surfaces a VACUUM prompt when SQLite's freelist has enough free pages
+// to make an explicit rewrite worthwhile. This catches the common
+// post-prune / post-reindex shape where the DB is below the "large DB"
+// threshold but still has hundreds of MB stranded on disk.
+//
+// Deliberately duplicated per CLAUDE.md bounded-duplication convention.
+func reclaimableDBAdvisory(dbSizeBytes, reclaimableBytes int64) string {
+	if dbSizeBytes <= 0 || reclaimableBytes < db.VacuumReclaimThresholdBytes {
+		return ""
+	}
+	pct := float64(reclaimableBytes) / float64(dbSizeBytes) * 100
+	return fmt.Sprintf("database has %s of reclaimable free pages (%.0f%% of the %s DB). "+
+		"SQLite keeps freed pages inside the file after deletes, FTS rebuilds, and full re-index clears until VACUUM rewrites it. "+
+		"Remediation: run `pincher vacuum` or `pincher doctor --fix` to reclaim the space and refresh planner statistics.",
+		db.FormatSize(int(reclaimableBytes)), pct, db.FormatSize(int(dbSizeBytes)))
 }
 
 // ghostProjectAdvisory mirrors internal/server/admin.go's copy (#815/#1009).
@@ -1285,6 +1386,9 @@ func truncEnd(s string, max int) string {
 func matchedProjectIDsForFilter(ps []db.Project, filter string) map[string]struct{} {
 	if filter == "" {
 		return nil
+	}
+	if currentID, ok := currentDirProjectTarget(filter); ok {
+		filter = currentID
 	}
 	hits := make(map[string]struct{})
 	// 1. Exact id match (case-sensitive).

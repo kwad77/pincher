@@ -87,6 +87,27 @@ func TestLargeDBAdvisory(t *testing.T) {
 	}
 }
 
+func TestReclaimableDBAdvisory(t *testing.T) {
+	t.Parallel()
+
+	if got := reclaimableDBAdvisory(900<<20, 49<<20); got != "" {
+		t.Errorf("below threshold should not advise; got %q", got)
+	}
+	if got := reclaimableDBAdvisory(0, 80<<20); got != "" {
+		t.Errorf("unknown DB size should not advise; got %q", got)
+	}
+
+	got := reclaimableDBAdvisory(900<<20, 60<<20)
+	if got == "" {
+		t.Fatal("reclaimable bytes above threshold should produce an advisory")
+	}
+	for _, want := range []string{"60.0 MB", "900.0 MB", "reclaimable free pages", "pincher vacuum", "pincher doctor --fix"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("advisory missing %q\n  got: %s", want, got)
+		}
+	}
+}
+
 // #635 v0.67 follow-up: payload-outlier advisory. Tests pin the two
 // gating conditions (ratio + absolute max) so a future tweak doesn't
 // silently neuter the advisory by relaxing one but not the other.
@@ -129,6 +150,21 @@ func TestPayloadOutlierAdvisory(t *testing.T) {
 	// search should NOT appear — it failed the max threshold.
 	if strings.Contains(got, "search") {
 		t.Errorf("advisory must skip rows below the max threshold; got: %s", got)
+	}
+
+	// Tool-aware remediation: context does not accept min_confidence.
+	// Dogfood exposed the old generic text as misleading when context
+	// was the outlier; it should point at context's real payload controls.
+	got = payloadOutlierAdvisory([]db.ToolCallPayloadRow{
+		{Tool: "context", AvgBytes: 12_000, MaxBytes: 180_000},
+	})
+	for _, want := range []string{"context", "lite=true", "fields=symbol", "fields=symbol,callees"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("context advisory missing %q\n  got: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "min_confidence") {
+		t.Errorf("context advisory must not suggest min_confidence; got: %s", got)
 	}
 }
 
@@ -240,6 +276,80 @@ func TestHandleDoctor_WithProject(t *testing.T) {
 	if p["name"] != "p1" || p["symbols"].(float64) != 42 {
 		t.Errorf("project shape wrong: %v", p)
 	}
+	if got, ok := p["stale"].(bool); !ok || got {
+		t.Errorf("fresh MCP doctor project must carry stale=false as a JSON boolean; got %T %v in %v", p["stale"], p["stale"], p)
+	}
+	if _, present := p["stale_reason"]; present {
+		t.Errorf("fresh MCP doctor project should omit stale_reason; got %v", p)
+	}
+}
+
+func TestHandleDoctor_DotProjectUsesSessionProject(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p-current"
+	store.UpsertProject(db.Project{
+		ID: "p-current", Path: "/tmp/current", Name: "current",
+		IndexedAt: time.Now(), FileCount: 2, SymCount: 7, EdgeCount: 1,
+	})
+	store.UpsertProject(db.Project{
+		ID: "/tmp/.hermes/hermes-agent", Path: "/tmp/.hermes/hermes-agent", Name: "hermes-agent",
+		IndexedAt: time.Now(), FileCount: 3, SymCount: 42, EdgeCount: 17,
+	})
+
+	result, err := srv.handleDoctor(context.Background(), makeReq(map[string]any{"project": ".", "top": 5}))
+	if err != nil {
+		t.Fatalf("handleDoctor: %v", err)
+	}
+	body := decode(t, result)
+	projects, ok := body["projects"].([]any)
+	if !ok || len(projects) != 1 {
+		t.Fatalf("expected one session project for project='.', got %v", body["projects"])
+	}
+	p := projects[0].(map[string]any)
+	if p["id"] != "p-current" {
+		t.Fatalf("project='.' resolved to %v, want session project", p)
+	}
+}
+
+func TestHandleDoctor_ProjectStalenessFields(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+
+	current := db.CurrentSchemaVersion()
+	old := current - 1
+	if err := store.UpsertProject(db.Project{
+		ID: "old", Path: "/tmp/old", Name: "old",
+		IndexedAt: time.Now(), FileCount: 4, SymCount: 5, EdgeCount: 6,
+	}); err != nil {
+		t.Fatalf("UpsertProject old: %v", err)
+	}
+	if _, err := store.DB().Exec(`UPDATE projects SET schema_version_at_index = ? WHERE id = ?`, old, "old"); err != nil {
+		t.Fatalf("backdate old project schema: %v", err)
+	}
+
+	result, err := srv.handleDoctor(context.Background(), makeReq(map[string]any{"top": 5}))
+	if err != nil {
+		t.Fatalf("handleDoctor: %v", err)
+	}
+	body := decode(t, result)
+	projects, ok := body["projects"].([]any)
+	if !ok || len(projects) != 1 {
+		t.Fatalf("expected 1 project, got %v", body["projects"])
+	}
+	p := projects[0].(map[string]any)
+	if got := p["schema_version_at_index"]; got != float64(old) {
+		t.Fatalf("schema_version_at_index = %v, want %d; project=%v", got, old, p)
+	}
+	if got := p["stale"]; got != true {
+		t.Fatalf("stale = %v, want true; project=%v", got, p)
+	}
+	reason, _ := p["stale_reason"].(string)
+	for _, want := range []string{"indexed at v", fmt.Sprintf("current is v%d", current)} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("stale_reason missing %q; got %q", want, reason)
+		}
+	}
 }
 
 func TestStaleIndexRunningAdvisory(t *testing.T) {
@@ -268,6 +378,41 @@ func TestStaleIndexRunningAdvisory(t *testing.T) {
 	for _, want := range []string{"hermes-agent", "running", "pincher index --force", "/v1/index", "#1905"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("advisory missing %q\n  got: %s", want, got)
+		}
+	}
+}
+
+func TestProjectSchemaDriftAdvisory(t *testing.T) {
+	t.Parallel()
+	current := 38
+	atCurrent := 38
+	atOld := 35
+
+	if got := projectSchemaDriftAdvisory([]doctorProjectSummary{
+		{Name: "fresh", SchemaVersionAtIndex: &atCurrent},
+	}, current); got != "" {
+		t.Fatalf("fresh schema should stay silent, got %q", got)
+	}
+
+	got := projectSchemaDriftAdvisory([]doctorProjectSummary{
+		{Name: "pincher", SchemaVersionAtIndex: &atOld},
+	}, current)
+	if got == "" {
+		t.Fatal("old schema should produce an advisory")
+	}
+	for _, want := range []string{"pincher", "v35 < v38", "pincher index --force", "/v1/index"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("advisory missing %q\n  got: %s", want, got)
+		}
+	}
+
+	got = projectSchemaDriftAdvisory([]doctorProjectSummary{
+		{Name: "dup", Path: "/repo/a", SchemaVersionAtIndex: &atOld},
+		{Name: "dup", Path: "/repo/b", SchemaVersionAtIndex: &atOld},
+	}, current)
+	for _, want := range []string{"dup at /repo/a", "dup at /repo/b"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("duplicate-name advisory should include path %q\n  got: %s", want, got)
 		}
 	}
 }
@@ -333,6 +478,10 @@ func TestHandleDoctor_ProjectFilter(t *testing.T) {
 		})
 		_ = store.RecordExtractionFailure(c.id, c.id+".go", "Go", "extractor_panicked", "boom")
 	}
+	store.UpsertProject(db.Project{
+		ID: "ghost", Path: "/tmp/ghost", Name: "ghost-proj",
+		IndexedAt: time.Now(), FileCount: 200, SymCount: 2_000, EdgeCount: 0,
+	})
 
 	// Filter to "alpha" — only alpha-proj + its failure row visible.
 	result, err := srv.handleDoctor(context.Background(), makeReq(map[string]any{
@@ -359,6 +508,11 @@ func TestHandleDoctor_ProjectFilter(t *testing.T) {
 	if got := failures[0].(map[string]any)["file"]; got != "alpha.go" {
 		t.Errorf("filtered failure file = %v, want alpha.go", got)
 	}
+	advisories, _ := body["advisories"].([]any)
+	joinedAdvisories := fmt.Sprint(advisories)
+	if !strings.Contains(joinedAdvisories, "ghost-proj") {
+		t.Errorf("store-wide ghost advisory should survive project filter; got %v", advisories)
+	}
 
 	// Case-insensitive substring: "BETA" matches beta-proj.
 	resultB, err := srv.handleDoctor(context.Background(), makeReq(map[string]any{
@@ -383,8 +537,8 @@ func TestHandleDoctor_ProjectFilter(t *testing.T) {
 		t.Errorf("project_filter must be absent when filter unset; got %v", bodyAll["project_filter"])
 	}
 	projectsAll, _ := bodyAll["projects"].([]any)
-	if len(projectsAll) != 2 {
-		t.Errorf("unfiltered call returned %d projects, want 2", len(projectsAll))
+	if len(projectsAll) != 3 {
+		t.Errorf("unfiltered call returned %d projects, want 3", len(projectsAll))
 	}
 }
 

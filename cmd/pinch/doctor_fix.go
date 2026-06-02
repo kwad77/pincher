@@ -84,9 +84,25 @@ func runDoctorFix(store *db.Store, dir string, asJSON, reapOrphans bool, out io.
 // (exclusive lock for the duration, scales with DB size) isn't worth
 // the disk saved. Threshold pinned in tests so a future tightening
 // is a deliberate decision, not silent drift.
-const vacuumThresholdBytes = 50 * 1024 * 1024
+const vacuumThresholdBytes = db.VacuumReclaimThresholdBytes
 
 func fixVacuumIfBloated(store *db.Store) FixAction {
+	reclaimableEstimate, err := store.EstimateReclaimableBytes()
+	if err != nil {
+		return FixAction{
+			Name:    "vacuum-db",
+			Status:  "error",
+			Details: fmt.Sprintf("estimate reclaimable bytes: %v", err),
+		}
+	}
+	if reclaimableEstimate < vacuumThresholdBytes {
+		return FixAction{
+			Name:    "vacuum-db",
+			Status:  "noop",
+			Details: fmt.Sprintf("reclaimable %s (< %s threshold) — DB is healthy", db.FormatSize(int(reclaimableEstimate)), db.FormatSize(int(vacuumThresholdBytes))),
+		}
+	}
+
 	// Measure before + after via on-disk file size — matches the
 	// vacuum CLI's approach (VacuumResult itself only exposes
 	// diagnostic flags, not byte counts).
@@ -113,17 +129,10 @@ func fixVacuumIfBloated(store *db.Store) FixAction {
 			Details: "another pincher process holds an open reader — WAL freelist pinned. Restart the MCP server (or wait for active sessions to disconnect), then re-run.",
 		}
 	}
-	if reclaimed < vacuumThresholdBytes {
-		return FixAction{
-			Name:    "vacuum-db",
-			Status:  "noop",
-			Details: fmt.Sprintf("reclaimed %s (< %s threshold) — DB is healthy", db.FormatSize(int(reclaimed)), db.FormatSize(int(vacuumThresholdBytes))),
-		}
-	}
 	return FixAction{
 		Name:    "vacuum-db",
 		Status:  "applied",
-		Details: fmt.Sprintf("reclaimed %s (%s → %s)", db.FormatSize(int(reclaimed)), db.FormatSize(int(before)), db.FormatSize(int(after))),
+		Details: fmt.Sprintf("reclaimed %s (%s → %s; freelist estimate %s)", db.FormatSize(int(reclaimed)), db.FormatSize(int(before)), db.FormatSize(int(after)), db.FormatSize(int(reclaimableEstimate))),
 	}
 }
 

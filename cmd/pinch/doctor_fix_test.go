@@ -36,8 +36,49 @@ func TestFixVacuumIfBloated_FreshDBNoop(t *testing.T) {
 	if action.Status != "noop" {
 		t.Errorf("fresh DB should report noop; got status=%q details=%q", action.Status, action.Details)
 	}
+	if strings.Contains(action.Details, "reclaimed") {
+		t.Errorf("fresh DB noop should be based on the pre-vacuum freelist probe, not a completed VACUUM; got: %s", action.Details)
+	}
 	if !strings.Contains(action.Details, "threshold") {
 		t.Errorf("noop details should mention the threshold; got: %s", action.Details)
+	}
+}
+
+func TestFixVacuumIfBloated_AppliesWhenFreelistCrossesThreshold(t *testing.T) {
+	store, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	if _, err := store.DB().Exec(`CREATE TABLE vacuum_probe (payload BLOB)`); err != nil {
+		t.Fatalf("create vacuum_probe: %v", err)
+	}
+	if _, err := store.DB().Exec(`INSERT INTO vacuum_probe(payload) VALUES (zeroblob(?))`, int(vacuumThresholdBytes+8<<20)); err != nil {
+		t.Fatalf("insert vacuum_probe: %v", err)
+	}
+	if _, err := store.DB().Exec(`DELETE FROM vacuum_probe`); err != nil {
+		t.Fatalf("delete vacuum_probe: %v", err)
+	}
+	reclaimable, err := store.EstimateReclaimableBytes()
+	if err != nil {
+		t.Fatalf("EstimateReclaimableBytes: %v", err)
+	}
+	if reclaimable < vacuumThresholdBytes {
+		t.Fatalf("test setup produced only %d reclaimable bytes, want >= %d", reclaimable, vacuumThresholdBytes)
+	}
+
+	action := fixVacuumIfBloated(store)
+	if action.Name != "vacuum-db" {
+		t.Errorf("action.Name = %q, want vacuum-db", action.Name)
+	}
+	if action.Status != "applied" {
+		t.Fatalf("bloated DB should report applied; got status=%q details=%q", action.Status, action.Details)
+	}
+	for _, want := range []string{"reclaimed", "freelist estimate"} {
+		if !strings.Contains(action.Details, want) {
+			t.Errorf("applied details missing %q; got: %s", want, action.Details)
+		}
 	}
 }
 

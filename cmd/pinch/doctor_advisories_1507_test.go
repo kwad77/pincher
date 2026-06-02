@@ -273,6 +273,7 @@ func TestDoctorAdvisories_CLI_SymbolsExist(t *testing.T) {
 	// before the runtime tests ever run.
 	_ = ghostProjectAdvisory
 	_ = walBloatAdvisory
+	_ = reclaimableDBAdvisory
 	_ = nestedProjectAdvisory
 	_ = normalizePathForNesting
 	_ = pluralS

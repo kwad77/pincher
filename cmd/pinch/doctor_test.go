@@ -166,6 +166,40 @@ func TestStaleIndexRunningAdvisory_CLI(t *testing.T) {
 	}
 }
 
+func TestProjectSchemaDriftAdvisory_CLI(t *testing.T) {
+	current := 38
+	atCurrent := 38
+	atOld := 35
+
+	if got := projectSchemaDriftAdvisory([]DoctorProjectSummary{
+		{Name: "fresh", SchemaVersionAtIndex: &atCurrent},
+	}, current); got != "" {
+		t.Fatalf("fresh schema should stay silent, got %q", got)
+	}
+
+	got := projectSchemaDriftAdvisory([]DoctorProjectSummary{
+		{Name: "pincher", SchemaVersionAtIndex: &atOld},
+	}, current)
+	if got == "" {
+		t.Fatal("old schema should produce an advisory")
+	}
+	for _, want := range []string{"pincher", "v35 < v38", "pincher index --force", "/v1/index"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("advisory missing %q\n  got: %s", want, got)
+		}
+	}
+
+	got = projectSchemaDriftAdvisory([]DoctorProjectSummary{
+		{Name: "dup", Path: "/repo/a", SchemaVersionAtIndex: &atOld},
+		{Name: "dup", Path: "/repo/b", SchemaVersionAtIndex: &atOld},
+	}, current)
+	for _, want := range []string{"dup at /repo/a", "dup at /repo/b"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("duplicate-name advisory should include path %q\n  got: %s", want, got)
+		}
+	}
+}
+
 // TestDoctorReport_WithFailuresAndSlowQueries — populated state. Each
 // section MUST appear in the rendered Markdown with the right counts.
 func TestDoctorReport_WithFailuresAndSlowQueries(t *testing.T) {
@@ -177,7 +211,7 @@ func TestDoctorReport_WithFailuresAndSlowQueries(t *testing.T) {
 	defer store.Close()
 
 	if err := store.UpsertProject(db.Project{
-		ID: "p1", Path: "/p", Name: "demo", IndexedAt: time.Now(),
+		ID: "p1", Path: "/p", Name: "demo", IndexedAt: time.Now(), BinaryVersion: "v-test-bin",
 	}); err != nil {
 		t.Fatalf("UpsertProject: %v", err)
 	}
@@ -212,6 +246,16 @@ func TestDoctorReport_WithFailuresAndSlowQueries(t *testing.T) {
 
 	if len(r.Projects) != 1 || r.Projects[0].Name != "demo" {
 		t.Errorf("project list = %+v, want one project named 'demo'", r.Projects)
+	}
+	blob, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("json.Marshal report: %v", err)
+	}
+	if !strings.Contains(string(blob), `"stale":false`) {
+		t.Errorf("doctor JSON should emit stale=false for fresh projects so consumers can read a boolean directly:\n%s", blob)
+	}
+	if got := r.Projects[0].BinaryVersion; got != "v-test-bin" {
+		t.Errorf("project binary_version = %q, want v-test-bin", got)
 	}
 	if len(r.ExtractionFailures) != 2 {
 		t.Errorf("expected 2 failures, got %d", len(r.ExtractionFailures))
@@ -490,6 +534,25 @@ func TestLargeDBAdvisory_CLI(t *testing.T) {
 	}
 }
 
+func TestReclaimableDBAdvisory_CLI(t *testing.T) {
+	if got := reclaimableDBAdvisory(900<<20, 49<<20); got != "" {
+		t.Errorf("below threshold should not advise; got %q", got)
+	}
+	if got := reclaimableDBAdvisory(0, 80<<20); got != "" {
+		t.Errorf("unknown DB size should not advise; got %q", got)
+	}
+
+	got := reclaimableDBAdvisory(900<<20, 60<<20)
+	if got == "" {
+		t.Fatal("reclaimable bytes above threshold should produce an advisory")
+	}
+	for _, want := range []string{"60.0 MB", "900.0 MB", "reclaimable free pages", "pincher vacuum", "pincher doctor --fix"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("advisory missing %q\n  got: %s", want, got)
+		}
+	}
+}
+
 // #635 v0.67 follow-up: payload-outlier advisory mirror for the CLI.
 // Pins the same dual-condition (ratio + absolute max) so the two
 // copies stay behaviourally identical.
@@ -514,6 +577,20 @@ func TestPayloadOutlierAdvisory_CLI(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("advisory missing %q\n  got: %s", want, got)
 		}
+	}
+
+	// Tool-aware remediation mirrors the MCP copy: context outliers
+	// should point to context's real controls, not search-only knobs.
+	got = payloadOutlierAdvisory([]db.ToolCallPayloadRow{
+		{Tool: "context", AvgBytes: 12_000, MaxBytes: 180_000},
+	})
+	for _, want := range []string{"context", "lite=true", "fields=symbol", "fields=symbol,callees"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("context advisory missing %q\n  got: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "min_confidence") {
+		t.Errorf("context advisory must not suggest min_confidence; got: %s", got)
 	}
 }
 
@@ -757,6 +834,12 @@ func TestDoctorReport_ProjectFilter(t *testing.T) {
 			t.Fatalf("RecordExtractionFailure %s: %v", c.id, err)
 		}
 	}
+	if err := store.UpsertProject(db.Project{
+		ID: "ghost", Path: "/ghost", Name: "ghost-proj",
+		IndexedAt: time.Now(), FileCount: 200, SymCount: 2_000, EdgeCount: 0,
+	}); err != nil {
+		t.Fatalf("UpsertProject ghost: %v", err)
+	}
 
 	// Filter to "alpha" — only alpha-proj should show, with only its
 	// failure row. beta-proj is invisible to this section.
@@ -769,6 +852,9 @@ func TestDoctorReport_ProjectFilter(t *testing.T) {
 	}
 	if len(r.ExtractionFailures) != 1 || r.ExtractionFailures[0].File != "alpha.go" {
 		t.Errorf("filter alpha extraction_failures = %+v, want one alpha.go row", r.ExtractionFailures)
+	}
+	if joined := strings.Join(r.Advisories, "\n"); !strings.Contains(joined, "ghost-proj") {
+		t.Errorf("store-wide ghost advisory should survive --project filter; got advisories:\n%s", joined)
 	}
 
 	// Case-insensitive + substring: "ALPHA" matches alpha-proj.
@@ -785,8 +871,8 @@ func TestDoctorReport_ProjectFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildDoctorReport (no filter): %v", err)
 	}
-	if len(rAll.Projects) != 2 {
-		t.Errorf("empty filter matched %d projects, want 2", len(rAll.Projects))
+	if len(rAll.Projects) != 3 {
+		t.Errorf("empty filter matched %d projects, want 3", len(rAll.Projects))
 	}
 	if len(rAll.ExtractionFailures) != 2 {
 		t.Errorf("empty filter extraction_failures = %d, want 2", len(rAll.ExtractionFailures))
@@ -860,5 +946,23 @@ func TestMatchedProjectIDsForFilter_Tiered(t *testing.T) {
 	hitsMiss := matchedProjectIDsForFilter(projects, "nonexistent-xyz")
 	if hitsMiss == nil || len(hitsMiss) != 0 {
 		t.Errorf("no-match filter should return empty map, got %v", hitsMiss)
+	}
+}
+
+func TestMatchedProjectIDsForFilter_DotTargetsCurrentDirectory(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	currentID := db.ProjectIDFromPath(cwd)
+	projects := []db.Project{
+		{ID: "/home/dev/.hermes/hermes-agent", Path: "/home/dev/.hermes/hermes-agent", Name: "hermes-agent"},
+		{ID: currentID, Path: currentID, Name: "pincher"},
+	}
+
+	hits := matchedProjectIDsForFilter(projects, ".")
+	if len(hits) != 1 {
+		t.Fatalf("doctor --project . should match only the cwd project, got %v", hits)
+	}
+	if _, ok := hits[currentID]; !ok {
+		t.Fatalf("doctor --project . matched %v, want current project %q", hits, currentID)
 	}
 }
