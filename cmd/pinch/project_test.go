@@ -71,6 +71,24 @@ func TestMatchProject_ExactNameWinsOverSubstring(t *testing.T) {
 	}
 }
 
+func TestMatchProject_DotTargetsCurrentDirectoryBeforeSubstring(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	currentID := db.ProjectIDFromPath(cwd)
+	projects := []db.Project{
+		{ID: "/home/dev/.hermes/hermes-agent", Name: "hermes-agent", Path: "/home/dev/.hermes/hermes-agent"},
+		{ID: currentID, Name: "pincher", Path: currentID},
+	}
+
+	hits, status := matchProject(projects, ".")
+	if status != matchExact {
+		t.Fatalf("status=%v, want matchExact", status)
+	}
+	if len(hits) != 1 || hits[0].ID != currentID {
+		t.Fatalf("matchProject(\".\") = %+v, want current project %q", hits, currentID)
+	}
+}
+
 func TestMatchProject_UniqueSubstringOnPath(t *testing.T) {
 	hits, status := matchProject(projectsFixture(), "other-project")
 	if status != matchExact {
@@ -257,6 +275,20 @@ func TestFormatProjectList_StaleMarker(t *testing.T) {
 	}
 	if !strings.Contains(got, "2 stale") {
 		t.Errorf("footer should report stale count; got:\n%s", got)
+	}
+}
+
+func TestBuildProjectListReport_JSONEmitsFreshStaleFalse(t *testing.T) {
+	current := db.CurrentSchemaVersion()
+	report := buildProjectListReport([]db.Project{
+		{ID: "fresh", Path: "/fresh", Name: "fresh", SchemaVersionAtIndex: &current},
+	})
+	blob, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if !strings.Contains(string(blob), `"stale":false`) {
+		t.Errorf("project list JSON should emit stale=false for fresh projects so consumers can read a boolean directly:\n%s", blob)
 	}
 }
 

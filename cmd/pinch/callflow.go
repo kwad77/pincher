@@ -38,18 +38,21 @@ func callflowCLI(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("callflow", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	symbolFlag := fs.String("symbol", "", "Symbol name or id to anchor the diagram on (required)")
-	projectFlag := fs.String("project", "", "Project name or id (default: the current directory's project)")
+	projectFlag := fs.String("project", "", "Project name, id, or substring (default: the current directory's project)")
 	depth := fs.Int("depth", 2, "How many call hops to follow (1-4)")
 	direction := fs.String("direction", "both", "callers | callees | both")
 	outPath := fs.String("out", "", "Write to this file (default: stdout)")
 	dataDir := fs.String("data-dir", "", "Override data directory")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: pincher callflow --symbol=NAME [--depth=2] [--direction=both] [--out=FILE]")
+		fmt.Fprintln(stderr, "usage: pincher callflow --symbol=NAME [--project NAME|ID|SUBSTR] [--depth=2] [--direction=both] [--out=FILE]")
 		fmt.Fprintln(stderr, "  Renders a Mermaid call-flow diagram (callers + callees) for a symbol.")
 		fmt.Fprintln(stderr, "  Paste the output into Markdown or https://mermaid.live .")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
 		return 2
 	}
 

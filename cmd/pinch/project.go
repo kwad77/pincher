@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -623,6 +624,14 @@ func matchProject(ps []db.Project, target string) ([]db.Project, matchStatus) {
 	if target == "" {
 		return nil, matchNone
 	}
+	if currentID, ok := currentDirProjectTarget(target); ok {
+		for _, p := range ps {
+			if p.ID == currentID || p.Path == currentID {
+				return []db.Project{p}, matchExact
+			}
+		}
+		return nil, matchNone
+	}
 	low := strings.ToLower(target)
 
 	// 1. Exact id match.
@@ -659,6 +668,18 @@ func matchProject(ps []db.Project, target string) ([]db.Project, matchStatus) {
 	default:
 		return subHits, matchAmbiguous
 	}
+}
+
+func currentDirProjectTarget(target string) (string, bool) {
+	trimmed := strings.TrimSpace(target)
+	if trimmed == "" || filepath.Clean(trimmed) != "." {
+		return "", false
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+	return db.ProjectIDFromPath(cwd), true
 }
 
 // ── shared ───────────────────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -71,11 +72,11 @@ func exportGraphCLI(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("export-graph", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	format := fs.String("format", "json", "Output format: json | graphml | dot")
-	projectFlag := fs.String("project", "", "Project name or id (default: the current directory's project)")
+	projectFlag := fs.String("project", "", "Project name, id, or substring (default: the current directory's project)")
 	outPath := fs.String("out", "", "Write to this file (default: stdout)")
 	dataDir := fs.String("data-dir", "", "Override data directory")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: pincher export-graph [--format=json|graphml|dot] [--project=NAME] [--out=FILE]")
+		fmt.Fprintln(stderr, "usage: pincher export-graph [--format=json|graphml|dot] [--project NAME|ID|SUBSTR] [--out=FILE]")
 		fmt.Fprintln(stderr, "  Dumps a project's symbol + edge graph for external graph tooling.")
 		fmt.Fprintln(stderr, "    json     — full record, every field (default)")
 		fmt.Fprintln(stderr, "    graphml  — GraphML XML (Gephi, Cytoscape, yEd)")
@@ -83,6 +84,9 @@ func exportGraphCLI(args []string, stdout, stderr io.Writer) int {
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
 		return 2
 	}
 
@@ -140,11 +144,12 @@ func exportGraphCLI(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// resolveExportProject picks the project to export. An empty flag means
-// the current directory's project; a non-empty flag is matched against
-// id, then exact name, then case-insensitive name.
+// resolveExportProject picks the project to export. An empty flag, or ".",
+// means the current directory's project. A non-empty flag uses the same
+// tiered resolver as `pincher project rm`: exact id, exact name, then
+// substring on name/path with ambiguity surfaced instead of guessed.
 func resolveExportProject(store *db.Store, flagVal string) (db.Project, error) {
-	if flagVal == "" {
+	if flagVal == "" || filepath.Clean(strings.TrimSpace(flagVal)) == "." {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return db.Project{}, fmt.Errorf("cwd: %w", err)
@@ -163,15 +168,18 @@ func resolveExportProject(store *db.Store, flagVal string) (db.Project, error) {
 	if err != nil {
 		return db.Project{}, fmt.Errorf("list projects: %w", err)
 	}
-	for _, p := range projects {
-		if p.ID == flagVal || p.Name == flagVal {
-			return p, nil
+	matches, status := matchProject(projects, flagVal)
+	switch status {
+	case matchExact:
+		return matches[0], nil
+	case matchAmbiguous:
+		labels := make([]string, 0, len(matches))
+		for _, p := range matches {
+			labels = append(labels, fmt.Sprintf("%s (id=%s)", p.Name, p.ID))
 		}
-	}
-	for _, p := range projects {
-		if strings.EqualFold(p.Name, flagVal) {
-			return p, nil
-		}
+		sort.Strings(labels)
+		return db.Project{}, fmt.Errorf("%q is ambiguous, matches %d projects: %s",
+			flagVal, len(matches), strings.Join(labels, "; "))
 	}
 	names := make([]string, 0, len(projects))
 	for _, p := range projects {

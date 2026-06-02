@@ -296,3 +296,17 @@ func TestCallflowCLI_EndToEnd(t *testing.T) {
 		}
 	})
 }
+
+func TestCallflowCLI_HelpExitsZero(t *testing.T) {
+	var out, errb strings.Builder
+	code := callflowCLI([]string{"--help"}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "usage: pincher callflow") {
+		t.Fatalf("help output missing usage:\n%s", errb.String())
+	}
+	if out.Len() != 0 {
+		t.Fatalf("help should not write stdout, got:\n%s", out.String())
+	}
+}

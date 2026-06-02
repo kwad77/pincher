@@ -197,7 +197,24 @@ func TestExportGraphCLI_EndToEnd(t *testing.T) {
 	})
 }
 
+func TestExportGraphCLI_HelpExitsZero(t *testing.T) {
+	var out, errb strings.Builder
+	code := exportGraphCLI([]string{"--help"}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "usage: pincher export-graph") {
+		t.Fatalf("help output missing usage:\n%s", errb.String())
+	}
+	if out.Len() != 0 {
+		t.Fatalf("help should not write stdout, got:\n%s", out.String())
+	}
+}
+
 func TestResolveExportProject(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	currentID := db.ProjectIDFromPath(cwd)
 	store, err := db.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
@@ -207,6 +224,21 @@ func TestResolveExportProject(t *testing.T) {
 		ID: "p-export", Path: "/tmp/p-export", Name: "exporter", IndexedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("UpsertProject: %v", err)
+	}
+	if err := store.UpsertProject(db.Project{
+		ID: "p-other", Path: "/tmp/other-project", Name: "other", IndexedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertProject other: %v", err)
+	}
+	if err := store.UpsertProject(db.Project{
+		ID: "p-export-fork", Path: "/tmp/exporter-fork", Name: "exporter-fork", IndexedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertProject exporter fork: %v", err)
+	}
+	if err := store.UpsertProject(db.Project{
+		ID: currentID, Path: currentID, Name: "current", IndexedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertProject current: %v", err)
 	}
 
 	// Match by exact name.
@@ -220,6 +252,20 @@ func TestResolveExportProject(t *testing.T) {
 	// Case-insensitive name.
 	if p, err := resolveExportProject(store, "EXPORTER"); err != nil || p.ID != "p-export" {
 		t.Errorf("resolve case-insensitive: got %+v err=%v", p, err)
+	}
+	// Unique substring on name/path follows the shared project matcher.
+	if p, err := resolveExportProject(store, "other-project"); err != nil || p.ID != "p-other" {
+		t.Errorf("resolve unique substring: got %+v err=%v", p, err)
+	}
+	// Ambiguous substring should fail loud instead of pretending nothing matched.
+	if _, err := resolveExportProject(store, "export"); err == nil {
+		t.Error("expected ambiguous substring error")
+	} else if !strings.Contains(err.Error(), "ambiguous") || !strings.Contains(err.Error(), "exporter-fork") {
+		t.Errorf("ambiguous error should list matching projects; got: %v", err)
+	}
+	// Dot means the current indexed project, same as omitting --project.
+	if p, err := resolveExportProject(store, "."); err != nil || p.ID != currentID {
+		t.Errorf("resolve dot: got %+v err=%v, want %q", p, err, currentID)
 	}
 	// No match — error names the available projects.
 	if _, err := resolveExportProject(store, "nonexistent"); err == nil {
