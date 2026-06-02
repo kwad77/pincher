@@ -73,7 +73,12 @@ End-to-end smoke check against a temporary data directory: open the database, cr
 ```bash
 pincher self-test                    # 5-step smoke test
 pincher self-test --verbose          # also prints per-step timings
+pincher self-test --json             # machine-readable liveness report
 ```
+
+`--json` writes a single structured report to stdout and keeps prose off the
+stream, so CI can pipe it directly into `jq`. Each step includes a stable
+`name`, human label, `ok`, and `duration_ms`; failed steps also include `error`.
 
 ### `pincher rebuild-fts`
 
@@ -121,6 +126,21 @@ pincher web --timeout 8              # auto-start readiness wait (seconds)
 ```
 
 The dashboard URL is `<base>/v1/dashboard` (honors `--basepath` reverse-proxy prefix).
+
+### `pincher setup`
+
+Interactive install wizard for terminal users. It detects supported agent/editor
+targets, lets you select hosts and options, writes through the same idempotent
+marker-block machinery as `pincher init`, and can optionally index the current
+project when it finishes.
+
+```bash
+pincher setup                         # interactive TUI; requires stdin/stdout TTYs
+```
+
+For scripted installs or non-interactive shells, use `pincher init --target=<name>`
+instead. `setup` refuses piped/non-TTY execution so automation does not hang on
+an invisible prompt.
 
 ### `pincher init`
 
@@ -195,7 +215,7 @@ SQLite does not shrink the database file when rows are deleted — `pincher proj
 
 ```bash
 pincher bench                             # bench largest project, 20 samples, text output
-pincher bench --project ID                # bench a specific project
+pincher bench --project NAME              # bench a specific project
 pincher bench --n 50 --depth 3            # more samples, deeper trace
 pincher bench --json                      # CI-friendly structured output
 pincher bench --seed 42                   # reproducible sample set
@@ -206,6 +226,8 @@ Falsifiable token-savings measurement against the user's own indexed corpus (#12
 Distinct from `make bench` / `make corpus-bench` (internal perf gates) and from the session-stats box (which reports cumulative `tokens_saved` against an assumed baseline). `pincher bench` is the artifact you can run on YOUR codebase to answer "does pincher actually save me tokens on my project?" — the synthetic pincher-repo numbers in [Why it matters](https://kwad77.github.io/pincher/#why-it-matters) are easy to dismiss; this is the local proof.
 
 Baseline model: search baseline = sum of unique file sizes across every result file (Grep + N×Read); context baseline = full file bytes of the symbol's file (cat); trace baseline = sum of unique file sizes across every touched symbol (N×Read while walking callers). Actual = JSON-serialized response bytes/4 — the same heuristic pincher's `tokens_used` envelope uses on every MCP response, so bench savings line up with the session-stats box.
+
+`--json` includes `project_id`, `project_name`, and `project_path` so a saved benchmark artifact remains self-describing without a separate `pincher project list` lookup.
 
 Per #1263 §2 (canonical workflow corpus + comparator implementations vs Sourcegraph CLI etc.) rolls forward to v0.69+; this v0.68 cut is the runs-on-your-own-project minimum.
 
@@ -224,7 +246,7 @@ Auto-restart-on-drift is load-bearing for the dogfood loop: when you `make insta
 
 `--inner-binary` (or `PINCHER_SUPERVISED_INNER_BINARY`) lets the stdio provider stay on a stable installed release while delegating MCP tool actions to a different pincher binary, which is useful when dogfooding a dirty workspace build without invalidating the host's long-lived MCP session.
 
-Without supervised mode (or the equivalent env var on a non-supervised stdio host), a binary swap lands on disk but the running MCP process keeps serving the old binary until the host is restarted. `pincher health` reports `binary_stale: true` when the swap landed but the running process hasn't picked it up.
+Without supervised mode (or the equivalent env var on a non-supervised stdio host), a binary swap lands on disk but the running MCP process keeps serving the old binary until the host is restarted. The MCP `health` tool and `POST /v1/health` response report `binary_stale: true` when the swap landed but the running process hasn't picked it up.
 
 ### `pincher health-check`
 
@@ -259,6 +281,8 @@ Stoa-family precedent: `stoa verify` hashes manifests as the integrity-check leg
 
 Prints persisted session savings (cumulative `tokens_saved`, MCP call count, baseline-method breakdown) plus per-project file/symbol/edge counts. The CLI surface for what the dashboard renders interactively. CLI-only by deliberate choice — wiping stats is destructive admin, not an agent action.
 
+The baseline-method breakdown is reconciled against the all-time totals. Current per-call rows are grouped under `_meta.baseline_method` values such as `full_file_read` and `none`; older session totals recorded before per-call baseline metadata are reported as `legacy_unattributed` instead of disappearing from the breakdown. In `--json`, the shape is `all_time.baseline_methods.<method>.{calls,tokens_used,tokens_saved}`.
+
 ```bash
 pincher stats                                     # human-readable savings + per-project counts
 pincher stats --json                              # structured output for CI / paste
@@ -284,6 +308,54 @@ pincher hook-stats --export-7d --data-dir /x      # override data directory
 CLI-only by deliberate choice — the data is human-shareable (paste it on a GitHub thread, send it to #640), not LLM-consumable. Adding an MCP surface would invite an agent to "report telemetry" which is exactly the phone-home shape pincher refuses. Telemetry stays local; this subcommand reads what the dashboard already shows and emits a copy-pasteable snapshot.
 
 Cross-references the `/v1/hook-stats` HTTP endpoint (same payload, served by the running HTTP gateway when `--http` is enabled).
+
+### `pincher completion`
+
+Prints a shell completion script for the binary's available subcommands.
+
+```bash
+pincher completion bash               # eval "$(pincher completion bash)"
+pincher completion zsh                # eval "$(pincher completion zsh)"
+pincher completion fish               # pincher completion fish | source
+```
+
+Unsupported shells exit non-zero with usage on stderr.
+
+### `pincher export-graph`
+
+Dumps an indexed project's symbol and edge graph for external graph tools.
+This is read-only: it selects persisted symbols/edges and does not re-index.
+
+```bash
+pincher export-graph                                  # JSON to stdout
+pincher export-graph --format=graphml --out graph.xml # Gephi/Cytoscape/yEd
+pincher export-graph --format=dot --project pincher   # Graphviz DOT
+pincher export-graph --data-dir /x                    # override data directory
+```
+
+Formats: `json` keeps the full record shape; `graphml` targets graph-analysis
+tools; `dot` targets Graphviz.
+
+`--project` uses the shared project resolver: full project id, exact name
+(case-insensitive), then substring on name or path. Ambiguous substrings fail
+with a disambiguation list.
+
+### `pincher callflow`
+
+Renders a bounded Mermaid call-flow diagram around one symbol using persisted
+`CALLS` edges. Output can be pasted into Markdown, GitHub comments, or the
+Mermaid live editor.
+
+```bash
+pincher callflow --symbol=HandleSearch                 # callers + callees, depth 2
+pincher callflow --symbol='path.go::pkg.Func#Function' # disambiguate by full id
+pincher callflow --direction=callees --depth=4
+pincher callflow --out flow.md --project pincher
+```
+
+`--direction` is `callers`, `callees`, or `both`. Depth is clamped to 1-4 and
+large diagrams are capped so hub symbols do not emit unreadable graphs.
+`--project` accepts the same id/name/substring forms as `export-graph`.
 
 ---
 

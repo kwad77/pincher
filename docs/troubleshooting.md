@@ -163,5 +163,7 @@ Returns Prometheus text exposition format with the standard counters / histogram
 ## Still stuck?
 
 - `pincher doctor` output is the canonical first-look at install state.
-- `pincher health` is the canonical first-look at running-server state.
+- `pincher health-check` is the canonical shell liveness probe; `GET /v1/health`
+  is HTTP liveness, while the MCP `health` tool or `POST /v1/health` is the
+  first-look diagnostic for running-server state.
 - File at https://github.com/kwad77/pincher/issues with both outputs attached.

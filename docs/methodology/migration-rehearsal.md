@@ -37,7 +37,7 @@ The four HTTP probes were picked to cover orthogonal failure modes:
 
 | Probe | What breaks if it fails |
 |---|---|
-| `/v1/health` | Server can't open the DB or schema-version check fails — total migration failure. |
+| `/v1/ready` | Server is alive but cannot serve traffic after startup. |
 | `/v1/stats` | Session stats schema (sessions table, v4 migration) didn't survive the upgrade. |
 | `/v1/schema` | Schema-introspection itself broke — every downstream tool would also break. |
 | `/v1/search` | FTS5 virtual table didn't rebuild correctly against migrated rows — the most common silent-break shape per the v9 corpus-routing migration. |

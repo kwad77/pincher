@@ -44,9 +44,9 @@ Are you running an LLM agent locally?
   via `StartSchemaDriftWatcher` (#1374) — supervised deployments
   respawn the binary automatically when an older binary is pinned.
 - **Observability.** Every deployment exposes `/v1/health` +
-  `/v1/healthz` + `/v1/readyz`. OTLP traces export when
+  `/v1/ready`. OTLP traces export when
   `OTEL_EXPORTER_OTLP_ENDPOINT` is set (#1163). Prometheus metrics
-  scrape at `/metrics` by default.
+  scrape at `/v1/metrics` by default.
 
 ## Related
 

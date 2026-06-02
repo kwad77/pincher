@@ -46,7 +46,7 @@ When mounted, every tool response includes `streamable_http` in `_meta.capabilit
 
 When `--http-key <token>` is set, the streamable-HTTP transport requires `Authorization: Bearer <token>` exactly like the REST gateway. The bearer check runs *before* the MCP handler — an unauthenticated request never reaches the SDK.
 
-`/v1/health` and `/v1/openapi.json` remain public probes for liveness checks (#588). The streamable-HTTP path does not have a public-probe carve-out — every request must authenticate.
+`GET /v1/health`, `GET /v1/ready`, and `GET /v1/openapi.json` remain public probes for liveness/readiness checks (#588). Tool calls such as `POST /v1/health` use the normal HTTP auth contract. The streamable-HTTP path does not have a public-probe carve-out — every request must authenticate.
 
 ## Both transports simultaneously
 
@@ -64,7 +64,9 @@ If the request carries no `X-Request-ID` (or a junk value — non-printable, CRL
 
 ```bash
 curl -sD - -X POST http://127.0.0.1:8081/v1/health \
-  -H 'X-Request-ID: router-trace-42' | grep -i x-request-id
+  -H 'Content-Type: application/json' \
+  -H 'X-Request-ID: router-trace-42' \
+  -d '{}' | grep -i x-request-id
 # → X-Request-ID: router-trace-42
 ```
 

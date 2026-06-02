@@ -38,7 +38,7 @@ The chart wires Kubernetes probes to the dedicated endpoints introduced in
 
 | Probe | Path | Meaning |
 |---|---|---|
-| `livenessProbe` | `/v1/health` | "Process alive, DB reachable" — restart on failure. |
+| `livenessProbe` | `/v1/health` | "Process alive" — restart on failure. |
 | `readinessProbe` | `/v1/ready` | "Index drained, accepting query traffic" — withhold traffic during initial scan. |
 
 Splitting the two prevents the indexer's first-pass scan (can be minutes on a

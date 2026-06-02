@@ -58,7 +58,9 @@ pincher supervised --http :8080
 - Every SQL query inside a tool call becomes a child span: `db.query.<operation>` (`select`, `update`, `migrate`). Slow queries (above the threshold per `pincher doctor`'s slow-query log) carry `slow=true`.
 - Index passes become root spans `pincher.index.run` with per-file child spans when in verbose mode (`PINCHER_TRACE_INDEX_FILES=1` — verbose mode adds a span per file, can blow up the trace volume on large repos; opt-in).
 
-When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, `pincher health` reports `traces_otlp: off`. When it's set, `pincher health` reports `traces_otlp: on (endpoint=...)`.
+When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, the MCP `health` tool and
+`POST /v1/health` report `observability.traces_otlp: off`. When it's set,
+`health` reports `traces_otlp: on (endpoint=...)`.
 
 **Auth contract:** Same as the standard OTel SDK. Headers via `OTEL_EXPORTER_OTLP_HEADERS=key=value,key2=value2`.
 
@@ -110,14 +112,19 @@ Ship the JSON log stream to your log aggregator (Loki, Datadog, Splunk, fluentd,
 # Metrics endpoint reachable + emitting?
 curl -fsS http://localhost:8080/v1/metrics | grep '^pincher_'
 
-# Traces enabled + exporting?
-pincher health --json | jq '.capabilities | grep traces_otlp'
+# Traces enabled + exporting? (HTTP server must be running.)
+curl -fsS -X POST http://localhost:8080/v1/health \
+  -H 'Content-Type: application/json' \
+  -d '{}' | jq '.observability.traces_otlp'
 
 # Logs at the expected level?
 pincher --version 2>&1 | head -1   # confirms binary; logs go to stderr at start
 ```
 
-If `pincher health`'s `capabilities` block doesn't list `metrics_prometheus`, the HTTP gateway isn't running — start with `--http :PORT`. If `traces_otlp` shows `off`, the OTLP env var wasn't set at start.
+If `/v1/capabilities` does not list `metrics_prometheus`, the HTTP gateway
+isn't running — start with `--http :PORT`. If the `health` tool or
+`POST /v1/health` shows `observability.traces_otlp` as `off`, the OTLP env var
+wasn't set at start.
 
 ## Refs
 

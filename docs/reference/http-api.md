@@ -30,6 +30,11 @@ curl -s -X POST http://localhost:8080/v1/query \
 # Liveness probe — no auth required
 curl http://localhost:8080/v1/health
 
+# Rich health tool report — follows normal tool auth when --http-key is set
+curl -s -X POST http://localhost:8080/v1/health \
+  -H "Content-Type: application/json" \
+  -d '{}' | jq '.observability'
+
 # OpenAPI spec (Postman / Cursor importable)
 curl http://localhost:8080/v1/openapi.json | jq .
 ```
@@ -40,7 +45,7 @@ Responses compress ~65% with `Accept-Encoding: gzip`. Tested clients: curl, Pyth
 
 | Endpoint | Method | Auth | Description |
 |---|---|---|---|
-| `/v1/health` | GET | No | Liveness probe — schema version, index staleness. Always 200. |
+| `/v1/health` | GET | No | Lightweight liveness probe — process/version/auth metadata. Always 200. Use `POST /v1/health` for the health tool's schema, index-staleness, coverage, observability, and `binary_stale` report. |
 | `/v1/ready` | GET | No | Readiness probe (#660) — 200 when the server can serve traffic; 503 when an essential dependency (store, indexer, schema migration) isn't ready. Use `/v1/health` for liveness and `/v1/ready` for readiness gating in orchestrator manifests (Kubernetes `readinessProbe`, systemd `Type=notify`). |
 | `/v1/dashboard` | GET | No | Self-contained HTML dashboard (stats, search, project cards, sparkline). No external deps. |
 | `/v1/dashboard.css` | GET | No | Dashboard stylesheet. Served separately so CSP can drop `'unsafe-inline'`. |

@@ -62,7 +62,7 @@ The shape declared in [`docs/integrations/meta-envelope-contract.md`](../integra
 
 ### HTTP gateway routes (frozen)
 
-`GET /v1/openapi.json`, `POST /v1/<tool>`, `GET /v1/hook-stats`, `GET /v1/architecture/<aspect>`, `GET /v1/tool-payload-stats`, `GET /metrics` (Prometheus, when wired per FILE-G), `GET /v1/icons/<tool>` (when wired per #1079 if it lands), and any other public route declared in `docs/reference/http-api.md` or "Streamable HTTP" are frozen.
+`GET /v1/openapi.json`, `POST /v1/<tool>`, `GET /v1/hook-stats`, `GET /v1/architecture/<aspect>`, `GET /v1/tool-payload-stats`, `GET /v1/metrics` (Prometheus), `GET /v1/icons/<tool>` (when wired per #1079 if it lands), and any other public route declared in `docs/reference/http-api.md` or "Streamable HTTP" are frozen.
 
 - Adding new routes in 1.x is non-breaking.
 - Changing the URL structure or response shape of an existing route requires a 2.0 release.
@@ -71,12 +71,14 @@ The OpenAPI spec served at `/v1/openapi.json` is itself the wire contract; any d
 
 ### CLI subcommands + flags (frozen)
 
-The 15 subcommands enumerated in `internal/server/reference_md_cli_subcommand_parity_test.go expectedCLISubcommands` are frozen:
+The advertised subcommands parsed from `cmd/pinch/main.go`'s `printHelpBanner`
+by `internal/server/reference_md_cli_subcommand_parity_test.go` are frozen:
 
 ```
-bench        doctor       health-check hook-stats   index
-init         project      rebuild-fts  self-test    stats
-supervised   update       vacuum       verify       web
+bench        callflow     completion   doctor       export-graph
+health-check hook-stats   index        init         project
+rebuild-fts  self-test    setup        stats        supervised
+update       vacuum       verify       web
 ```
 
 - Adding new subcommands is non-breaking.

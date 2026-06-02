@@ -132,9 +132,9 @@ The container exposes these endpoints:
 
 | Endpoint | Purpose | Auth required |
 |---|---|---|
-| `/v1/health` | Schema version, per-language coverage, advisory list | No (lightweight) |
-| `/v1/healthz` | Kubernetes liveness probe (always 200 if process up) | No |
-| `/v1/readyz` | Kubernetes readiness (200 once index is queryable) | No |
+| `/v1/health` | Lightweight liveness: process/version/auth metadata | No |
+| `/v1/ready` | Kubernetes readiness (200 once index is queryable) | No |
+| `/v1/metrics` | Prometheus scrape endpoint | No |
 | `/v1/doctor` | Full diagnostic — DB size, WAL, recent failures | Yes (if `PINCHER_HTTP_KEY` set) |
 
 ## Related
