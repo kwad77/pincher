@@ -8,7 +8,7 @@
     "Setting": 1
   },
   "edge_count_by_kind": {
-    "CALLS": 5,
+    "CALLS": 3,
     "IMPORTS": 1
   },
   "extraction_failures_by_reason": {},
