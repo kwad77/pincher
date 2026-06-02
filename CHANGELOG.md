@@ -7,6 +7,139 @@ minors.
 
 ## [Unreleased]
 
+## [0.98.0] — 2026-06-02 — v1.0-prep release: surface correctness, indexer hardening, doctor advisories
+
+v0.98.0 is the migration-review checkpoint release on the path to v1.0. It
+tightens the v1.0 frozen-surface candidates (clean GET vs POST split on
+`/v1/health`, FTS5 escape for CLI-flag-shaped search terms, architecture
+`include_tests` propagation), hardens the indexer for bulk reload, surfaces
+two new operator-actionable doctor advisories, ships a `baseline_method`
+breakdown on `pincher stats`, and aligns project-flag resolution across the
+CLI subcommands. The release tracker is [#1716](https://github.com/kwad77/pincher/issues/1716);
+the next step on the path to v1.0 is the v0.99 final-hardening hold per
+`docs/release-signoff-v0.99.md`.
+
+### Added
+- `pincher stats` reports an all-time `baseline_methods` breakdown so the
+  per-call `_meta.baseline_method` tags surface in the persisted savings
+  view. Earlier session rows that predate per-call attribution land under
+  `legacy_unattributed` instead of disappearing from the totals.
+- `pincher self-test --json` writes a machine-readable single-pass report
+  to stdout (stable `name`, `label`, `ok`, `duration_ms`, plus `error`
+  on failure) so CI can pipe the result through `jq`.
+- `pincher setup` rejects unexpected arguments and points piped/scripted
+  installs at `pincher init --target=<name>`; `-h`/`--help`/`help` print a
+  short usage banner and exit 0.
+- `pincher bench --json` now embeds `project_id`, `project_name`, and
+  `project_path` so a saved benchmark artifact remains self-describing
+  without a separate `pincher project list` lookup.
+- Two new `pincher doctor` advisories:
+  - **Project schema drift** — surfaces projects indexed by an older schema
+    version than the running binary, with a remediation pointer at
+    `pincher index --force <path>`.
+  - **Reclaimable database free pages** — surfaces when SQLite's freelist
+    crosses 50 MiB and constitutes a non-trivial fraction of the file,
+    with a remediation pointer at `pincher vacuum`. Catches the
+    post-prune / post-reindex shape where the DB sits below the
+    "large DB" threshold but has stranded space.
+- `payloadOutlierAdvisory` now specializes its remediation hint for the
+  `context` tool, pointing at `lite=true` / `fields=symbol` rather than
+  generic "narrow the query" guidance.
+- New shared CLI substring project resolver (`matchProject`) and `.`
+  session sentinel across `pincher callflow`, `pincher export-graph`,
+  `pincher project`, and `pincher doctor`. Ambiguous substring matches
+  fail with a disambiguation list instead of silently picking one.
+
+### Changed
+- `GET /v1/health` is now strictly the public liveness probe (no auth
+  required) and `POST /v1/health` is the registered `health` tool with the
+  richer schema, index-staleness, observability, and `binary_stale`
+  report. Pre-split, both methods routed at the lightweight liveness
+  handler, which meant MCP hosts saw the same payload as the HTTP probe.
+  The bearer-skip carve-out is now gated on `r.Method == GET` so a
+  bearer-less POST against an authed gateway is rejected the same as any
+  other tool. The streamable-HTTP transport is unaffected — it remains
+  authenticated for every request.
+- ADR-0002 (v1.0 frozen surface) refreshes the canonical CLI subcommand
+  list to the 19 names parsed from `printHelpBanner`
+  (adds `callflow`, `completion`, `export-graph`, `setup`) and corrects
+  the `/metrics` reference to `/v1/metrics`.
+- `architecture`'s `surprising_connections` honors `include_tests` like
+  `hotspots` already did — test-only cross-package edges no longer show
+  up as rare-edge orientation noise by default.
+- `doctor`'s `Stale` field is always serialized (was `omitempty`). JSON
+  consumers can branch on a stable boolean instead of inferring staleness
+  from field absence. `StaleReason` keeps `omitempty` since it is only
+  populated when `Stale` is true. Noted here because per ADR-0002
+  promotion of an optional field to required is normally a 2.0 change;
+  this lands before v0.99 RC and the freeze checkpoint.
+- `resolveProjectID` and `handleDoctor` treat `--project=.` as the
+  current session project, matching the CLI substring resolver.
+- `pincher stats`' `ProjectStats.Stale` mirrors the same change.
+- `pincher bench` text output renders the project label as
+  `name (path)` when both are available, instead of just the bare id.
+
+### Fixed
+- **FTS5 escape for CLI-flag-shaped tokens.** `needsQuoting` now
+  phrase-quotes leading `-NAME` and `--NAME` patterns when followed by
+  an alphanumeric. `--version`, `-run`, `--http-key` are common natural
+  search terms in command-line codebases; FTS5 sees the bare `-` as an
+  exclusion operator and returned a parser error pre-fix.
+- **Indexer bulk-reload hardening.** Three related changes:
+  - Worker fan-out capped at `min(GOMAXPROCS × 2, 16)` so 64-core hosts
+    no longer spawn 64 concurrent extract goroutines contending for the
+    single SQLite writer. Floors at 2 so single-core environments keep
+    parallelizing the walker.
+  - On `force` / binary-drift / crash-recovery reindex paths, the
+    indexer now calls `db.Store.ClearProjectIndexData` once up front
+    and raises the in-memory flush threshold from 500 → 5000 symbols.
+    The per-file `DeleteSymbolsForFile` cascade is skipped on the
+    cleared path. Combined with the cap above, this turns the bulk
+    reload from per-file DELETE + per-batch INSERT into one CLEAR +
+    larger batched INSERTs.
+  - Flush failures are no longer silently warned. The first error is
+    captured under a mutex, in-flight workers short-circuit, and
+    `Index()` returns the wrapped error instead of producing a
+    half-written project state.
+- **FTS5 merge-policy reset on Open.** A new
+  `db.Store.ConfigureFTSMergePolicy` sets `automerge=4` and
+  `crisismerge=4096` on the three per-corpus FTS5 indexes so a single
+  bulk-write does not get stuck inside a crisis merge with SQLite's
+  default crisis threshold of 16. Repaired on every Open so one-off
+  `INSERT ... VALUES('automerge', 0)` overrides do not silently regress
+  query performance.
+
+### Docs
+- `docs/reference/cli.md` adds dedicated sections for `pincher setup`,
+  `pincher completion`, `pincher export-graph`, `pincher callflow`,
+  documents `pincher self-test --json`, the `--project NAME` form on
+  `pincher bench`, and the stats baseline-method breakdown wording.
+- `docs/reference/http-api.md` and `docs/streamable-http.md` document
+  the GET vs POST `/v1/health` split and the rich health-tool POST
+  shape.
+- `docs/migration/v0.4-to-v1.0.md` lists `completion` / `export-graph` /
+  `callflow` alongside `verify` / `setup` as CLI-only surfaces and
+  corrects the step-5 health-check command (`pincher health-check`,
+  not the removed `pincher health` CLI subcommand).
+- `docs/deployment/{README,docker,helm,observability}.md` and
+  `docs/troubleshooting.md` reflect the same MCP/HTTP `health` tool
+  shape and point at the `observability` block on the POST response
+  rather than the removed CLI flag.
+- ADR-0002 (v1.0 frozen surface) refreshes the canonical CLI subcommand
+  list and the `/v1/metrics` route reference.
+
+### DOGFOOD
+- **Bulk-reload indexer perf.** Surfaced while reindexing the Hermes
+  agent corpus after a binary swap: the prior unbounded fan-out + per-file
+  DELETE produced long tail latency and elevated `SQLITE_BUSY` on a
+  64-core host. The capped pool + bulk-clear path turn the reload into
+  one CLEAR + a handful of large batched INSERTs.
+- **Doctor advisories on the dogfood DB.** After a series of forced
+  reindexes against the dashboard DB, `pincher doctor` surfaced reclaimable
+  free pages above 100 MiB — exactly the shape `reclaimableDBAdvisory` is
+  built for. The schema-drift advisory caught a project that had been
+  indexed by an older binary still on disk and not yet refreshed.
+
 ## [0.97.3] — 2026-05-26 — Python collision cleanup + Windows CI sharding
 
 v0.97.3 is a dogfood polish patch on top of v0.97.2. It fixes the Python
@@ -3764,7 +3897,8 @@ Highlights:
 - `docs/index.html`: single-file GitHub Pages landing page.
 - CI coverage gate lowered to 83% to match reality.
 
-[Unreleased]: https://github.com/kwad77/pincher/compare/v0.97.3...HEAD
+[Unreleased]: https://github.com/kwad77/pincher/compare/v0.98.0...HEAD
+[0.98.0]: https://github.com/kwad77/pincher/compare/v0.97.3...v0.98.0
 [0.97.3]: https://github.com/kwad77/pincher/compare/v0.97.2...v0.97.3
 [0.97.2]: https://github.com/kwad77/pincher/compare/v0.97.1...v0.97.2
 [0.97.1]: https://github.com/kwad77/pincher/compare/v0.97.0...v0.97.1
