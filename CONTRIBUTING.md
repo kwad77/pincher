@@ -209,13 +209,7 @@ Every PR touching the frozen surface (per ADR-0002) checks the PR-template box:
 
 Reviewers verify the checkbox claim before merging. CI gates (`TestToolContract_GoldenFile`, the contract tests on every frozen surface element) catch accidental breakage.
 
-Release-prep PR (the one before tagging) MUST touch all five:
-
-1. **`CHANGELOG.md`** — assemble stubs via `bash scripts/changelog-assemble.sh --apply`, then promote `[Unreleased]` to a versioned heading with the release's theme one-liner.
-2. **`README.md` roadmap table** — bump prior `🚧 in flight` row to `✅ shipped`; add the next `🚧 in flight` row.
-3. **`README.md` Known limitations** — rewrite items whose fix lands this release into past tense.
-4. **Version-sensitive claims in README leading paragraph** — tool count, schema version, coverage badge if it moved meaningfully (>1%).
-5. **`docs/reference/README.md` leading metadata line** — `**Schema version:** vN · **MCP tools:** N · **Languages detected:** ~N`. Bump every release that moves any of those numbers.
+Release-prep PR (the one before tagging) MUST touch every item in the canonical [`RELEASING.md` → Release-prep checklist](RELEASING.md#release-prep-checklist) — codex adversarial review, CHANGELOG assembly, GitHub release notes, README roadmap/limitations/leading-paragraph, `docs/reference/README.md` metadata line, the `docs/` Pages-site grep audit, bench baseline decision, and the `DOGFOOD:` subsection. Don't skip.
 
 Tag pushes trigger the auto-bump workflow for the Homebrew formula and Docker image — those don't go in the release-prep PR.
 

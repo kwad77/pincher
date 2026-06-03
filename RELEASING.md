@@ -45,6 +45,120 @@ are pinned by golden-file tests in `internal/server/`. After 1.0:
 A failing golden-file diff is the gate — reviewers see exactly what changed
 and whether the version bump matches.
 
+## Release-prep checklist
+
+The release-prep PR (the one before tagging) MUST touch all items below.
+CHANGELOG-only is the historical mistake — the README is what users hit first
+via the GitHub repo landing page, and stale roadmap claims erode trust faster
+than missing CHANGELOG entries.
+
+1. **`/codex:adversarial-review` (master vs previous tag, manual)** — BEFORE
+   opening the release-prep PR, run `/codex:adversarial-review` against
+   `git diff <previous-tag>..master` and triage findings:
+   - **sev-1 (canonical workflow break / silent-confidently-wrong /
+     supply-chain risk)** → fix or open a blocking issue before tagging.
+     Do not tag with sev-1 open.
+   - **sev-2 (real bug, doesn't break a canonical workflow)** → file with
+     `dogfood-found` + `severity-2` + appropriate `axis-*` label; route per
+     the dogfood routing table.
+   - **sev-3 (polish / docs / UX gap)** → file with `severity-3`; let the
+     next reserve slot pick it up.
+   - **Waived findings** → note inline in the release-prep PR body under a
+     "Codex review: waived" subsection, with one-line rationale per finding.
+
+   Rationale: per-PR review catches per-PR defects; release-window review
+   catches cross-PR emergent shape (three orthogonal PRs that each pass
+   review individually but together produce a confused tool surface).
+   Codex's adversarial mode is the cheapest second-opinion gate available;
+   running it once per release ~10-30 min vs. shipping a sev-1
+   silent-wrong to v1.0 dogfood users. Manual / human-in-the-loop by
+   design.
+
+2. **`CHANGELOG.md`** — run `bash scripts/changelog-assemble.sh --apply`
+   to fold per-PR `CHANGELOG.d/<num>.<type>.md` stubs into the
+   `[Unreleased]` section, then convert `[Unreleased]` → versioned heading
+   with the release's theme one-liner. Stub-file convention shipped #694;
+   legacy direct-edit still works for in-flight PRs that predate it.
+
+3. **GitHub release "What's New"** — draft the release body with a clear
+   "What's New" section describing the actual work landed since the
+   previous tag. This is separate from the terse changelog: the changelog
+   is the audit trail; "What's New" is the human summary users see on the
+   release page.
+
+4. **`README.md` roadmap table** — bump the previous `🚧 in flight` row to
+   `✅ shipped`, add a new row for the version about to ship with its theme
+   one-liner, optionally add the next `🚧 in flight` row.
+
+5. **`README.md` Known limitations** — rewrite any item whose fix lands in
+   this version into past tense; recommend the upgrade.
+
+6. **Version-sensitive claims in README leading paragraph** — tool count,
+   schema version, coverage badge if it moved meaningfully (>1%).
+
+7. **`docs/reference/README.md` — leading metadata line** (`**Schema
+   version:** vN · **MCP tools:** N · **Languages detected:** ~N`). Bump
+   every release that moves any of those numbers. Per #688: the leading
+   line is what users see first when they click into the reference doc
+   from README; stale numbers there make every subsequent claim look
+   distrust-by-default. Drift was 12 schema versions before #698 caught
+   it.
+
+8. **`docs/` (GitHub Pages site)** — audit `docs/index.html`,
+   `docs/release-channels.md`, `docs/streamable-http.md`,
+   `docs/troubleshooting.md`, `docs/deployment/*.md`, `docs/tutorials/*.md`
+   for version-sensitive claims. The grep that catches drift:
+   `grep -rnE "v0\.[0-9]+|pincher-v0\.[0-9]+|[0-9]+ MCP tools|schema.{0,15}v[0-9]+" docs/`
+   against the previous release version. Pages renders polished landing
+   copy from `docs/` — install tarball filenames, savings-stat
+   parentheticals, badge value ranges, forward-looking copy about
+   features that did/didn't ship — all higher-visibility than README to
+   search-engine traffic. v0.67 release-prep missed `docs/index.html`
+   "v0.66" parenthetical + `pincher-v0.66.0-linux-amd64.tar.gz` install
+   snippet; caught next morning in a catch-up PR. Don't repeat.
+
+9. **Bench baseline decision** — decide whether the release refreshes
+   `testdata/bench/{index,server}.bench.txt`. **Default: skip** for patch
+   releases and feature releases that don't intentionally change perf
+   shape. **Refresh** for `.x9` hardening releases (workstream 2 of the
+   hardening umbrella — see `#672` shape) and for any release that ships
+   a deliberate perf-affecting refactor whose new numbers ARE the
+   rationale. Mechanism: trigger `.github/workflows/bench-baseline.yml`
+   via `workflow_dispatch` on the Actions UI; download the artifact;
+   copy `*.bench.txt` files into `testdata/bench/`; commit. Wrong call:
+   refreshing on every release silently absorbs regressions and defeats
+   the gate's purpose (per the v0.79 prep audit, the committed baseline
+   drifted 8 minors with no enforcement because every release
+   auto-refreshed without justification).
+
+10. **`DOGFOOD:` CHANGELOG section** — every release-prep PR adds a
+    `DOGFOOD:` subsection to the release's CHANGELOG entry, bullet-listing
+    friction found AND fixed in that window. Friction found but NOT fixed
+    gets filed as an issue with the `dogfood-found` label, never silently
+    dropped. Skipping this section is a release defect (same severity as
+    skipping the README roadmap-table bump). Rationale: dogfood-found
+    work is the dominant source of pre-1.0 fixes; making it auditable
+    per release lets us see the planned-vs-discovery ratio and trigger
+    the volume-based axis-escalation rule.
+
+If a release ships without README touched, the user's first reaction is
+"the README didn't say anything about it" and follow-up cleanup PRs read
+as forgetting, not catching up. Do it inline.
+
+After tag pushes, the auto-bump workflow handles the Homebrew formula and
+Docker image — those don't go in the release-prep PR itself.
+
+**Post-tag install validation (#1337).** `.github/workflows/install-validation.yml`
+fires automatically on every published release: it downloads each
+platform's release artifact (tarball/zip/docker) and asserts
+`pincher --version` matches the tag. After tagging, confirm the
+`Install validation` run went green — `direct` (6 cells) + `docker`
+(2 cells) gate every release; `brew` + `scoop` cells run only on stable
+tags (channel-gated) and are skipped on dev releases. A red
+`direct`/`docker` cell means the released binary for that platform
+doesn't run — treat as a release-blocking defect. The harness is also
+`workflow_dispatch`-able against any past tag from the Actions UI.
+
 ## Release procedure
 
 This is the manual procedure for cutting a release. Once we set up automated
