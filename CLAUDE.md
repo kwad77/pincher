@@ -135,84 +135,9 @@ These fail when changes elsewhere don't update them in lockstep:
 
 ## Build & Test
 
-```bash
-# Build (recommended — stamps version from `git describe`)
-make build PINCHER_BIN=./pincher.exe     # Windows
-make build                               # Linux/macOS
+Build, test, snapshot, and bench runbook lives in [`CONTRIBUTING.md` → Build & Test reference](CONTRIBUTING.md#build--test-reference). Includes the `make build` / `make install` swap-binary flow, single-test syntax, `make corpus-test` + `make corpus-bench` policies, and the bench-baseline refresh procedure.
 
-# Build + swap the on-PATH binary (autonomous dogfood path).
-# Uses scripts/swap-active-binary.sh's rename-out trick on Windows where
-# `cp` over a running .exe fails with "Device or resource busy" (#705).
-#
-# PREREQUISITES (per #1151 — fresh clones miss these silently):
-#   1. An on-PATH `pincher` (Linux/macOS) or `pincher.exe` (Windows) must
-#      exist. The script swaps the binary at that path; no on-PATH binary
-#      → script exits 1. One-time bootstrap:
-#        cp ./pincher $HOME/.local/bin/pincher   # Linux/macOS
-#        copy pincher.exe %USERPROFILE%\bin\pincher.exe   # Windows
-#   2. For "no manual /mcp" auto-pickup, EITHER (a) the running MCP
-#      child must have been launched as `pincher supervised`, OR
-#      (b) PINCHER_AUTO_RESTART_ON_DRIFT=1 must be set in the MCP
-#      child's env. Without one of these, the swap lands on disk but
-#      the running process keeps serving the old binary until manual
-#      /mcp reconnect. `mcp__pincher__health` reports
-#      `binary_stale: true` when the swap landed but the running
-#      process didn't pick it up.
-make install PINCHER_BIN=./pincher.exe   # Windows
-make install                             # Linux/macOS
-
-# Bare go build (skips version stamping — `pincher --version` reports "dev")
-go build -o pincher.exe ./cmd/pinch/     # Windows, dev-stamped
-go build -o pincher ./cmd/pinch/         # Linux/macOS, dev-stamped
-
-# Manual stamp without make:
-go build -ldflags="-s -w -X main.version=$(git describe --tags --dirty --always | sed 's/^v//')" -o pincher.exe ./cmd/pinch/
-
-# Test
-go test ./...
-go test ./... -coverprofile=cover.out && go tool cover -func=cover.out | grep "^total"
-go test ./internal/db/ -run TestGraphStats_WithData -v   # single test
-go tool cover -func=cover.out | grep -v "100.0%" | sort -t'%' -k1 -n   # coverage gaps
-
-# Pinned-corpus snapshots (#33)
-make corpus-test                  # verify; runs in CI as Corpus snapshot
-make corpus-snapshot-update       # regenerate after intentional changes
-
-# Performance benchmarks (#50)
-make bench                        # local feedback
-make bench-index | make bench-server   # narrow scope
-make corpus-bench                 # gate vs committed baseline (local-only since #692; not gated in CI)
-make corpus-bench-update          # regen baselines (intentional perf changes only)
-
-# Diagnostics & admin
-pincher doctor [--json]
-pincher rebuild-fts [--quiet]
-pincher stats [--json] [--reset]
-```
-
-**After any schema change** rebuild `pincher.exe` and reconnect via `/mcp` so the running MCP picks up the new schema.
-
-### Pinned-corpus snapshot policy (#33)
-
-`testdata/corpus/<name>/` holds small hand-crafted corpora. `<name>.snapshot.json` is the committed expected output of `pincher index --json-summary`. Counts (symbols, edges, files, kinds, average confidence) are exact-match. Noisy fields (`db_size_kb`, `duration_ms`) are stripped.
-
-Two redundant gates: `make corpus-test` (jq) and `TestCorpusSnapshot_*` (pure Go). The JSON diff IS the rationale; review it in PRs.
-
-**`extraction_failures_by_reason` cross-cutting gate:** every snapshot pins a per-corpus map of failure reasons → counts. Healthy corpora show `{}`. A PR that bumps any count from 0 to N is a regression by default — fix the bug, don't update the baseline. Caught #69, #74, #79, #80 before they reached real corpora.
-
-### Bench gating (#50)
-
-`testdata/bench/<package>.bench.txt` holds committed `go test -bench` output captured at `-benchtime=2s -benchmem`. Comparator (`cmd/benchcmp/`) gates on `ns/op +20%` and `allocs/op +30%`. Phase 1: `continue-on-error: true` — see CI conventions above.
-
-### Bench baseline refresh (#672 v0.79 workstream 2)
-
-The committed baseline lives in `testdata/bench/{index,server}.bench.txt` and is pinned to **CI hardware** (Linux AMD EPYC 7763, `-4` GOMAXPROCS). Running `make corpus-bench` locally on different hardware (Windows i9, macOS arm64, etc.) produces meaningless deltas and false-positive "regressions" — the gate is only valid against the CI runner pool that produced the baseline.
-
-To refresh the baseline on current CI hardware: trigger `.github/workflows/bench-baseline.yml` via the Actions UI `workflow_dispatch` button. Pick the tag or branch you want to baseline (typically the most recent release tag). The workflow runs `go test -bench` at `-benchtime=10s` against `internal/index` + `internal/server`, uploads the regenerated `*.bench.txt` files as an artifact, and prints a diff against the committed baseline for visibility. Download the artifact, sanity-check the deltas, copy into the repo, commit. The next `make corpus-bench` run gates against the fresh numbers.
-
-When to refresh: (a) the v0.79 / v0.89 / v0.99 hardening releases as part of #672-shape workstream 2, (b) after a deliberate perf-affecting refactor whose new numbers ARE the rationale (then `make corpus-bench-update` locally on CI-matching hardware is also valid), (c) when CI runner pool changes (rare; rolls a new EPYC SKU or similar).
-
-When NOT to refresh: any PR that doesn't intentionally change perf shape — re-baselining absorbs regressions silently and defeats the gate's whole purpose.
+**After any schema change** rebuild `pincher` (or `pincher.exe`) and reconnect via `/mcp` so the running MCP picks up the new schema.
 
 ## Architecture
 
