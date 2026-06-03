@@ -2,6 +2,22 @@
 
 Pincher is a local code-intelligence MCP server. Contributions of all sizes are welcome — bug fixes, new language extractors, dashboard polish, documentation improvements. This doc covers the dev loop for human contributors. For Claude-Code-facing guidance see [`CLAUDE.md`](CLAUDE.md).
 
+## Developer Certificate of Origin (DCO)
+
+Every commit in a PR must include a `Signed-off-by:` trailer attesting to the [Developer Certificate of Origin](https://developercertificate.org). Pincher uses DCO instead of a CLA — there's no document to sign, just a one-line attestation per commit that you have the right to submit the work under the project's MIT license.
+
+```bash
+git commit -s -m "your message"            # sign the trailer at commit time
+git commit --amend -s                      # sign the most recent commit if you forgot
+git config --global format.signoff true    # sign every commit globally
+```
+
+The `DCO sign-off` GitHub Actions check runs on every PR and fails if any commit in the diff lacks the trailer. Bulk-fix an unsigned series with:
+
+```bash
+git rebase -i <base> --exec 'git commit --amend --no-edit -s'
+```
+
 ## Dev loop in three commands
 
 ```bash
