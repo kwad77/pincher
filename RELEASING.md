@@ -52,6 +52,8 @@ CHANGELOG-only is the historical mistake — the README is what users hit first
 via the GitHub repo landing page, and stale roadmap claims erode trust faster
 than missing CHANGELOG entries.
 
+0. **Frozen-surface review (post-v0.84, per [ADR-0002](docs/adr/0002-v1-frozen-surface.md))** — walk the diff vs the previous tag and confirm that any change touching a frozen surface element (tool name, tool I/O JSON Schema, `_meta` envelope field, HTTP route, CLI subcommand or flag, symbol-ID format) is either (a) additive or (b) explicitly targeted for the 2.x branch. CI's contract tests (`TestToolContract_GoldenFile`, `TestMCPSurface_AllRegisteredToolsAgentCallable`, `TestOpenAPI_ParityWithRegisteredHandlers`, `TestHTTPRoutes_AllNonToolEndpointsDocumented`, `TestReferenceMD_EveryCLISubcommandHasSection`, `TestMakeSymbolID`) catch accidental breakage on PR merge, but the release-prep window is the last chance to confirm that cross-PR changes haven't combined into a non-additive shape. Skip this item only pre-v0.84.0.
+
 1. **`/codex:adversarial-review` (master vs previous tag, manual)** — BEFORE
    opening the release-prep PR, run `/codex:adversarial-review` against
    `git diff <previous-tag>..master` and triage findings:

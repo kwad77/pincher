@@ -134,11 +134,32 @@ The following are explicitly not part of the v1.0 surface contract — pincher c
 ## Acceptance
 
 - [x] ADR drafted (this file).
-- [ ] CONTRIBUTING.md updated with the matching semver rules (#1531 FILE-L, this PR's second commit).
-- [ ] CI gates: contract tests on every frozen surface element exist (`TestToolContract_GoldenFile`, `TestRegisterTools_Annotations_EveryToolHasOne`, `TestMCPSurface_AllRegisteredToolsAgentCallable`, `TestReferenceMD_EveryCLISubcommandHasSection`).
-- [ ] PR-template checkbox added: "Does this PR change a frozen surface element per ADR-0002?"
-- [ ] CLAUDE.md release-prep checklist updated to reference this ADR.
-- [ ] Acceptance audit at v0.84.0 tag: every surface element listed above has either (a) a contract test in CI or (b) a documented exemption.
+- [x] **CONTRIBUTING.md updated with the matching semver rules.** Lives in [`CONTRIBUTING.md` → Semver in pincher 1.x](../../CONTRIBUTING.md#semver-in-pincher-1x-adr-0002). Covers what is/isn't a breaking change, minor vs patch rules, the deprecation cycle for removal, and the PR-template box.
+- [x] **CI gates exist on every frozen surface element.** Audit table below.
+- [x] **PR-template checkbox added.** [`.github/pull_request_template.md`](../../.github/pull_request_template.md) "v1.0 frozen surface (ADR-0002)" section — reviewer ticks one of two mutually-exclusive boxes claiming whether the PR touches the frozen surface.
+- [x] **Release-prep checklist references this ADR.** Item 0 of [`RELEASING.md` → Release-prep checklist](../../RELEASING.md#release-prep-checklist) — frozen-surface review against the previous tag is a gate before every release.
+- [x] **Acceptance audit at v0.98.0** (originally targeted v0.84.0, deferred while the frozen-surface contract tests were being filled in — completed in this release prep). Audit table below.
+
+## Acceptance audit (per surface element)
+
+Every surface element declared frozen above is gated by at least one CI contract test. Failure modes: removing a tool / renaming a tool / changing a frozen schema / breaking the `_meta` envelope shape / removing a CLI subcommand / changing the symbol-ID format all flip a contract test red on the PR that introduces them.
+
+| Surface element | Status | Gate (CI test) | Source-of-truth file |
+|---|---|---|---|
+| Tool names (26 frozen at v0.84) | frozen | `TestMCPSurface_AllRegisteredToolsAgentCallable`, `TestMCPSurface_AllToolsHaveHTTPRoute` | `internal/server/mcp_surface_split_test.go` `expectedMCPTools` |
+| Tool input + output JSON Schemas | frozen | `TestToolContract_GoldenFile` | `internal/server/testdata/tool-contract.json` (golden) |
+| `_meta` envelope shape | frozen with `_v2`/`_v3` extension points | `TestCapability_PresentInMetaEnvelope`, `TestComplexityTier_MetaEnvelopeCarriesTier`, `TestProjectFields_MetaAlwaysPreserved`, `TestApplyLiteMeta_PreservesEmptyReason`, `TestJsonResultWithMeta_PopulatesStructuredContent`, `TestJsonResultWithMeta_IdleIndexer_NoInProgressFlag`, `TestAttachDriftWarning_AttachesToMeta`, `TestAttachDriftWarning_PreservesExistingMeta`, `TestHandleInit_MetaEnvelopePresent`, `TestHandleSearch_MetaConfidenceDistribution` | [`docs/integrations/meta-envelope-contract.md`](../integrations/meta-envelope-contract.md) |
+| HTTP gateway routes | frozen | `TestHTTPRoutes_AllNonToolEndpointsDocumented`, `TestDeploymentDocsUseCanonicalProbeAndMetricsRoutes`, `TestHTTPRoutes_ReadyEndpointActuallyServes`, `TestHTTPRoutes_MetricsEndpointActuallyServes`, `TestOpenAPI_ParityWithRegisteredHandlers`, `TestOpenAPI_HealthPathCarriesProbeAndTool`, `TestOpenAPI_PerToolSchemaIsRealNotPlaceholder`, `TestOpenAPI_EveryToolHasNonPlaceholderResponseSchema`, `TestOpenAPI_HasSharedMetaAndErrorComponents` | OpenAPI spec served at `GET /v1/openapi.json`; doc parity against [`docs/reference/http-api.md`](../reference/http-api.md) |
+| CLI subcommands + flags (19 frozen) | frozen | `TestReferenceMD_EveryCLISubcommandHasSection`, `TestReferenceMD_NoOrphanCLISection`, `TestReferenceMD_CLISectionHeadingREAllowsIssueSuffix`, `TestDocsDoNotMentionRemovedHealthOrSearchCLIs`, `TestReferenceMD_SelfTestDocumentsJSONMode` | `cmd/pinch/main.go` `printHelpBanner` (canonical list); doc parity against [`docs/reference/cli.md`](../reference/cli.md) |
+| Symbol ID format `{file}::{qn}#{kind}` | frozen | `TestMakeSymbolID` | `internal/db/db.go` `MakeSymbolID()` |
+| Database schema | evolving | `TestReferenceMD_SchemaVersionParity` (pins doc claim to runtime `CurrentSchemaVersion`); migration-rehearsal workflow (v0.4 → current) | `internal/db/db.go` `schemaMigrations` + [`docs/reference/architecture.md`](../reference/architecture.md) Schema section |
+| pinchQL grammar | evolving | `internal/cypher/` parser tests (additions are non-breaking) | `internal/cypher/engine.go` `tokenize`/`parseQuery` |
+| Resource URIs | experimental for v1.0 | n/a — no compatibility promise until graduated | n/a |
+| Plugin extractor API | experimental ([ADR-0003](0003-plugin-extractor-deferral.md)) | n/a — surface deferred to post-v1.0 | n/a |
+
+**Exemptions noted:** The two `experimental` items intentionally have no contract test, per the ADR-defined experimental status. The two `evolving` items (schema, pinchQL) have parity tests on the *current* version but not on a frozen shape — that matches the `evolving` policy.
+
+This audit is the v1.0 acceptance evidence. Future ADRs that modify the frozen-surface list MUST update the table above in the same PR.
 
 ## References
 
