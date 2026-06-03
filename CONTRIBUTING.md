@@ -133,6 +133,7 @@ Specific gates that fail when changes elsewhere don't update them in lockstep:
 - **Tool-contract changes (descriptions, InputSchema):** regenerate via `go test ./internal/server -run TestToolContract -update-tool-contract`.
 - **Dashboard HTML/CSS changes:** regenerate via `go test ./internal/server -run 'TestDashboardHTMLSnapshot|TestDashboardCSS' -count=1 -update-dashboard-snapshot -update-dashboard-css-snapshot`.
 - **New language extractor:** update `internal/ast/registry.go` self-registration AND `internal/db/corpus.go` `ClassifyCorpus` AND the v9 SQL trigger WHERE clauses. `TestClassifyCorpus_MatchesSQLTriggerRouting` is the gate.
+- **Bounded-duplication advisories (CLI ↔ MCP doctor):** when adding a doctor advisory, ship the helper in BOTH `internal/server/admin.go` and `cmd/pinch/doctor.go` with a "mirrors X / must stay identical" comment. The CLI lives in package main and can't import the server package.
 
 ## JSON response invariants
 
@@ -146,6 +147,7 @@ Two invariants that recur:
 - **Logging:** `slog` everywhere. `log.Printf` silences under bench `TestMain` and corrupts baselines.
 - **Reader pool:** pure SELECT methods use `s.ro.Query` / `s.ro.QueryContext`; writes use `s.db.Exec`. Routing is enforced by the classification gate above.
 - **Symbol IDs:** always build via `db.MakeSymbolID(file, qn, kind)`. Never string-concat.
+- **`InputSchema: json.RawMessage(` ... `)` raw-string gotcha:** backticks inside the description terminate the Go raw-string literal. Use plain double-quoted text or rewrite without — bit #293 and #302.
 
 ## Release process
 
