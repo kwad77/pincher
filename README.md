@@ -134,7 +134,7 @@ Aggregate session savings land around **70-90%** on large Go/JS projects, **40-7
 - **[CHANGELOG](CHANGELOG.md)** — release-by-release history. Milestone burndown: <https://github.com/kwad77/pincher/milestones>.
 - **[Migration guide](docs/migration/v0.4-to-v1.0.md)** — v0.4 → v1.0.
 
-Current release: **v0.98.0** — v1.0-prep migration-review checkpoint: clean GET-liveness vs POST-tool split on `/v1/health`, FTS5 escape for `--flag`-shaped search tokens, bounded indexer worker pool with a bulk-clear path for force-reindex, two new `pincher doctor` advisories (project schema drift + reclaimable DB free pages), an all-time `baseline_method` breakdown on `pincher stats`, and a shared substring project resolver with a `.` session sentinel across `callflow` / `export-graph` / `project` / `doctor`. Latest stable: **v0.90**. v1.0 freezes tool schemas and ships schema attestation + a public launch.
+Current release: **v0.98.0** — v1.0-prep migration-review checkpoint: clean GET-liveness vs POST-tool split on `/v1/health`, FTS5 escape for `--flag`-shaped search tokens, bounded indexer worker pool with a bulk-clear path for force-reindex, two new `pincher doctor` advisories (project schema drift + reclaimable DB free pages), an all-time `baseline_method` breakdown on `pincher stats`, and a shared substring project resolver with a `.` session sentinel across `callflow` / `export-graph` / `project` / `doctor`. **Release candidate: v0.99.0-rc.1** — in 7-day pre-v1.0 hold; no tool surface or schema changes vs v0.98.0, just licensing posture (NOTICE, TRADEMARK, DCO, SPDX) + ADR-0002 acceptance closure + repo hygiene. Latest stable: **v0.90**. v1.0 freezes tool schemas and ships schema attestation + a public launch.
 
 ---
 

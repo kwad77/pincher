@@ -15,12 +15,29 @@ release approval.
 
 ## Current status
 
-**Not signed off yet.** The v0.99 gate still needs:
+**RC tagged 2026-06-03. Seven-day hold in progress.** `v0.99.0-rc.1` was
+cut from master at the [`5700541`](https://github.com/kwad77/pincher/commit/5700541)
+"docs(adr-0002): close acceptance checklist with per-surface audit table"
+commit, with all hosted CI green at the tag point. The seven-day hold
+clock starts now (2026-06-03 UTC) and runs to 2026-06-10 absent any code
+landing on master.
+
+What still needs to land before the held binary can be channel-retagged
+as v1.0:
 
 - External migration-guide review evidence from at least two distinct
   users, tracked in [#1390](https://github.com/kwad77/pincher/issues/1390).
-- Cross-platform release/install smoke against the eventual v0.99 tag.
-- The seven-day no-changes hold after `v0.99.0-rc.1`.
+  This is the gating dependency for v1.0; the RC tag itself is the
+  artifact reviewers exercise.
+- Cross-platform release/install smoke against the eventual v0.99 tag
+  (auto-runs via `install-validation.yml` on every published release;
+  the v0.99.0-rc.1 run will fire automatically post-tag).
+- The seven-day no-changes hold to complete cleanly. **If any code change
+  lands on master during the hold, the clock restarts from the
+  replacement RC tag (`v0.99.0-rc.2`).** Doc-only / CHANGELOG.d-only
+  PRs do not restart the clock — they're explicitly exempted by the
+  release-channel rule (#692-shape) since they can't change runtime
+  behavior.
 
 ## Evidence already green
 

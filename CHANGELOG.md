@@ -7,6 +7,98 @@ minors.
 
 ## [Unreleased]
 
+## [0.99.0-rc.1] — 2026-06-03 — Release candidate for v0.99 / pre-v1.0 hold
+
+v0.99.0-rc.1 is the first release candidate for the v0.99 final-hardening
+release. Per [`docs/release-signoff-v0.99.md`](docs/release-signoff-v0.99.md)
+the RC starts the seven-day no-changes hold; if any code change lands during
+the hold the clock restarts from the replacement RC tag. After a clean hold
++ ≥2 external migration-guide reviews ([#1390](https://github.com/kwad77/pincher/issues/1390)),
+the held binary is channel-retagged as v1.0.
+
+No tool-surface or schema changes since v0.98.0 — the diff is licensing
+posture, repo hygiene, and documentation reorganization.
+
+### Added
+- **NOTICE** file with per-dependency third-party attribution. Required for
+  binary distributions per Mozilla Public License v2.0 §3.3 (HashiCorp HCL)
+  and Apache License 2.0 §4(d) (OpenTelemetry tracing). Other listed deps
+  (MIT / BSD-2 / BSD-3) do not require binary attribution but are listed for
+  completeness and build-time auditability.
+- **TRADEMARK.md** — informal trademark notice. "pincherMCP" and "pincher"
+  are unregistered trademarks of Kevin Waddell. MIT covers the code, not the
+  names. Honest descriptive use is fine; rebranding forks as "pincherMCP" or
+  publishing same-named packages on registries is not.
+- **DCO sign-off requirement** ([Developer Certificate of
+  Origin](https://developercertificate.org)). All PR commits must carry a
+  `Signed-off-by:` trailer; the new `DCO sign-off` GitHub Actions check
+  enforces it. Lightweight alternative to a CLA — no document to sign, just
+  `git commit -s`. Configure git to sign globally with
+  `git config --global format.signoff true`.
+- **SPDX-License-Identifier headers** on all 747 Go source files. Machine-
+  readable license attribution recognized by GitHub dependency-graph, FOSSA,
+  REUSE, SBOM generators. Idempotent helper script at
+  `scripts/add-spdx-headers.py`.
+- **`docs/process/dogfood-routing.md`** — canonical home for the dogfood-
+  found work routing table, decision-authority rules, overflow policy,
+  volume-based axis escalation, and issue-tagging discipline. Moved out of
+  CLAUDE.md so human contributors discover it via the docs tree.
+
+### Changed
+- **`LICENSE`** — copyright line refreshed to "2025-2026 Kevin Waddell and
+  pincherMCP contributors" + pointer to TRADEMARK.md and NOTICE.
+- **`README.md` License section** — replaces the bare "MIT" footer with a
+  proper section linking LICENSE + NOTICE + TRADEMARK + DCO requirement,
+  with explicit call-outs for MPL-2.0 and Apache-2.0 dependencies.
+- **`RELEASING.md`** — release-prep checklist gains item #0: pre-release
+  frozen-surface review against the previous tag per ADR-0002. CI's
+  per-PR contract gates catch per-PR defects; this catches cross-PR
+  emergent shape.
+- **`CONTRIBUTING.md`** — adds the DCO procedure at the top, gains the
+  bounded-duplication advisory pattern (CLI ↔ MCP doctor must mirror
+  each other), the `InputSchema` backticks gotcha, and the full Build &
+  Test runbook that previously lived in CLAUDE.md.
+- **`docs/adr/0002-v1-frozen-surface.md`** — acceptance checklist closed
+  with a per-surface-element audit table. Every frozen surface element
+  (tool names, tool I/O schemas, `_meta` envelope, HTTP routes, CLI
+  subcommands, symbol-ID format) is now backed by at least one named CI
+  contract test; the two evolving surfaces (DB schema, pinchQL) have
+  parity tests on the current version per the evolving policy; the two
+  experimental surfaces (resource URIs, plugin extractor) are exempted
+  per the experimental status. Originally targeted at v0.84.0; slipped
+  while contract gates were filled in; finally complete at v0.98.0.
+- **`.github/pull_request_template.md`** — adds the ADR-0002 frozen-
+  surface review box and the DCO sign-off acknowledgment box.
+- **`CLAUDE.md`** slimmed from 308 → 49 lines. Architecture / test gates
+  / JSON response invariants / build runbook moved to their canonical
+  homes (`docs/reference/architecture.md`, `CONTRIBUTING.md`); CLAUDE.md
+  keeps only the AI-loop-relevant content (Pincher usage policy +
+  freshness check + AI-specific CI notes + pointers).
+
+### Removed
+- Stale rolling-handoff document (`handoff.md` from 2026-05-16).
+- One-shot historical script `scripts/closure-table-bench.sh` (v0.54
+  decision-blocking measurement).
+- Orphan utility `scripts/strip-snapshot.go` (zero callers anywhere in the
+  repo).
+- Historical `docs/release-signoff-v0.96.md` (v0.96 shipped, zero
+  inbound references).
+
+### DOGFOOD
+- **Repo hygiene gap surfaced during license sort-out.** Pre-1.0 audit
+  caught 297 lines of stale content (rolling handoff + one-shot
+  measurement scripts + historical sign-off) that had no inbound
+  references and would have been noise during v1.0 launch-week
+  triage.
+- **CLAUDE.md drift surfaced.** The architecture section in CLAUDE.md
+  carried a duplicate of `docs/reference/architecture.md` that had to
+  be pinned twice (one parity test for each copy of the schema-version
+  line). Removed the duplicate; one source of truth now. The
+  `TestClaudeMD_SchemaVersionParity` test was removed alongside since
+  the surface it gated no longer exists; the canonical
+  `TestReferenceMD_SchemaVersionParity` against the reference doc is
+  unchanged.
+
 ## [0.98.0] — 2026-06-02 — v1.0-prep release: surface correctness, indexer hardening, doctor advisories
 
 v0.98.0 is the migration-review checkpoint release on the path to v1.0. It
@@ -3897,7 +3989,8 @@ Highlights:
 - `docs/index.html`: single-file GitHub Pages landing page.
 - CI coverage gate lowered to 83% to match reality.
 
-[Unreleased]: https://github.com/kwad77/pincher/compare/v0.98.0...HEAD
+[Unreleased]: https://github.com/kwad77/pincher/compare/v0.99.0-rc.1...HEAD
+[0.99.0-rc.1]: https://github.com/kwad77/pincher/compare/v0.98.0...v0.99.0-rc.1
 [0.98.0]: https://github.com/kwad77/pincher/compare/v0.97.3...v0.98.0
 [0.97.3]: https://github.com/kwad77/pincher/compare/v0.97.2...v0.97.3
 [0.97.2]: https://github.com/kwad77/pincher/compare/v0.97.1...v0.97.2
