@@ -1,6 +1,8 @@
 //go:build sdkexample
 // +build sdkexample
 
+// SPDX-License-Identifier: MIT
+
 // NOTE: the build tag above excludes this file from the default
 // `go test ./...` walk because it imports github.com/kwad77/pincher-sdk-go
 // which only exists after the user runs scripts/generate-sdks.sh AND

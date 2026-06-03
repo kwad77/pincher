@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // tracelatencybench measures trace-query latency with and without the
 // closure-table fast-path (#1162). The gating measurement for the
 // closure-tables-default-on decision: confirm the trace-latency

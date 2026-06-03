@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package db
 
 import "fmt"

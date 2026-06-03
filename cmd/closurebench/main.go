@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // closurebench measures the storage cost of materializing a transitive-closure
 // table over the pincher edges graph for a given project + max depth (#639).
 //

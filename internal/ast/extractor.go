@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package ast provides multi-language symbol extraction with byte-offset recording.
 //
 // Each extracted symbol stores start_byte and end_byte alongside line numbers.

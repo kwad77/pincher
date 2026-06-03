@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package supervisor wraps an inner pincher MCP server with auto-respawn
 // + initialize-replay so the MCP client sees an unbroken stdio session
 // even when the inner exits (e.g. on schema/binary drift via #352, on

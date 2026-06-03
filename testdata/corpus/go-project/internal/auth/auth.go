@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package auth handles minimal authentication state.
 package auth
 

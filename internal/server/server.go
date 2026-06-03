@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package server implements the pincherMCP MCP server with all 23 tools.
 //
 // Every tool response includes a "_meta" envelope:

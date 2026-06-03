@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package index implements the pincherMCP file indexer.
 //
 // Pipeline per file:

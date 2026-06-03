@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package server
 
 // #1252: stable machine-readable taxonomy for empty-response branches.

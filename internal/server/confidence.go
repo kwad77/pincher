@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package server
 
 // Confidence-filtering and distribution helpers (#34 Phase 3).

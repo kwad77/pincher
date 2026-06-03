@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package init's profile.go (#631) walks a target directory cheaply at
 // install time and classifies its files by extraction tier so the user
 // sees realistic savings expectations BEFORE running their first

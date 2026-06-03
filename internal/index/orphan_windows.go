@@ -1,5 +1,7 @@
 //go:build windows
 
+// SPDX-License-Identifier: MIT
+
 package index
 
 import "golang.org/x/sys/windows"

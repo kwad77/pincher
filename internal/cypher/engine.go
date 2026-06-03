@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package cypher implements pinchQL — pincher's lightweight graph
 // query language. The package name is "cypher" for git-blame
 // continuity (the language was originally documented as "Cypher-like");

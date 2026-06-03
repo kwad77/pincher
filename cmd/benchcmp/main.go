@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // benchcmp compares a fresh `go test -bench` run against a committed
 // baseline and exits non-zero on regression. Wired into CI via the
 // `corpus-bench` Makefile target (#50).

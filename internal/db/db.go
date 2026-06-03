@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package db manages the SQLite store for pincherMCP.
 //
 // Design: every symbol row serves three purposes simultaneously:

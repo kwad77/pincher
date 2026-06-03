@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package server
 
 const savingsMathBaselineMethod = "full_file_read"

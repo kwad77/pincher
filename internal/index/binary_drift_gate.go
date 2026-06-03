@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package index
 
 import "github.com/kwad77/pincher/internal/db"

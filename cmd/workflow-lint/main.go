@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // workflow-lint catches a recurring class of GitHub Actions workflow bugs
 // where a job's `run:` block references a repo-relative script (bash
 // scripts/foo.sh, ./scripts/bar.sh, make corpus-test, go run ./cmd/baz)

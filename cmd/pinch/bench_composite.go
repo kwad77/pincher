@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 package main
 
 // #1398 — pincher bench composite-score rubric.

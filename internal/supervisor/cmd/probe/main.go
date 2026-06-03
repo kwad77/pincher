@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Command probe is a permanent diagnostic harness for the supervisor's
 // auto-restart-on-binary-drift flow. It drives an out-of-band JSON-RPC
 // session against either a bare `pincher` or `pincher supervised`

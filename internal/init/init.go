@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 // Package init carves the pure init-policy machinery out of cmd/pinch
 // so the MCP server can register an `init` tool without dragging the
 // whole `main` package along (#253). The CLI orchestration layer
