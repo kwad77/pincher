@@ -1,0 +1,132 @@
+pincherMCP
+Copyright (c) 2025-2026 Kevin Waddell and pincherMCP contributors
+
+This product includes software developed by the third-party projects listed
+below. Each is bundled into the pincher binary and retains its original
+copyright and license. The MIT license that covers pincherMCP itself (see
+LICENSE) does not extend to, alter, or replace any of these third-party
+licenses.
+
+This file satisfies the binary-distribution attribution requirements of the
+licenses below — notably Mozilla Public License v2.0 (Section 3.3) for the
+HashiCorp HCL parser, and Apache License 2.0 (Section 4(d)) for the
+OpenTelemetry tracing libraries. Other listed dependencies do not require
+binary-distribution attribution but are listed here for completeness and
+build-time auditability.
+
+================================================================================
+Direct dependencies (declared in go.mod)
+================================================================================
+
+github.com/BurntSushi/toml v1.6.0
+  License: MIT
+  Used as: TOML parser for the configuration extractor.
+
+github.com/boyter/gocodewalker v1.5.1
+  License: MIT
+  Used as: .gitignore-respecting filesystem walker.
+
+github.com/google/uuid v1.6.0
+  License: BSD-3-Clause
+  Used as: session/run identifier generation.
+
+github.com/hashicorp/hcl v2.24.0
+  License: Mozilla Public License v2.0 (MPL-2.0)
+  Copyright (c) 2014 HashiCorp, Inc.
+  Used as: HCL/Terraform configuration parser. MPL 2.0 requires that source
+  files of the HCL library remain available; pincher does not modify the HCL
+  source, so the upstream repository at https://github.com/hashicorp/hcl
+  satisfies the "Source Code Form" availability requirement of MPL 2.0
+  Section 3.
+
+github.com/modelcontextprotocol/go-sdk v1.4.1
+  License: MIT
+  Copyright (c) Anthropic, PBC
+  Used as: Model Context Protocol server framework (the MCP transport pincher
+  speaks to Claude, Cursor, Codex, and other hosts).
+
+github.com/nikolalohinski/gonja v1.5.3
+  License: MIT
+  Used as: Jinja2 template parser for the template extractor.
+
+github.com/tdewolff/parse v2.8.12
+  License: MIT
+  Used as: shared lexer primitives for the regex-tier extractors.
+
+github.com/tiktoken-go/tokenizer v0.7.0
+  License: MIT
+  Used as: cl100k_base BPE tokenizer for the tokens_saved / tokens_used
+  fields of the _meta envelope. Encoding tables ship as resources alongside
+  the Go source.
+
+github.com/yuin/goldmark v1.8.2
+  License: MIT
+  Used as: CommonMark parser for the Markdown extractor.
+
+github.com/zeebo/xxh3 v1.1.0
+  License: BSD-2-Clause
+  Used as: fast non-cryptographic content hashing for the incremental indexer.
+
+go.opentelemetry.io/otel v1.43.0
+go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0
+go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.43.0
+go.opentelemetry.io/otel/sdk v1.43.0
+go.opentelemetry.io/otel/trace v1.43.0
+  License: Apache License 2.0
+  Copyright The OpenTelemetry Authors
+  Used as: tool-call tracing when OTEL_EXPORTER_OTLP_ENDPOINT is set. Apache
+  2.0 Section 4(d) requires that any NOTICE file from the upstream
+  distribution be preserved; the upstream NOTICE for OpenTelemetry-Go
+  delegates attribution to this file via the OpenTelemetry Authors line
+  above.
+
+golang.org/x/mod v0.35.0
+golang.org/x/net v0.55.0
+golang.org/x/term v0.43.0
+  License: BSD-3-Clause
+  Copyright (c) The Go Authors
+  Used as: semver comparator (mod), HTTP/2 client (net), terminal-detection
+  helpers for the TUI installer (term).
+
+gopkg.in/yaml.v3 v3.0.1
+  License: Apache 2.0 / MIT (dual)
+  Used as: YAML parser for the configuration extractor.
+
+modernc.org/sqlite v1.34.5
+  License: BSD-3-Clause
+  Copyright (c) 2017 The Sqlite Authors. All rights reserved.
+  Used as: pure-Go SQLite implementation (no CGO). The pincher binary
+  vendors this and inherits the SQLite license terms above.
+
+mvdan.cc/sh v3.13.1
+  License: BSD-3-Clause
+  Copyright (c) 2016, Daniel Martí. All rights reserved.
+  Used as: POSIX shell parser for the Bash extractor.
+
+================================================================================
+Indirect / transitive dependencies
+================================================================================
+
+A number of indirect dependencies are pulled in through the direct ones
+above (visible via `go list -m all` against go.sum) and ship in the binary.
+Their licenses are inspected per release via `go-licenses`. None require
+binary-distribution attribution beyond what is already covered above; the
+distribution-time license texts are in the local Go module cache at
+`$(go env GOMODCACHE)/<module>@<version>/LICENSE`.
+
+To regenerate this file with full transitive coverage:
+
+    go install github.com/google/go-licenses@latest
+    go-licenses report ./cmd/pinch/ \
+      --template scripts/notice-template.tpl \
+      > NOTICE
+
+(Template is not yet committed; the manual list above is the source of
+truth pre-1.0.)
+
+================================================================================
+Pincher project itself
+================================================================================
+
+pincherMCP is released under the MIT License (see LICENSE).
+"pincherMCP" and "pincher" are trademarks of Kevin Waddell (see TRADEMARK.md).
