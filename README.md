@@ -151,7 +151,11 @@ Current release: **v0.98.0** — v1.0-prep migration-review checkpoint: clean GE
 
 ## License
 
-MIT
+pincherMCP source is released under the [MIT License](LICENSE) — © 2025-2026 Kevin Waddell and pincherMCP contributors. Each Go source file carries an `// SPDX-License-Identifier: MIT` header for machine-readable attribution.
+
+- **Third-party attribution** — pincher links code from ~17 direct dependencies (Mozilla Public License 2.0 for HashiCorp HCL, Apache 2.0 for OpenTelemetry, BSD for `modernc/sqlite` and `mvdan.cc/sh`, MIT for the rest). See [NOTICE](NOTICE) for the per-dependency list.
+- **Trademark** — "pincherMCP" and "pincher" are unregistered trademarks of Kevin Waddell. MIT covers the code, not the names. See [TRADEMARK.md](TRADEMARK.md) for what's OK (descriptive use, forks under a different name) and what's not (publishing same-named packages on registries). No USPTO registration.
+- **Contributing** — every commit in a PR must include a `Signed-off-by:` trailer per the [Developer Certificate of Origin](https://developercertificate.org). Sign off with `git commit -s`. The DCO is the project's lightweight alternative to a CLA — no document to sign. Full procedure in [CONTRIBUTING.md → Developer Certificate of Origin](CONTRIBUTING.md#developer-certificate-of-origin-dco).
 
 <div align="center">
   <img src="docs/assets/crab.png" width="32" alt="Pinchy"/>
