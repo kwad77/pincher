@@ -68,6 +68,9 @@ pincher init --target=detect
 
 ## 4. Wire pincher into Cursor as an MCP server
 
+> [!IMPORTANT]
+> **Sign into Cursor first.** Cursor will accept and display your `mcp.json` config when signed out, but its MCP host **will not connect to the configured servers** — the MCP panel shows every server as "disconnected" even though pincher is healthy from the CLI. Sign into your Cursor account (Settings → Account → Sign in), confirm the sign-in lands, *then* edit `mcp.json`. If you've already edited it, sign in and restart Cursor.
+
 Edit `~/.cursor/mcp.json` (create if missing):
 
 ```json
@@ -81,6 +84,8 @@ Edit `~/.cursor/mcp.json` (create if missing):
 If `pincher` isn't on Cursor's `PATH`, use the absolute path from `which pincher` / `where.exe pincher`.
 
 Restart Cursor so it re-reads the config.
+
+Project-scoped overrides work the same way — `.cursor/mcp.json` at the repo root is read first when that project is open, with `~/.cursor/mcp.json` as fallback. The sign-in requirement applies to both.
 
 ## 5. Try it out
 
@@ -104,6 +109,14 @@ pincher stats
 │  Tokens saved:   217,600                   │
 └────────────────────────────────────────────┘
 ```
+
+## Troubleshooting
+
+**Cursor's MCP panel shows pincher as "disconnected" but `pincher --version` works from a terminal.** Almost always Cursor's sign-in state. Cursor accepts and displays MCP server configs while signed out, but its MCP host won't actually launch them until you've signed into your Cursor account. Fix: Settings → Account → Sign in, confirm the sign-in lands, then restart Cursor. Confirmed against Cursor builds tested 2026-06-04.
+
+**Cursor agent still calls `Read` and `Grep` instead of pincher tools.** Two common causes: (a) the rules file landed in the wrong format for your Cursor version — re-run `pincher init --target=detect` and inspect what it wrote; (b) `alwaysApply: false` in the frontmatter and the conversation didn't trip the auto-apply heuristic — flip it to `true` or paste the policy into the chat once to seed the session.
+
+**`pincher init --target=cursor` complains "no marker file found".** Cursor versions before .mdc support don't have `.cursor/rules/` — use `--target=cursor-legacy` (writes `.cursorrules`) or upgrade Cursor.
 
 ## What to read next
 
