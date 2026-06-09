@@ -11,6 +11,7 @@ What pincher concretely changes for each supported MCP host — the *why*, paire
 - [Zed](zed/benefits.md) — in-editor MCP server + module orientation
 - [JetBrains AI Assistant](jetbrains/benefits.md) — `.junie/guidelines.md` steering + the queryable graph
 - [Codex](codex/benefits.md) — stdio or Streamable-HTTP transport
+- [Goose](goose/benefits.md) — stdio MCP extension + Open Plugins `PreToolUse` hook bridge
 - [VSCode Copilot](vscode-copilot/benefits.md) — MCP registration for agent mode
 
 Every host's canonical workflow is pinned in the [host-conformance corpus](../../testdata/host-conformance/) — a release that breaks a host's `initialize → tools/list → search → architecture` flow fails CI.
