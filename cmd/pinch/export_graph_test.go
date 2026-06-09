@@ -48,6 +48,28 @@ func TestWriteGraphJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(b.String()), &g); err != nil {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, b.String())
 	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(b.String()), &raw); err != nil {
+		t.Fatalf("output is not valid generic JSON: %v", err)
+	}
+	legacySymbol, ok := raw["symbols"].([]any)[0].(map[string]any)
+	if !ok {
+		t.Fatalf("symbols[0] missing or not an object in raw JSON: %#v", raw["symbols"])
+	}
+	for _, key := range []string{"id", "name", "qualified_name", "kind", "language", "file_path", "start_line", "end_line", "extraction_confidence"} {
+		if _, ok := legacySymbol[key]; !ok {
+			t.Fatalf("legacy symbol field %q missing from raw JSON; new provenance fields must be additive", key)
+		}
+	}
+	legacyEdge, ok := raw["edges"].([]any)[0].(map[string]any)
+	if !ok {
+		t.Fatalf("edges[0] missing or not an object in raw JSON: %#v", raw["edges"])
+	}
+	for _, key := range []string{"from", "to", "kind", "source", "confidence"} {
+		if _, ok := legacyEdge[key]; !ok {
+			t.Fatalf("legacy edge field %q missing from raw JSON; new provenance fields must be additive", key)
+		}
+	}
 	if g.Project.Name != "demo" {
 		t.Errorf("project.name = %q, want demo", g.Project.Name)
 	}
@@ -179,6 +201,15 @@ func TestExportGraphCLI_EndToEnd(t *testing.T) {
 		t.Fatalf("index: %v", err)
 	}
 	project, _ := store.GetProject(res.ProjectID)
+	dbSymbols, dbEdges, _, _, err := store.GraphStats(res.ProjectID)
+	if err != nil {
+		store.Close()
+		t.Fatalf("GraphStats: %v", err)
+	}
+	if project == nil {
+		store.Close()
+		t.Fatalf("indexed project %q missing", res.ProjectID)
+	}
 	store.Close() // exportGraphCLI re-opens the same data dir
 
 	t.Run("json to stdout", func(t *testing.T) {
@@ -193,6 +224,21 @@ func TestExportGraphCLI_EndToEnd(t *testing.T) {
 		}
 		if len(g.Symbols) == 0 {
 			t.Error("expected symbols in the export")
+		}
+		if g.Project.ID != project.ID {
+			t.Errorf("project.id = %q, want %q", g.Project.ID, project.ID)
+		}
+		if g.Export.SymbolCount != dbSymbols || len(g.Symbols) != dbSymbols {
+			t.Errorf("symbol count round-trip = metadata %d, payload %d, db %d", g.Export.SymbolCount, len(g.Symbols), dbSymbols)
+		}
+		if g.Export.EdgeCount != dbEdges || len(g.Edges) != dbEdges {
+			t.Errorf("edge count round-trip = metadata %d, payload %d, db %d", g.Export.EdgeCount, len(g.Edges), dbEdges)
+		}
+		if project.SymCount != 0 && project.SymCount != g.Export.SymbolCount {
+			t.Errorf("project.sym_count = %d, export symbol_count = %d", project.SymCount, g.Export.SymbolCount)
+		}
+		if project.EdgeCount != 0 && project.EdgeCount != g.Export.EdgeCount {
+			t.Errorf("project.edge_count = %d, export edge_count = %d", project.EdgeCount, g.Export.EdgeCount)
 		}
 	})
 

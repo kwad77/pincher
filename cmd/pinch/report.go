@@ -175,6 +175,22 @@ func writeProjectReportMarkdown(w io.Writer, project db.Project, symbols []db.Sy
 		return err
 	}
 
+	if _, err := fmt.Fprintf(w, "\n## Advanced graph export\n\n"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "- Escape hatch: run `pincher export-graph --project %q --format json` for deterministic node/edge JSON that round-trips against the indexed DB counts.\n", project.ID); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "- Tool: `mcp_pincher_context`\n"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "  - Args: `{\"project\":\"%s\",\"id\":\"cmd/pinch/export_graph.go::main.writeGraphJSON#Function\"}`\n", project.ID); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "  - Why: inspect the export-graph JSON writer before building advanced external graph analysis.\n"); err != nil {
+		return err
+	}
+
 	if _, err := fmt.Fprintf(w, "\n## Entry points\n\n"); err != nil {
 		return err
 	}
