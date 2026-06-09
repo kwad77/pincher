@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -237,5 +238,81 @@ func TestInstallClaudeHook_DryRunMakesNoChanges(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "would") {
 		t.Errorf("dry run output should say 'would'; got %q", buf.String())
+	}
+}
+
+func TestMergeGooseHook_FromEmpty_CreatesOpenPluginHook(t *testing.T) {
+	updated, action, err := mergeGooseHook(nil)
+	if err != nil {
+		t.Fatalf("mergeGooseHook: %v", err)
+	}
+	if action != "created" {
+		t.Errorf("action = %q, want created", action)
+	}
+	hooks, _ := updated["hooks"].(map[string]any)
+	preToolUse, _ := hooks["PreToolUse"].([]any)
+	if len(preToolUse) != 1 {
+		t.Fatalf("PreToolUse len = %d, want 1", len(preToolUse))
+	}
+	entry, _ := preToolUse[0].(map[string]any)
+	if entry["matcher"] != "developer__shell|developer__text_editor" {
+		t.Errorf("matcher = %v, want developer__shell|developer__text_editor", entry["matcher"])
+	}
+	hookList, _ := entry["hooks"].([]any)
+	first, _ := hookList[0].(map[string]any)
+	if first["command"] != "${PLUGIN_ROOT}/scripts/pincher-hook-check.sh" {
+		t.Errorf("command = %v, want plugin-root script", first["command"])
+	}
+}
+
+func TestInstallGooseHook_FreshPluginCreated(t *testing.T) {
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	if err := installGooseHook(&buf, dir, false); err != nil {
+		t.Fatalf("installGooseHook: %v", err)
+	}
+	root := filepath.Join(dir, ".agents", "plugins", "pincher")
+	for _, rel := range []string{"plugin.json", filepath.Join("hooks", "hooks.json"), filepath.Join("scripts", "pincher-hook-check.sh"), "README.md"} {
+		if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
+			t.Fatalf("expected %s: %v", rel, err)
+		}
+	}
+	hooks, err := os.ReadFile(filepath.Join(root, "hooks", "hooks.json"))
+	if err != nil {
+		t.Fatalf("read hooks: %v", err)
+	}
+	if !strings.Contains(string(hooks), "developer__shell|developer__text_editor") {
+		t.Errorf("hooks.json missing Goose developer matcher: %s", hooks)
+	}
+	script := filepath.Join(root, "scripts", "pincher-hook-check.sh")
+	info, err := os.Stat(script)
+	if err != nil {
+		t.Fatalf("stat script: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode()&0o100 == 0 {
+		t.Errorf("script should be owner-executable; mode=%v", info.Mode())
+	}
+	if !strings.Contains(buf.String(), "created") {
+		t.Errorf("output should mention created; got %q", buf.String())
+	}
+}
+
+func TestInstallGooseHook_IdempotentReRun(t *testing.T) {
+	dir := t.TempDir()
+	if err := installGooseHook(io.Discard, dir, false); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	first, _ := os.ReadFile(filepath.Join(dir, ".agents", "plugins", "pincher", "hooks", "hooks.json"))
+
+	var buf bytes.Buffer
+	if err := installGooseHook(&buf, dir, false); err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if !strings.Contains(buf.String(), "no change") {
+		t.Errorf("second install should report no change; got %q", buf.String())
+	}
+	second, _ := os.ReadFile(filepath.Join(dir, ".agents", "plugins", "pincher", "hooks", "hooks.json"))
+	if string(first) != string(second) {
+		t.Error("idempotent re-run modified hooks.json")
 	}
 }

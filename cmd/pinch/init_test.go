@@ -31,7 +31,7 @@ func TestResolveInitTargetChoice(t *testing.T) {
 	// Inconclusive + interactive → the picker resolves it.
 	got, ok = resolveInitTargetChoice(
 		pinit.AutoResolveResult{Decided: false},
-		&bytes.Buffer{}, strings.NewReader("2\n"), true)
+		&bytes.Buffer{}, strings.NewReader("3\n"), true)
 	if !ok || got != "codex" {
 		t.Errorf("inconclusive+interactive: got (%q,%v), want (codex,true)", got, ok)
 	}
@@ -87,11 +87,12 @@ func TestPromptInitTarget(t *testing.T) {
 		ok             bool
 	}{
 		{"shortlist by number", "1\n", "claude", true},
-		{"shortlist by number 2", "2\n", "codex", true},
+		{"shortlist by number 2", "2\n", "goose", true},
+		{"shortlist by number 3", "3\n", "codex", true},
 		{"literal target name", "cursor\n", "cursor", true},
-		{"detect by number", "6\n", "detect", true},
+		{"detect by number", "7\n", "detect", true},
 		{"detect by name", "detect\n", "detect", true},
-		{"other then full-list number", "7\n2\n", pinit.AllTargets[1].Name, true},
+		{"other then full-list number", "8\n2\n", pinit.AllTargets[1].Name, true},
 		{"EOF — no input", "", "", false},
 		{"out-of-range number", "99\n", "", false},
 		{"garbage", "not-a-target\n", "", false},
@@ -137,6 +138,39 @@ func TestInitCLI_Binary_DryRun(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(workdir, "CLAUDE.md")); err == nil {
 		t.Error("dry-run should not create CLAUDE.md, but it exists")
+	}
+}
+
+func TestInitCLI_Binary_GooseTargetInstallsOpenPluginHook(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping CLI binary build in -short mode")
+	}
+
+	bin := buildPincherBinary(t)
+	workdir := t.TempDir()
+	cmd := exec.Command(bin, "init", "--target", "goose", "--quiet")
+	cmd.Dir = workdir
+	cmd.Env = pincherCoverEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pincher init --target goose: %v\n%s", err, out)
+	}
+	got := string(out)
+	if !strings.Contains(got, "pincher init [goose]") {
+		t.Errorf("expected goose init output; got:\n%s", got)
+	}
+	root := filepath.Join(workdir, ".agents", "plugins", "pincher")
+	for _, rel := range []string{"plugin.json", filepath.Join("hooks", "hooks.json"), filepath.Join("scripts", "pincher-hook-check.sh"), "README.md"} {
+		if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
+			t.Fatalf("expected %s: %v", rel, err)
+		}
+	}
+	hooks, err := os.ReadFile(filepath.Join(root, "hooks", "hooks.json"))
+	if err != nil {
+		t.Fatalf("read hooks: %v", err)
+	}
+	if !strings.Contains(string(hooks), "developer__shell|developer__text_editor") || !strings.Contains(string(hooks), "pincher-hook-check.sh") {
+		t.Errorf("hooks.json missing Goose hook wiring:\n%s", hooks)
 	}
 }
 
