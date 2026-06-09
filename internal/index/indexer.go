@@ -512,10 +512,7 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 		return nil, fmt.Errorf("mark project index started: %w", err)
 	}
 	fullReindexCleared := force || binaryDriftForce || crashRecoveryForce
-	flushSymbolThreshold := 500
-	if fullReindexCleared {
-		flushSymbolThreshold = 5000
-	}
+	flushSymbolThreshold := flushSymbolThresholdFor(fullReindexCleared)
 	if fullReindexCleared {
 		clearStart := time.Now()
 		if err := idx.store.ClearProjectIndexData(projectID); err != nil {
@@ -1855,6 +1852,16 @@ func (idx *Indexer) flushBuffers(projectID string, syms *[]db.Symbol, edges *[]d
 	*syms = (*syms)[:0]
 	*edges = (*edges)[:0]
 	return nil
+}
+
+func flushSymbolThresholdFor(fullReindexCleared bool) int {
+	// #1899: forced binary-drift/full-reindex runs rebuild more rows, but
+	// they must not use larger maintenance batches than normal indexing.
+	// Larger symbol batches keep SQLite's single writer busy through a bigger
+	// FTS/symbol transaction and starve live HTTP/MCP advisory writes (session
+	// and per-tool-call flushes). A full reindex already saves work by skipping
+	// per-file DeleteSymbolsForFile; keep the write-yield cadence bounded.
+	return 500
 }
 
 func (idx *Indexer) flushBatch(projectID string, syms []db.Symbol, edges []db.Edge) error {
