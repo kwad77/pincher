@@ -130,7 +130,7 @@ flowchart TB
     files["Source files<br/>Go · Python · JS/TS · config · docs"]
     extract["ast.Extract()<br/>deterministic local extraction"]
     symbols["Byte-offset symbol store<br/>O(1) source retrieval"]
-    graph["Knowledge graph<br/>CALLS · IMPORTS · READS · WRITES · REFERENCES"]
+    kg["Knowledge graph<br/>CALLS · IMPORTS · READS · WRITES · REFERENCES"]
     fts["FTS5 search<br/>BM25 over code, config, docs"]
     tools["MCP / HTTP tools<br/>search · context · trace · changes · report"]
     meta["_meta envelope<br/>tokens · savings · latency · tier · next_steps"]
@@ -138,10 +138,10 @@ flowchart TB
 
     files --> extract
     extract --> symbols
-    extract --> graph
+    extract --> kg
     extract --> fts
     symbols --> tools
-    graph --> tools
+    kg --> tools
     fts --> tools
     tools --> meta
     meta --> agent
@@ -151,7 +151,7 @@ flowchart TB
     classDef api fill:#fff7ed,stroke:#ea580c,color:#111827;
     classDef meta fill:#f5f3ff,stroke:#7c3aed,color:#111827;
     class files input;
-    class extract,symbols,graph,fts index;
+    class extract,symbols,kg,fts index;
     class tools api;
     class meta,agent meta;
 ```
