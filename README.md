@@ -52,6 +52,8 @@ go install github.com/kwad77/pincher/cmd/pinch@latest
 
 # 2. Add Pincher's usage policy to your agent client.
 pincher init --target=detect
+# Explicit targets include claude, cursor, codex, zed, jetbrains, vscode,
+# and goose (project-scoped Goose Open Plugins hook extension).
 
 # 3. Index a project.
 pincher index /path/to/project
@@ -78,7 +80,7 @@ Minimal Claude Code MCP config:
 
 `supervised` keeps the provider stable across crashes and binary upgrades. You can rebuild Pincher and the next tool call restarts the inner server instead of forcing a manual MCP reconnect.
 
-Host walkthroughs: [Claude Code](docs/tutorials/claude-code.md), [Cursor](docs/tutorials/cursor.md), [VS Code Copilot Chat](docs/tutorials/vscode-copilot.md), [Codex](docs/tutorials/codex.md), [JetBrains](docs/tutorials/jetbrains.md), [Zed](docs/tutorials/zed.md), and the [HTTP dashboard](docs/tutorials/http-dashboard.md). Managed installs live in [`packaging/README.md`](packaging/README.md).
+Host walkthroughs: [Claude Code](docs/tutorials/claude-code.md), [Cursor](docs/tutorials/cursor.md), [VS Code Copilot Chat](docs/tutorials/vscode-copilot.md), [Codex](docs/tutorials/codex.md), [JetBrains](docs/tutorials/jetbrains.md), [Zed](docs/tutorials/zed.md), and the [HTTP dashboard](docs/tutorials/http-dashboard.md). Goose support is installed with `pincher init --target=goose`, which writes a project-scoped `.agents/plugins/pincher/` Open Plugins extension and routes `developer__shell|developer__text_editor` hook events through `pincher hook-check`. Managed installs live in [`packaging/README.md`](packaging/README.md).
 
 ---
 
