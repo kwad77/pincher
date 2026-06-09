@@ -666,6 +666,9 @@ var readerRoutedStoreMethods = map[string]bool{
 	"ToolCallStatsByTool": true,
 	// All-time per-tool aggregate for CLI persisted stats.
 	"AllTimeToolCallStatsByTool": true,
+	// v1.2 savings report aggregates with explicit NULL baseline gaps.
+	"ToolCallSavingsReportRows":      true,
+	"ToolCallSavingsReportRowsSince": true,
 	// #635 v0.67 panel 2: per-tier aggregate, same shape as above.
 	"ToolCallStatsByTier": true,
 	// #635 v0.67 panel 3: per-tool payload-size distribution (min/avg/max

@@ -5742,6 +5742,22 @@ type ToolCallTallyRow struct {
 	AvgResponseBytes  float64 `json:"avg_response_bytes"`
 }
 
+// ToolCallSavingsRow is one aggregate row for falsifiable savings reports.
+// It keeps NULL-derived gap counts separate from zero savings so reporting
+// code can refuse aggregate ROI claims when the baseline substrate is partial.
+type ToolCallSavingsRow struct {
+	Tool                  string  `json:"tool"`
+	ComplexityTier        string  `json:"complexity_tier"`
+	CallCount             int64   `json:"call_count"`
+	TokensUsed            int64   `json:"tokens_used"`
+	TokensSaved           int64   `json:"tokens_saved"`
+	AvgTokensSavedPct     float64 `json:"avg_tokens_saved_pct"`
+	MissingTokensSaved    int64   `json:"missing_tokens_saved"`
+	MissingTokensSavedPct int64   `json:"missing_tokens_saved_pct"`
+	FirstSeenUnixNano     int64   `json:"first_seen_unix_nano"`
+	LastSeenUnixNano      int64   `json:"last_seen_unix_nano"`
+}
+
 // ToolCallStatsByTool aggregates session_tool_calls rows over the
 // trailing windowSeconds-second window into per-tool tallies. Excludes
 // rows older than the window cutoff. Sorted by call_count desc so the
@@ -5821,6 +5837,60 @@ func (s *Store) AllTimeToolCallStatsByTool() ([]ToolCallTallyRow, error) {
 		if err := rows.Scan(
 			&r.Tool, &r.CallCount, &r.AvgTokensUsed,
 			&r.SumTokensSaved, &r.AvgTokensSavedPct, &r.AvgResponseBytes,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ToolCallSavingsReportRows aggregates every persisted per-call row, grouped
+// by tool and complexity tier, with explicit missing-baseline counters.
+func (s *Store) ToolCallSavingsReportRows() ([]ToolCallSavingsRow, error) {
+	return s.toolCallSavingsReportRows(0)
+}
+
+// ToolCallSavingsReportRowsSince is the trailing-window form of
+// ToolCallSavingsReportRows. The cutoff is inclusive and expressed as a real
+// timestamp instead of a duration so callers/tests can make stale-window
+// behavior deterministic.
+func (s *Store) ToolCallSavingsReportRowsSince(cutoff time.Time) ([]ToolCallSavingsRow, error) {
+	return s.toolCallSavingsReportRows(cutoff.UnixNano())
+}
+
+func (s *Store) toolCallSavingsReportRows(cutoffUnixNano int64) ([]ToolCallSavingsRow, error) {
+	where := ""
+	args := []any{}
+	if cutoffUnixNano > 0 {
+		where = " WHERE ts >= ?"
+		args = append(args, cutoffUnixNano)
+	}
+	rows, err := s.ro.Query(`
+		SELECT tool,
+		       complexity_tier,
+		       COUNT(*) AS call_count,
+		       COALESCE(SUM(tokens_used), 0) AS tokens_used,
+		       COALESCE(SUM(tokens_saved), 0) AS tokens_saved,
+		       COALESCE(AVG(tokens_saved_pct), 0) AS avg_tokens_saved_pct,
+		       SUM(CASE WHEN tokens_saved IS NULL THEN 1 ELSE 0 END) AS missing_tokens_saved,
+		       SUM(CASE WHEN tokens_saved_pct IS NULL THEN 1 ELSE 0 END) AS missing_tokens_saved_pct,
+		       COALESCE(MIN(ts), 0) AS first_seen,
+		       COALESCE(MAX(ts), 0) AS last_seen
+		  FROM session_tool_calls`+where+`
+		 GROUP BY tool, complexity_tier
+		 ORDER BY call_count DESC, tool ASC, complexity_tier ASC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ToolCallSavingsRow{}
+	for rows.Next() {
+		var r ToolCallSavingsRow
+		if err := rows.Scan(
+			&r.Tool, &r.ComplexityTier, &r.CallCount, &r.TokensUsed,
+			&r.TokensSaved, &r.AvgTokensSavedPct, &r.MissingTokensSaved,
+			&r.MissingTokensSavedPct, &r.FirstSeenUnixNano, &r.LastSeenUnixNano,
 		); err != nil {
 			return nil, err
 		}

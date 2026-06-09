@@ -61,6 +61,10 @@ func main() {
 		runStatsCLI(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "savings" {
+		runSavingsCLI(os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "bench" {
 		runBenchCLI(os.Args[2:])
 		return
@@ -449,6 +453,7 @@ func printHelpBanner(out io.Writer) {
 	fmt.Fprintln(out, "  pincher self-test              Smoke-test the install end-to-end (--json, --verbose)")
 	fmt.Fprintln(out, "  pincher rebuild-fts            Drop + recreate the FTS5 search indexes")
 	fmt.Fprintln(out, "  pincher stats                  Persisted savings + per-project counts (--json, --reset)")
+	fmt.Fprintln(out, "  pincher savings report         Falsifiable _meta savings report with schema-gap warnings")
 	fmt.Fprintln(out, "  pincher hook-stats --export-7d Shareable JSON snapshot of 7d hook conversion metrics (#662)")
 	fmt.Fprintln(out, "  pincher bench [--project NAME] Falsifiable savings measurement vs full-file Read baseline (#1263)")
 	fmt.Fprintln(out, "  pincher update                 Update pincher in place (git pull + build, or release asset)")
