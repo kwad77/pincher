@@ -358,17 +358,23 @@ with a disambiguation list.
 
 ### `pincher report`
 
-Generates a Pincher-native markdown architecture report from the existing
-symbol and edge index. This is read-only: it selects persisted evidence and
-renders project metrics, languages, entry points, hotspots, rationale snippets,
-surprising connections, and suggested next Pincher calls. It does not run LLM
-extraction or infer missing data.
+Generates a Pincher-native architecture report from the existing symbol and
+edge index. This is read-only: it selects persisted evidence and renders project
+metrics, languages, entry points, hotspots, rationale snippets, surprising
+connections, and suggested next Pincher calls. It does not run LLM extraction or
+infer missing data.
 
 ```bash
 pincher report                                  # markdown to stdout
+pincher report --format json                    # structured report to stdout
 pincher report --out PINCHER_REPORT.md          # write report artifact
 pincher report --project pincher --data-dir /x   # select project/data dir
 ```
+
+`--format` accepts `markdown` (default, legacy-compatible) or `json`. The JSON
+shape is versioned as `pincher_report.v1`, keeps the same deterministic evidence
+sections, and emits machine-actionable `next_pincher_calls[].args` while retaining
+`args_legacy` for consumers that already parse the markdown-era argument string.
 
 `--project` accepts the same id/name/substring forms as `export-graph`.
 
