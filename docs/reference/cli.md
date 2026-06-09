@@ -360,9 +360,9 @@ with a disambiguation list.
 
 Generates a Pincher-native architecture report from the existing symbol and
 edge index. This is read-only: it selects persisted evidence and renders project
-metrics, languages, entry points, hotspots, rationale snippets, surprising
-connections, and suggested next Pincher calls. It does not run LLM extraction or
-infer missing data.
+metrics, languages, entry points, hotspots with raw risk-scoring inputs,
+rationale snippets, surprising connections, and suggested next Pincher calls. It
+does not run LLM extraction or infer missing data.
 
 ```bash
 pincher report                                  # markdown to stdout
