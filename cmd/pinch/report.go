@@ -48,6 +48,13 @@ type reportRationaleMap struct {
 	TotalVisible int
 }
 
+type reportNextCall struct {
+	Tool          string
+	Args          string
+	Why           string
+	ExpectedValue string
+}
+
 func runReportCLI(args []string) {
 	os.Exit(reportCLI(args, os.Stdout, os.Stderr))
 }
@@ -239,20 +246,73 @@ func writeProjectReportMarkdown(w io.Writer, project db.Project, symbols []db.Sy
 	if _, err := fmt.Fprintf(w, "\n## Suggested next Pincher calls\n\n"); err != nil {
 		return err
 	}
-	suggestions := []string{
-		"- `mcp_pincher_context` on the top hotspot before editing it.",
-		"- `mcp_pincher_trace` on any hotspot or entry point whose behavior may change.",
-		"- `mcp_pincher_health` if the index freshness or extraction coverage looks suspicious.",
-		"- `mcp_pincher_changes` before finalizing edits to map the blast radius.",
-	}
-	for _, s := range suggestions {
-		if _, err := fmt.Fprintln(w, s); err != nil {
+	suggestions := reportNextCalls(project, hotspots, rationales)
+	for _, suggestion := range suggestions {
+		if _, err := fmt.Fprintf(w, "- Tool: `%s`\n", suggestion.Tool); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "  - Args: `%s`\n", suggestion.Args); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "  - Why: %s\n", suggestion.Why); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "  - Expected value: %s\n", suggestion.ExpectedValue); err != nil {
 			return err
 		}
 	}
 
 	_, err := fmt.Fprintf(w, "\n## Provenance\n\nThis report is generated from Pincher's existing symbol and edge index. Missing data is reported as missing rather than inferred.\n")
 	return err
+}
+
+func reportNextCalls(project db.Project, hotspots []reportHotspot, rationales reportRationaleMap) []reportNextCall {
+	projectID := emptyAs(project.ID, project.Path)
+	suggestions := make([]reportNextCall, 0, 4)
+
+	if len(hotspots) > 0 {
+		top := hotspots[0].Symbol
+		suggestions = append(suggestions,
+			reportNextCall{
+				Tool:          "mcp_pincher_context",
+				Args:          fmt.Sprintf(`{"project":"%s","id":"%s"}`, projectID, top.ID),
+				Why:           "inspect the top hotspot before editing it.",
+				ExpectedValue: "reduces risky raw reads and grounds edits in symbol provenance.",
+			},
+			reportNextCall{
+				Tool:          "mcp_pincher_trace",
+				Args:          fmt.Sprintf(`{"project":"%s","id":"%s","direction":"inbound"}`, projectID, top.ID),
+				Why:           "map callers for the highest-incoming hotspot before behavior changes.",
+				ExpectedValue: "exposes blast-radius risk for planning and routing escalation.",
+			},
+		)
+	}
+
+	if rationale := firstRationale(rationales); rationale.ID != "" {
+		suggestions = append(suggestions, reportNextCall{
+			Tool:          "mcp_pincher_search",
+			Args:          fmt.Sprintf(`{"project":"%s","query":"%s"}`, projectID, rationale.Name),
+			Why:           "follow rationale/design-intent evidence back into indexed symbols.",
+			ExpectedValue: "keeps design intent visible instead of relying on prose-only memory.",
+		})
+	}
+
+	suggestions = append(suggestions, reportNextCall{
+		Tool:          "mcp_pincher_changes",
+		Args:          fmt.Sprintf(`{"project":"%s","scope":"all"}`, projectID),
+		Why:           "run before finalizing edits to map changed-symbol blast radius.",
+		ExpectedValue: "turns the report into an execution loop with measurable impact checks.",
+	})
+	return suggestions
+}
+
+func firstRationale(rationales reportRationaleMap) db.Symbol {
+	for _, group := range rationales.Groups {
+		if len(group.Symbols) > 0 {
+			return group.Symbols[0]
+		}
+	}
+	return db.Symbol{}
 }
 
 func writeCountSection(w io.Writer, title string, counts map[string]int, noun string) error {
