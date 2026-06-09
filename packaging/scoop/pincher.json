@@ -1,5 +1,5 @@
 {
-    "version": "0.60.0",
+    "version": "1.0.0",
     "description": "Codebase intelligence server for LLM agents (MCP stdio + HTTP REST). Local SQLite + tree-sitter / regex extractors across 20+ languages. Closes #1260 §1.",
     "homepage": "https://github.com/kwad77/pincher",
     "license": "MIT",
@@ -13,17 +13,23 @@
     ],
     "architecture": {
         "64bit": {
-            "url": "https://github.com/kwad77/pincher/releases/download/v0.60.0/pincher-v0.60.0-windows-amd64.zip",
-            "hash": "e9657b0e00ed028d93593bcffcb2e7ede2dec957c4ffe60ca3ad1016c6f3ecba",
+            "url": "https://github.com/kwad77/pincher/releases/download/v1.0.0/pincher-v1.0.0-windows-amd64.zip",
+            "hash": "086923ed2b2c33d4fc455a326d85a9fdc1a858f428b78619be89436d1428563b",
             "bin": [
-                ["pincher-v0.60.0-windows-amd64.exe", "pincher"]
+                [
+                    "pincher-v1.0.0-windows-amd64.exe",
+                    "pincher"
+                ]
             ]
         },
         "arm64": {
-            "url": "https://github.com/kwad77/pincher/releases/download/v0.60.0/pincher-v0.60.0-windows-arm64.zip",
-            "hash": "d1ec90f5a4f86270e57a34798a7eb9f44d976a4f0a57529bbeef156d035a73fc",
+            "url": "https://github.com/kwad77/pincher/releases/download/v1.0.0/pincher-v1.0.0-windows-arm64.zip",
+            "hash": "9db601b93b5ef88b631a8bd58254f861d9f2d4984b497e59651f5e96c2b38b01",
             "bin": [
-                ["pincher-v0.60.0-windows-arm64.exe", "pincher"]
+                [
+                    "pincher-v1.0.0-windows-arm64.exe",
+                    "pincher"
+                ]
             ]
         }
     },
@@ -43,7 +49,10 @@
                     "regex": "([a-f0-9]{64})\\s+pincher-v$version-windows-amd64\\.zip"
                 },
                 "bin": [
-                    ["pincher-v$version-windows-amd64.exe", "pincher"]
+                    [
+                        "pincher-v$version-windows-amd64.exe",
+                        "pincher"
+                    ]
                 ]
             },
             "arm64": {
@@ -53,7 +62,10 @@
                     "regex": "([a-f0-9]{64})\\s+pincher-v$version-windows-arm64\\.zip"
                 },
                 "bin": [
-                    ["pincher-v$version-windows-arm64.exe", "pincher"]
+                    [
+                        "pincher-v$version-windows-arm64.exe",
+                        "pincher"
+                    ]
                 ]
             }
         }
