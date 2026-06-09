@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,7 @@ func TestHandleSymbols_Parity_SameFieldSetAsHandleSymbol(t *testing.T) {
 	result, err := srv.handleSymbols(context.Background(), makeReq(map[string]any{
 		"ids":     []any{"p::main.Foo#Function"},
 		"project": pid,
+		"fields":  strings.Join(requiredFields, ","),
 	}))
 	if err != nil {
 		t.Fatalf("handleSymbols: %v", err)
