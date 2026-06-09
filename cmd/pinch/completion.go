@@ -19,7 +19,7 @@ import (
 // lockstep with what main() actually dispatches.
 
 var pincherSubcommands = []string{
-	"index", "doctor", "rebuild-fts", "self-test", "stats", "bench",
+	"index", "doctor", "rebuild-fts", "self-test", "stats", "savings", "bench",
 	"update", "web", "init", "setup", "project", "supervised",
 	"vacuum", "health-check", "hook-check", "hook-stats", "verify",
 	"completion", "export-graph", "report", "callflow",

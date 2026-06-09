@@ -277,6 +277,22 @@ pincher verify --data-dir /x                      # override data directory
 
 Stoa-family precedent: `stoa verify` hashes manifests as the integrity-check leg of the verify/doctor/probe trinity. Pincher's `doctor` is the doctor leg already; `verify` adds the integrity leg. Exit codes: `0` no drift, `1` drift detected (caller re-indexes), `2` couldn't open the database.
 
+### `pincher savings`
+
+Generates falsifiable savings reports from persisted per-call `_meta` evidence. The report exposes raw token inputs, the exact formulas, all-time and recent-window aggregates, baseline-method buckets, and schema-gap counters. It refuses aggregate savings claims when rows are missing `tokens_saved`, missing `tokens_saved_pct`, use `baseline_method=none`, or the requested recent window has no rows.
+
+```bash
+pincher savings report                         # text report for the default 7-day window
+pincher savings report --since 24h             # choose a recent window
+pincher savings report --since 7d --json       # structured report for dashboards / CI
+pincher savings report --project /path/to/repo # annotate intended scope
+pincher savings report --data-dir /x           # inspect a non-default session DB
+```
+
+Formula fields are rendered explicitly: `baseline_tokens = tokens_used + tokens_saved` and `savings_pct = tokens_saved / (tokens_used + tokens_saved) * 100`. `--project` is currently annotated but not applied because `session_tool_calls` rows do not persist `project_id` yet; the report states that limitation instead of pretending project-scoped savings are available.
+
+Use this report when making v1.2 token-savings or work-impact claims: cite the raw inputs and `aggregate_claim_allowed` state rather than unsupported multipliers or dollar figures.
+
 ### `pincher stats`
 
 Prints persisted session savings (cumulative `tokens_saved`, MCP call count, baseline-method breakdown) plus per-project file/symbol/edge counts. The CLI surface for what the dashboard renders interactively. CLI-only by deliberate choice — wiping stats is destructive admin, not an agent action.
