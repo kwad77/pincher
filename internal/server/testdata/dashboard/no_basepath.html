@@ -50,6 +50,7 @@
   <button class="tab-btn" data-action="showTab" data-args='["insights"]'>Insights</button>
   <button class="tab-btn" data-action="showTab" data-args='["doctor"]'>Doctor</button>
   <button class="tab-btn" data-action="showTab" data-args='["projects"]'>Projects</button>
+  <button class="tab-btn" data-action="showTab" data-args='["graph"]'>Graph</button>
   <button class="tab-btn" data-action="showTab" data-args='["search"]'>Search</button>
   <button class="tab-btn" data-action="showTab" data-args='["adrs"]'>ADRs</button>
   <button class="tab-btn" data-action="showTab" data-args='["sessions"]'>Sessions</button>
@@ -150,6 +151,30 @@
       <button class="detail-close" data-action="closeDetail" title="Close">&#x2715;</button>
     </div>
     <div id="proj-detail-body"><div class="loading">Loading…</div></div>
+  </div>
+</main>
+</div>
+
+<!-- GRAPH -->
+<div id="tab-graph" class="tab-pane">
+<main>
+  <p class="section-title">Interactive Graph</p>
+  <p class="tab-intro">A bounded, read-only project graph. Use filters to inspect symbols without changing existing dashboard/API behavior.</p>
+  <div class="graph-toolbar">
+    <select class="search-select" id="graph-project" data-action-change="loadGraph"><option value="">Current session project</option></select>
+    <input class="search-input" id="graph-filter" type="text" placeholder="Filter symbols by name, file, kind, or language…" data-action-input="debouncedLoadGraph"/>
+    <select class="search-select" id="graph-limit" data-action-change="loadGraph">
+      <option value="50">50 nodes</option>
+      <option value="150" selected>150 nodes</option>
+      <option value="300">300 nodes</option>
+      <option value="500">500 nodes</option>
+    </select>
+    <button class="search-btn" data-action="loadGraph">Refresh graph</button>
+    <span class="toolbar-count" id="graph-count">&nbsp;</span>
+  </div>
+  <div class="graph-card">
+    <svg id="graph-canvas" viewBox="0 0 960 520" role="img" aria-label="Project symbol graph"><text x="480" y="260" text-anchor="middle" fill="#8b949e">Select a project to load graph data.</text></svg>
+    <div id="graph-list" class="graph-list"><div class="loading">Graph nodes appear here.</div></div>
   </div>
 </main>
 </div>

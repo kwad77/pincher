@@ -1670,6 +1670,7 @@ var httpGetOnlyRoutes = map[string]bool{
 	"tool-calls":         true, // per-call savings/accounting rows for dashboard inspection
 	"tool-tier-stats":    true, // v0.67 per-tier aggregate panel (#635 panel 2)
 	"tool-payload-stats": true, // v0.67 per-tool payload-size panel (#635 panel 3 — outlier finder)
+	"graph":              true, // #1858: bounded read-only dashboard graph view
 	"openapi.json":       true,
 	"ready":              true, // #660: k8s readiness probe (200 vs 503)
 	"metrics":            true, // #1163: Prometheus exposition endpoint
@@ -2253,6 +2254,111 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"window_seconds": windowSec,
 			"tallies":        rows,
+		})
+		return
+	}
+	// GET /v1/graph — bounded read-only dashboard graph view (#1858).
+	// Returns symbol nodes plus edges for a single project. This is additive:
+	// it does not mutate or change existing dashboard endpoints, and it keeps
+	// legacy graph export key names (symbol id/name/qualified_name/etc.; edge
+	// from/to/kind/source/confidence) so downstream UI code can reuse the same
+	// shape safely. Query params:
+	//   project — optional; defaults to the current session project
+	//   limit   — max symbols returned (default 150, max 500)
+	//   filter  — optional case-insensitive symbol/name/path/kind/language match
+	if path == "graph" && r.Method == http.MethodGet {
+		projectID := r.URL.Query().Get("project")
+		if projectID == "" {
+			projectID = s.sessionID
+		}
+		if projectID == "" {
+			writeError(w, http.StatusBadRequest, "missing_project", "project query parameter is required when no session project is active")
+			return
+		}
+		project, err := s.store.GetProject(projectID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		if project == nil {
+			writeError(w, http.StatusNotFound, "project_not_found", "project not found")
+			return
+		}
+		limit := 150
+		if v := r.URL.Query().Get("limit"); v != "" {
+			if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
+				limit = n
+			}
+		}
+		if limit > 500 {
+			limit = 500
+		}
+		filter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("filter")))
+
+		syms, err := s.store.ListSymbolsForProject(projectID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		edges, err := s.store.ListEdgesForProject(projectID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		totalSymbols, totalEdges := len(syms), len(edges)
+		matches := func(sym db.Symbol) bool {
+			if filter == "" {
+				return true
+			}
+			hay := strings.ToLower(sym.Name + "\x00" + sym.QualifiedName + "\x00" + sym.Kind + "\x00" + sym.Language + "\x00" + sym.FilePath)
+			return strings.Contains(hay, filter)
+		}
+		nodes := []map[string]any{}
+		included := map[string]bool{}
+		hasMoreSymbols := false
+		for _, sym := range syms {
+			if !matches(sym) {
+				continue
+			}
+			if len(nodes) >= limit {
+				hasMoreSymbols = true
+				break
+			}
+			included[sym.ID] = true
+			nodes = append(nodes, map[string]any{
+				"id":                    sym.ID,
+				"name":                  sym.Name,
+				"qualified_name":        sym.QualifiedName,
+				"kind":                  sym.Kind,
+				"language":              sym.Language,
+				"file_path":             sym.FilePath,
+				"start_line":            sym.StartLine,
+				"end_line":              sym.EndLine,
+				"extraction_confidence": sym.ExtractionConfidence,
+			})
+		}
+		links := []map[string]any{}
+		for _, edge := range edges {
+			if !included[edge.FromID] || !included[edge.ToID] {
+				continue
+			}
+			links = append(links, map[string]any{
+				"from":       edge.FromID,
+				"to":         edge.ToID,
+				"kind":       edge.Kind,
+				"source":     edge.Source,
+				"confidence": edge.Confidence,
+			})
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"project":          projectID,
+			"limit":            limit,
+			"filter":           filter,
+			"symbols":          nodes,
+			"edges":            links,
+			"total_symbols":    totalSymbols,
+			"total_edges":      totalEdges,
+			"has_more_symbols": hasMoreSymbols,
 		})
 		return
 	}
