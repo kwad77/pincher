@@ -408,6 +408,12 @@ func buildDoctorReport(store *db.Store, dir string, lookbackHours, top int, proj
 	if a := hookInstallAdvisory(); a != "" {
 		r.Advisories = append(r.Advisories, a)
 	}
+	// #1939: MCP launch-path advisory. Fires when the binary lives in a
+	// go-install dir that only an interactive rc puts on PATH, so the MCP host
+	// can't launch the server. CLI-only (see mcpLaunchPathAdvisory doc).
+	if a := mcpLaunchPathAdvisory(); a != "" {
+		r.Advisories = append(r.Advisories, a)
+	}
 	// #1612 v0.87: FTS5 fragmentation advisory. Mirrors the MCP doctor's
 	// copy in internal/server/admin.go per the bounded-duplication
 	// convention. Best-effort: missing shadow tables (pre-v9 schema or
@@ -1175,6 +1181,163 @@ func hookFoundInSettings(path string) bool {
 		}
 	}
 	return false
+}
+
+// mcpLaunchPathAdvisory warns when the running pincher binary lives in a Go
+// install directory ($GOBIN / $GOPATH/bin / ~/go/bin) whose PATH entry comes
+// only from an interactive shell rc (~/.zshrc, ~/.bashrc) and not from a
+// login / non-interactive init file (~/.zshenv, ~/.zprofile, ~/.profile,
+// ~/.bash_profile). MCP hosts (Claude Code, launchd) start the server from a
+// non-interactive shell, which never sources ~/.zshrc — so an interactive-only
+// PATH entry means the server can silently fail to launch and the
+// mcp__pincher__* tools never register, with no error surfaced anywhere.
+//
+// Like hookInstallAdvisory this is intentionally CLI-only and not mirrored into
+// internal/server/admin.go: if the MCP server is alive enough to answer a
+// doctor call, it already launched, so the advisory would be moot in that
+// context. See #1939.
+func mcpLaunchPathAdvisory() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		return ""
+	}
+	return mcpLaunchPathAdvisoryFor(exe, home)
+}
+
+// mcpLaunchPathAdvisoryFor is the testable core of mcpLaunchPathAdvisory: it
+// takes the resolved executable path and home dir explicitly so tests can
+// fabricate a go/bin install under a temp home without mocking os.Executable.
+func mcpLaunchPathAdvisoryFor(exe, home string) string {
+	binDir := filepath.Dir(exe)
+
+	// Only go-install locations are at risk. Release / Homebrew installs land in
+	// /usr/local/bin or /opt/homebrew/bin, already covered by the system PATH.
+	if !isGoInstallDir(binDir, home) {
+		return ""
+	}
+
+	// Covered by a login / non-interactive init file → the MCP host will find
+	// it. Healthy, stay silent.
+	for _, f := range []string{".zshenv", ".zprofile", ".profile", ".bash_profile", ".bash_login"} {
+		if initFileAddsDirToPath(filepath.Join(home, f), binDir, home) {
+			return ""
+		}
+	}
+
+	// Not covered for non-interactive shells. Distinguish the interactive-only
+	// trap (entry exists, but only in ~/.zshrc / ~/.bashrc) from total absence —
+	// same fix, clearer message.
+	interactiveOnly := false
+	for _, f := range []string{".zshrc", ".bashrc"} {
+		if initFileAddsDirToPath(filepath.Join(home, f), binDir, home) {
+			interactiveOnly = true
+			break
+		}
+	}
+
+	msg := fmt.Sprintf("pincher is installed at %s, but ", exe)
+	if interactiveOnly {
+		msg += "that directory is added to PATH only by an interactive shell rc " +
+			"(~/.zshrc or ~/.bashrc). "
+	} else {
+		msg += "that directory is on PATH in no login / non-interactive shell init file. "
+	}
+	msg += "MCP hosts (Claude Code, launchd) start the server from a non-interactive shell, which " +
+		"reads ~/.zshenv / ~/.zprofile / ~/.profile — not ~/.zshrc — so the server can silently " +
+		"fail to launch and mcp__pincher__* tools never register. Remediation: add " +
+		fmt.Sprintf("`export PATH=\"%s:$PATH\"` to ~/.zshenv ", binDir) +
+		"(sourced by every shell), then `claude mcp add pincher` if it isn't registered yet. See #1939."
+	return msg
+}
+
+// isGoInstallDir reports whether dir is the effective `go install` bin
+// directory: $GOBIN if set, else $GOPATH/bin (first GOPATH entry), else the
+// ~/go/bin default. Compared by cleaned path.
+func isGoInstallDir(dir, home string) bool {
+	dir = filepath.Clean(dir)
+	var candidates []string
+	if gobin := os.Getenv("GOBIN"); gobin != "" {
+		candidates = append(candidates, gobin)
+	}
+	if gopath := os.Getenv("GOPATH"); gopath != "" {
+		if parts := filepath.SplitList(gopath); len(parts) > 0 {
+			candidates = append(candidates, filepath.Join(parts[0], "bin"))
+		}
+	}
+	candidates = append(candidates, filepath.Join(home, "go", "bin"))
+	for _, c := range candidates {
+		if sameDir(dir, c) {
+			return true
+		}
+	}
+	return false
+}
+
+// sameDir reports whether two paths name the same directory, resolving symlinks
+// when possible (e.g. macOS /tmp → /private/tmp, or a symlinked home) and
+// falling back to a lexical comparison when a side can't be resolved.
+func sameDir(a, b string) bool {
+	if ra, err := filepath.EvalSymlinks(a); err == nil {
+		a = ra
+	}
+	if rb, err := filepath.EvalSymlinks(b); err == nil {
+		b = rb
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+// initFileAddsDirToPath reports whether the shell init file at path has a
+// non-comment line that both mentions PATH and names dir — literally, or via
+// $HOME / ${HOME} / ~ when dir is under home (e.g. `export PATH="$HOME/go/bin:$PATH"`).
+// Best-effort textual scan; missing / unreadable files return false silently so
+// the check can never fail the doctor run.
+func initFileAddsDirToPath(path, dir, home string) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	needles := pathNeedleVariants(dir)
+	if home != "" && strings.HasPrefix(dir, home) {
+		tail := dir[len(home):] // e.g. "/go/bin" or "\\go\\bin" on Windows
+		for _, tailVariant := range pathNeedleVariants(tail) {
+			needles = append(needles, "$HOME"+tailVariant, "${HOME}"+tailVariant, "~"+tailVariant)
+		}
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if !strings.Contains(trimmed, "PATH") {
+			continue
+		}
+		for _, n := range needles {
+			if strings.Contains(trimmed, n) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func pathNeedleVariants(path string) []string {
+	variants := []string{path}
+	withSlashes := filepath.ToSlash(path)
+	if withSlashes != path {
+		variants = append(variants, withSlashes)
+	}
+	withSeparators := filepath.FromSlash(path)
+	if withSeparators != path && withSeparators != withSlashes {
+		variants = append(variants, withSeparators)
+	}
+	return variants
 }
 
 // formatDoctorMarkdown renders the report as a human-readable terminal
