@@ -125,15 +125,35 @@ The important part is the envelope. Pincher does not merely answer the immediate
 
 One Go binary builds three layers from one extraction pass:
 
-```
-Source files
-    │
-    ▼
-ast.Extract()
-    │
-    ├─► byte-offset symbol store  O(1) source retrieval
-    ├─► knowledge graph           CALLS / IMPORTS / READS / WRITES / REFERENCES
-    └─► FTS5 search               BM25 over code, config, and docs corpora
+```mermaid
+flowchart TB
+    files["Source files<br/>Go · Python · JS/TS · config · docs"]
+    extract["ast.Extract()<br/>deterministic local extraction"]
+    symbols["Byte-offset symbol store<br/>O(1) source retrieval"]
+    graph["Knowledge graph<br/>CALLS · IMPORTS · READS · WRITES · REFERENCES"]
+    fts["FTS5 search<br/>BM25 over code, config, docs"]
+    tools["MCP / HTTP tools<br/>search · context · trace · changes · report"]
+    meta["_meta envelope<br/>tokens · savings · latency · tier · next_steps"]
+    agent["LLM coding agent / host router"]
+
+    files --> extract
+    extract --> symbols
+    extract --> graph
+    extract --> fts
+    symbols --> tools
+    graph --> tools
+    fts --> tools
+    tools --> meta
+    meta --> agent
+
+    classDef input fill:#eff6ff,stroke:#2563eb,color:#111827;
+    classDef index fill:#ecfdf5,stroke:#059669,color:#111827;
+    classDef api fill:#fff7ed,stroke:#ea580c,color:#111827;
+    classDef meta fill:#f5f3ff,stroke:#7c3aed,color:#111827;
+    class files input;
+    class extract,symbols,graph,fts index;
+    class tools api;
+    class meta,agent meta;
 ```
 
 Current Pincher dogfood index for this repo reports:
@@ -153,6 +173,33 @@ Pincher supports MCP stdio and HTTP REST. The HTTP gateway exposes the same tool
 ## Savings you can audit
 
 Pincher savings are token math, not vibes. The reason to use the product is that the normal agent discovery loop burns context on files it did not need to read. Pincher makes the high-value loop explicit:
+
+```mermaid
+flowchart LR
+    raw["Raw agent path<br/>grep broadly → open files → grep callers → open more files"]
+    search["1. Search pass<br/>ranked candidates only"]
+    context["2. Context pass<br/>target symbol + local context"]
+    trace["3. Trace pass<br/>graph callers/callees"]
+    meta["Auditable _meta<br/>used · saved · saved_pct · baseline"]
+    router["Host / Pincher Router<br/>route with cost + complexity signal"]
+
+    raw -. "replaced by" .-> search
+    search --> context
+    context --> trace
+    trace --> meta
+    meta --> router
+
+    search -. "saves: avoid reading non-candidates" .-> meta
+    context -. "saves: avoid whole-file reads" .-> meta
+    trace -. "saves: avoid repeated caller grep" .-> meta
+
+    classDef raw fill:#fef2f2,stroke:#dc2626,color:#111827;
+    classDef pass fill:#ecfdf5,stroke:#059669,color:#111827;
+    classDef evidence fill:#f5f3ff,stroke:#7c3aed,color:#111827;
+    class raw raw;
+    class search,context,trace pass;
+    class meta,router evidence;
+```
 
 1. **Search pass — spend tokens only on candidates.** `search` turns a broad grep/read sweep into ranked symbol, config, and docs rows. The agent sees IDs, file paths, snippets, and confidence before deciding whether any source body is worth reading.
 2. **Context pass — read the right slice, not the whole file.** `context` returns the selected symbol plus directly relevant callees/import context. It replaces opening entire files just to understand one function or method.
