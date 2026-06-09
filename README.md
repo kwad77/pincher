@@ -12,6 +12,8 @@
 **Local graph intelligence for LLM coding agents.**
 Stop paying agents to rediscover the same codebase with raw file reads.
 
+Pincher's core value is auditable token reduction: search → context → trace replaces broad grep/read loops with compact source-grounded graph evidence, and every call reports `_meta.tokens_used`, `_meta.tokens_saved`, `tokens_saved_pct`, and `baseline_method`.
+
 Single binary · Local index · MCP stdio · HTTP REST · OpenAPI 3.1
 
 [Quick start](#quick-start) · [Why Pincher exists](#why-pincher-exists) · [Agent loop](#the-agent-loop) · [Savings](#savings-you-can-audit) · [Reference](docs/reference/) · [Tutorials](docs/tutorials/)
@@ -150,7 +152,13 @@ Pincher supports MCP stdio and HTTP REST. The HTTP gateway exposes the same tool
 
 ## Savings you can audit
 
-Pincher savings are token math, not vibes. Tool responses include:
+Pincher savings are token math, not vibes. The reason to use the product is that the normal agent discovery loop burns context on files it did not need to read. Pincher makes the high-value loop explicit:
+
+1. **Search pass — spend tokens only on candidates.** `search` turns a broad grep/read sweep into ranked symbol, config, and docs rows. The agent sees IDs, file paths, snippets, and confidence before deciding whether any source body is worth reading.
+2. **Context pass — read the right slice, not the whole file.** `context` returns the selected symbol plus directly relevant callees/import context. It replaces opening entire files just to understand one function or method.
+3. **Trace pass — follow graph edges instead of guessing callers.** `trace` walks caller/callee paths with depth and risk labels. It replaces repeated grep/read loops across possible callsites before a behavior or signature change.
+
+Every pass leaves falsifiable accounting in `_meta`:
 
 - `tokens_used`: what Pincher returned
 - `tokens_saved`: estimated tokens avoided versus the baseline
@@ -158,18 +166,20 @@ Pincher savings are token math, not vibes. Tool responses include:
 - `baseline_method`: for example `full_file_read`
 - `latency_ms`: measured server-side latency
 
+The baseline is explicit. For source-oriented tools, `full_file_read` means the bytes of the files Pincher referenced — the rough cost of the raw agent path — compared with the compact Pincher response. Other tools use `index_summary` or `none` when there is no honest file-read substitute.
+
 The ceiling depends on the workflow:
 
 | Workflow | Typical outcome |
 |---|---|
-| `symbol`, `symbols`, `context` on large files | Often 90-99% fewer tokens than opening whole files. |
-| `trace`, `changes`, `context_for_task` | Replaces multi-step grep/read/caller discovery loops. |
-| `search` | Cuts broad discovery down to ranked symbol rows before the agent reads source. |
-| `architecture`, `health`, `report` | Gives orientation without dumping the tree or hand-reading docs. |
+| Search pass: `search` | Cuts broad discovery down to ranked symbol rows before the agent reads source. |
+| Context pass: `symbol`, `symbols`, `context` on large files | Often 90-99% fewer tokens than opening whole files. |
+| Trace pass: `trace`, plus `changes` / `context_for_task` | Replaces multi-step grep/read/caller discovery loops. |
+| Orientation: `architecture`, `health`, `report` | Gives repo-level evidence without dumping the tree or hand-reading docs. |
 
 Aggregate sessions on large Go/JS projects usually land around 70-90% token reduction. Smaller repos and stub-tier languages can be closer to break-even. Pincher exposes the raw numbers so you can check the claim for your own project.
 
-For reproducibility, see [`scripts/reproduce-savings.sh`](scripts/reproduce-savings.sh), [`docs/reference/tools.md`](docs/reference/tools.md), and the dashboard at `/v1/dashboard`.
+For reproducibility, see [`scripts/reproduce-savings.sh`](scripts/reproduce-savings.sh), [`docs/methodology/token-savings.md`](docs/methodology/token-savings.md), [`docs/reference/tools.md`](docs/reference/tools.md), and the dashboard at `/v1/dashboard`.
 
 ---
 
