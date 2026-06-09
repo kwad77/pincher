@@ -984,6 +984,16 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 						deferredCalls = append(deferredCalls, e)
 					} else if e.Kind == "CALLS" && e.ReceiverType != "" {
 						deferredCalls = append(deferredCalls, e)
+					} else if e.Kind == "CALLS" && (lang == "TypeScript" || lang == "TSX" || lang == "JavaScript") && !strings.Contains(e.ToName, ".") {
+						// Web-code fallback: bare function calls in JS/TS often
+						// target a sibling module imported by name. The regex tier
+						// cannot yet attach import-alias provenance, but deferring
+						// bare candidates lets the post-pass bind unique project-local
+						// functions instead of leaving web projects with zero CALLS.
+						// Dotted calls without ReceiverType still drop here — they are
+						// usually receiver/package calls and need stronger type/import
+						// evidence to avoid false positives.
+						deferredCalls = append(deferredCalls, e)
 					}
 					continue
 				}
@@ -4339,6 +4349,48 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 		}
 		return canonical
 	}
+	webNameCache := make(map[string]string)
+	lookupWebBareName := func(name, fromFile string) string {
+		if name == "" || strings.Contains(name, ".") {
+			return ""
+		}
+		fromDir := filepath.ToSlash(filepath.Dir(fromFile))
+		cacheKey := name + "\x00" + fromDir
+		if id, ok := webNameCache[cacheKey]; ok {
+			return id
+		}
+		syms, err := idx.store.GetSymbolsByName(projectID, name, 200)
+		if err != nil || len(syms) == 0 {
+			webNameCache[cacheKey] = ""
+			return ""
+		}
+		syms = preferNonFixtureSyms(syms)
+		syms = excludeMethodSyms(syms)
+		syms = excludeNonCodeSyms(syms)
+		webSyms := make([]db.Symbol, 0, len(syms))
+		sameDir := make([]db.Symbol, 0, len(syms))
+		for _, s := range syms {
+			if s.Language != "JavaScript" && s.Language != "TypeScript" && s.Language != "TSX" {
+				continue
+			}
+			webSyms = append(webSyms, s)
+			if fromDir != "." && filepath.ToSlash(filepath.Dir(s.FilePath)) == fromDir {
+				sameDir = append(sameDir, s)
+			}
+		}
+		id := ""
+		// Prefer a same-directory unique match (common component/utils
+		// layout), otherwise require the bare name to be unique across the
+		// web corpus. Ambiguous names are intentionally dropped rather than
+		// false-bound; this is a heuristic fallback, not a JS import graph.
+		if len(sameDir) == 1 {
+			id = sameDir[0].ID
+		} else if len(webSyms) == 1 {
+			id = webSyms[0].ID
+		}
+		webNameCache[cacheKey] = id
+		return id
+	}
 
 	// #423 piece 3: receiver-type-aware resolution. Load all
 	// struct_fields rows once and index them by struct QN so the
@@ -4617,6 +4669,14 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 		// struct-field-aware behaviour first.
 		if toID == "" && e.ReceiverType != "" && fromIsJSorTS {
 			toID = resolveByReceiverTypeNonGo(e.ToName, e.ReceiverType)
+		}
+		// Web-code fallback: bare imported function calls are the common
+		// JS/TS shape (`import { f } ...; f()`) and the regex extractor
+		// emits only ToName="f". Bind only unique project-local web-code
+		// symbols (or one same-directory match) so sparse web graphs gain
+		// useful trace/dead_code edges without broad receiver-call guessing.
+		if toID == "" && fromIsJSorTS && !strings.Contains(e.ToName, ".") {
+			toID = lookupWebBareName(e.ToName, e.FromFile)
 		}
 		// #285: receiver-method calls (e.g. `idx.Index(...)`) produce
 		// ToName="idx.Index" which never matches a real qualified name

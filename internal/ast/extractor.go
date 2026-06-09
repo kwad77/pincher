@@ -2694,6 +2694,11 @@ func extractJavaScript(source []byte, relPath string) *FileResult {
 		isTest: func(name string) bool {
 			return strings.HasPrefix(name, "test") || strings.HasPrefix(name, "spec")
 		},
+		// Web-code graph fallback: JS uses the same C-family `name(` call
+		// shape as TS. The index resolver binds only same-file or unique
+		// project-local bare targets, so emitting candidates here improves
+		// trace/dead_code coverage without broad receiver-call guessing.
+		extractCalls: true,
 	}
 	return jsRE.extract(source, relPath, "JavaScript", opts)
 }

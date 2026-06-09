@@ -68,6 +68,19 @@ func extractJavaScriptAST(source []byte, relPath string) (*FileResult, bool) {
 		regexCache:  map[string]*regexp.Regexp{},
 	}
 	w.walkBlock(parsed.BlockStmt, false /*insideFunc*/)
+	// The AST walker is intentionally conservative about body traversal, but
+	// web-code graph tools need CALLS edges from ordinary function bodies. Reuse
+	// the regex-tier call scanner as a heuristic edge source and keep AST-tier
+	// symbols/imports as the authoritative extraction. The index resolver later
+	// binds only same-file or unique project-local bare targets, so unresolved
+	// noisy candidates are dropped there.
+	if regexResult := extractJavaScript(source, relPath); regexResult != nil {
+		for _, e := range regexResult.Edges {
+			if e.Kind == "CALLS" {
+				w.edges = append(w.edges, e)
+			}
+		}
+	}
 	// #1328 v0.71: signal to ExtractWithModule that this FileResult is
 	// AST-tier. The JavaScript langAdapter registers confidence=0.85
 	// (the regex fallback's honest floor — kept for the post-default-on
