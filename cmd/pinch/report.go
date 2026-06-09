@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -49,10 +50,11 @@ type reportRationaleMap struct {
 }
 
 type reportNextCall struct {
-	Tool          string
-	Args          string
-	Why           string
-	ExpectedValue string
+	Tool          string         `json:"tool"`
+	Args          string         `json:"args_legacy,omitempty"`
+	ArgsJSON      map[string]any `json:"args"`
+	Why           string         `json:"why"`
+	ExpectedValue string         `json:"expected_value"`
 }
 
 func runReportCLI(args []string) {
@@ -64,13 +66,13 @@ func reportCLI(args []string, stdout, stderr io.Writer) int {
 
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	format := fs.String("format", "markdown", "Output format: markdown")
+	format := fs.String("format", "markdown", "Output format: markdown or json")
 	projectFlag := fs.String("project", "", "Project name, id, or substring (default: the current directory's project)")
 	outPath := fs.String("out", "", "Write to this file (default: stdout)")
 	dataDir := fs.String("data-dir", "", "Override data directory")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: pincher report [--project NAME|ID|SUBSTR] [--out=FILE]")
-		fmt.Fprintln(stderr, "  Generates a Pincher-native markdown architecture report from indexed graph evidence.")
+		fmt.Fprintln(stderr, "usage: pincher report [--project NAME|ID|SUBSTR] [--format markdown|json] [--out=FILE]")
+		fmt.Fprintln(stderr, "  Generates a Pincher-native architecture report from indexed graph evidence.")
 		fmt.Fprintln(stderr, "  The report uses deterministic source provenance and existing _meta-oriented workflow guidance; it does not run LLM extraction.")
 		fs.PrintDefaults()
 	}
@@ -80,8 +82,9 @@ func reportCLI(args []string, stdout, stderr io.Writer) int {
 		}
 		return 2
 	}
-	if strings.ToLower(*format) != "markdown" {
-		fmt.Fprintf(stderr, "pincher report: unknown format %q (want markdown)\n", *format)
+	reportFormat := strings.ToLower(*format)
+	if reportFormat != "markdown" && reportFormat != "json" {
+		fmt.Fprintf(stderr, "pincher report: unknown format %q (want markdown or json)\n", *format)
 		return 1
 	}
 
@@ -119,8 +122,16 @@ func reportCLI(args []string, stdout, stderr io.Writer) int {
 		defer f.Close()
 		out = f
 	}
-	if err := writeProjectReportMarkdown(out, project, symbols, edges, reportOptions{GeneratedAt: time.Now().UTC()}); err != nil {
-		fmt.Fprintf(stderr, "pincher report: write: %v\n", err)
+	opts := reportOptions{GeneratedAt: time.Now().UTC()}
+	var writeErr error
+	switch reportFormat {
+	case "json":
+		writeErr = writeProjectReportJSON(out, project, symbols, edges, opts)
+	default:
+		writeErr = writeProjectReportMarkdown(out, project, symbols, edges, opts)
+	}
+	if writeErr != nil {
+		fmt.Fprintf(stderr, "pincher report: write: %v\n", writeErr)
 		return 1
 	}
 	if *outPath != "" {
@@ -282,6 +293,101 @@ func writeProjectReportMarkdown(w io.Writer, project db.Project, symbols []db.Sy
 	return err
 }
 
+func writeProjectReportJSON(w io.Writer, project db.Project, symbols []db.Symbol, edges []db.Edge, opts reportOptions) error {
+	generatedAt := opts.GeneratedAt
+	if generatedAt.IsZero() {
+		generatedAt = time.Now().UTC()
+	}
+	languages := countSymbolsBy(symbols, func(s db.Symbol) string { return emptyAs(s.Language, "Unknown") })
+	nodeKinds := countSymbolsBy(symbols, func(s db.Symbol) string { return emptyAs(s.Kind, "Unknown") })
+	edgeKinds := countEdgesBy(edges, func(e db.Edge) string { return emptyAs(e.Kind, "Unknown") })
+	entryPoints := reportEntryPoints(symbols, 10)
+	hotspots := reportHotspots(symbols, edges, 10)
+	rationales := reportRationaleMapFor(symbols, 10)
+	surprising := reportSurprisingConnections(edges, 10)
+
+	type projectJSON struct {
+		ID            string `json:"id"`
+		Name          string `json:"name"`
+		Path          string `json:"path"`
+		IndexedAt     string `json:"indexed_at"`
+		BinaryVersion string `json:"binary_version"`
+		Files         int    `json:"files"`
+		Symbols       int    `json:"symbols"`
+		Edges         int    `json:"edges"`
+	}
+	type hotspotJSON struct {
+		ID            string `json:"id"`
+		Name          string `json:"name"`
+		Kind          string `json:"kind"`
+		FilePath      string `json:"file_path"`
+		StartLine     int    `json:"start_line"`
+		IncomingCalls int    `json:"incoming_calls"`
+	}
+	type rationaleJSON struct {
+		ID         string  `json:"id"`
+		Name       string  `json:"name"`
+		Attachment string  `json:"attachment"`
+		FilePath   string  `json:"file_path"`
+		StartLine  int     `json:"start_line"`
+		Confidence float64 `json:"confidence"`
+	}
+	type packagePairJSON struct {
+		From  string `json:"from"`
+		To    string `json:"to"`
+		Edges int    `json:"edges"`
+	}
+
+	hotspotRows := make([]hotspotJSON, 0, len(hotspots))
+	for _, h := range hotspots {
+		hotspotRows = append(hotspotRows, hotspotJSON{
+			ID: h.Symbol.ID, Name: h.Symbol.Name, Kind: h.Symbol.Kind, FilePath: h.Symbol.FilePath,
+			StartLine: h.Symbol.StartLine, IncomingCalls: h.IncomingCalls,
+		})
+	}
+	rationaleRows := make([]rationaleJSON, 0, rationales.TotalVisible)
+	for _, group := range rationales.Groups {
+		for _, s := range group.Symbols {
+			rationaleRows = append(rationaleRows, rationaleJSON{
+				ID: s.ID, Name: s.Name, Attachment: group.Attachment, FilePath: s.FilePath,
+				StartLine: s.StartLine, Confidence: s.ExtractionConfidence,
+			})
+		}
+	}
+	surprisingRows := make([]packagePairJSON, 0, len(surprising))
+	for _, pair := range sortedPackagePairs(surprising) {
+		surprisingRows = append(surprisingRows, packagePairJSON{From: pair.From, To: pair.To, Edges: surprising[pair]})
+	}
+
+	payload := map[string]any{
+		"format":       "pincher_report.v1",
+		"generated_at": generatedAt.Format(time.RFC3339),
+		"project": projectJSON{
+			ID: project.ID, Name: project.Name, Path: project.Path, IndexedAt: project.IndexedAt.UTC().Format(time.RFC3339),
+			BinaryVersion: emptyAs(project.BinaryVersion, "unknown"), Files: project.FileCount, Symbols: len(symbols), Edges: len(edges),
+		},
+		"counts": map[string]any{
+			"languages":  languages,
+			"node_kinds": nodeKinds,
+			"edge_kinds": edgeKinds,
+		},
+		"entry_points": entryPoints,
+		"hotspots":     hotspotRows,
+		"rationales": map[string]any{
+			"attached": rationales.Attached, "unattached": rationales.Unattached, "rows": rationaleRows,
+		},
+		"surprising_connections": surprisingRows,
+		"next_pincher_calls":     reportNextCalls(project, hotspots, rationales),
+		"provenance": map[string]string{
+			"source":         "Pincher symbol and edge index",
+			"missing_policy": "missing data is reported as missing rather than inferred",
+		},
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(payload)
+}
+
 func reportNextCalls(project db.Project, hotspots []reportHotspot, rationales reportRationaleMap) []reportNextCall {
 	projectID := emptyAs(project.ID, project.Path)
 	suggestions := make([]reportNextCall, 0, 4)
@@ -292,12 +398,14 @@ func reportNextCalls(project db.Project, hotspots []reportHotspot, rationales re
 			reportNextCall{
 				Tool:          "mcp_pincher_context",
 				Args:          fmt.Sprintf(`{"project":"%s","id":"%s"}`, projectID, top.ID),
+				ArgsJSON:      map[string]any{"project": projectID, "id": top.ID},
 				Why:           "inspect the top hotspot before editing it.",
 				ExpectedValue: "reduces risky raw reads and grounds edits in symbol provenance.",
 			},
 			reportNextCall{
 				Tool:          "mcp_pincher_trace",
 				Args:          fmt.Sprintf(`{"project":"%s","id":"%s","direction":"inbound"}`, projectID, top.ID),
+				ArgsJSON:      map[string]any{"project": projectID, "id": top.ID, "direction": "inbound"},
 				Why:           "map callers for the highest-incoming hotspot before behavior changes.",
 				ExpectedValue: "exposes blast-radius risk for planning and routing escalation.",
 			},
@@ -308,6 +416,7 @@ func reportNextCalls(project db.Project, hotspots []reportHotspot, rationales re
 		suggestions = append(suggestions, reportNextCall{
 			Tool:          "mcp_pincher_search",
 			Args:          fmt.Sprintf(`{"project":"%s","query":"%s"}`, projectID, rationale.Name),
+			ArgsJSON:      map[string]any{"project": projectID, "query": rationale.Name},
 			Why:           "follow rationale/design-intent evidence back into indexed symbols.",
 			ExpectedValue: "keeps design intent visible instead of relying on prose-only memory.",
 		})
@@ -316,6 +425,7 @@ func reportNextCalls(project db.Project, hotspots []reportHotspot, rationales re
 	suggestions = append(suggestions, reportNextCall{
 		Tool:          "mcp_pincher_changes",
 		Args:          fmt.Sprintf(`{"project":"%s","scope":"all"}`, projectID),
+		ArgsJSON:      map[string]any{"project": projectID, "scope": "all"},
 		Why:           "run before finalizing edits to map changed-symbol blast radius.",
 		ExpectedValue: "turns the report into an execution loop with measurable impact checks.",
 	})

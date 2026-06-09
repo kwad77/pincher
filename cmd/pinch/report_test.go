@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,6 +103,60 @@ func TestWriteProjectReportMarkdown(t *testing.T) {
 	}
 }
 
+func TestWriteProjectReportJSON_HasStructuredNextCallsAndLegacyArgs(t *testing.T) {
+	syms, edges := reportFixture()
+	project := db.Project{
+		ID: "p-demo", Name: "demo", Path: "/tmp/demo", IndexedAt: time.Unix(1700000000, 0),
+		FileCount: 3, SymCount: len(syms), EdgeCount: len(edges), BinaryVersion: "test-version",
+	}
+	var b strings.Builder
+	if err := writeProjectReportJSON(&b, project, syms, edges, reportOptions{GeneratedAt: time.Unix(1700000100, 0).UTC()}); err != nil {
+		t.Fatalf("writeProjectReportJSON: %v", err)
+	}
+	var payload struct {
+		Format      string `json:"format"`
+		GeneratedAt string `json:"generated_at"`
+		Project     struct {
+			ID            string `json:"id"`
+			BinaryVersion string `json:"binary_version"`
+			Symbols       int    `json:"symbols"`
+			Edges         int    `json:"edges"`
+		} `json:"project"`
+		NextPincherCalls []struct {
+			Tool          string         `json:"tool"`
+			ArgsLegacy    string         `json:"args_legacy"`
+			Args          map[string]any `json:"args"`
+			Why           string         `json:"why"`
+			ExpectedValue string         `json:"expected_value"`
+		} `json:"next_pincher_calls"`
+	}
+	if err := json.Unmarshal([]byte(b.String()), &payload); err != nil {
+		t.Fatalf("json unmarshal: %v\n%s", err, b.String())
+	}
+	if payload.Format != "pincher_report.v1" || payload.GeneratedAt != "2023-11-14T22:15:00Z" {
+		t.Fatalf("unexpected report identity: %#v", payload)
+	}
+	if payload.Project.ID != "p-demo" || payload.Project.BinaryVersion != "test-version" || payload.Project.Symbols != 5 || payload.Project.Edges != 2 {
+		t.Fatalf("project fields changed or missing: %#v", payload.Project)
+	}
+	if len(payload.NextPincherCalls) != 4 {
+		t.Fatalf("next call count = %d, want 4; payload=%s", len(payload.NextPincherCalls), b.String())
+	}
+	first := payload.NextPincherCalls[0]
+	if first.Tool != "mcp_pincher_context" || first.Args["project"] != "p-demo" || first.Args["id"] != "internal/server.go::server.Handle#Function" {
+		t.Fatalf("first next call is not machine-actionable context guidance: %#v", first)
+	}
+	if first.ArgsLegacy != `{"project":"p-demo","id":"internal/server.go::server.Handle#Function"}` {
+		t.Fatalf("legacy args string changed: %q", first.ArgsLegacy)
+	}
+	if payload.NextPincherCalls[1].Args["direction"] != "inbound" {
+		t.Fatalf("trace direction missing from structured args: %#v", payload.NextPincherCalls[1])
+	}
+	if payload.NextPincherCalls[3].Args["scope"] != "all" {
+		t.Fatalf("changes scope missing from structured args: %#v", payload.NextPincherCalls[3])
+	}
+}
+
 func TestReportCLI_EndToEnd(t *testing.T) {
 	dataDir := t.TempDir()
 	projDir := t.TempDir()
@@ -130,5 +185,31 @@ func TestReportCLI_EndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "## Suggested next Pincher calls") {
 		t.Fatalf("stdout missing next-call guidance:\n%s", out.String())
+	}
+
+	out.Reset()
+	errb.Reset()
+	code = reportCLI([]string{"--data-dir", dataDir, "--project", project.Name, "--format", "json"}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("json exit = %d, want 0; stderr=%s", code, errb.String())
+	}
+	var payload struct {
+		Format  string `json:"format"`
+		Project struct {
+			Name string `json:"name"`
+		} `json:"project"`
+		NextPincherCalls []struct {
+			Tool string         `json:"tool"`
+			Args map[string]any `json:"args"`
+		} `json:"next_pincher_calls"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &payload); err != nil {
+		t.Fatalf("json report is not parseable: %v\n%s", err, out.String())
+	}
+	if payload.Format != "pincher_report.v1" || payload.Project.Name != project.Name {
+		t.Fatalf("json report identity mismatch: %#v", payload)
+	}
+	if len(payload.NextPincherCalls) == 0 || payload.NextPincherCalls[len(payload.NextPincherCalls)-1].Args["scope"] != "all" {
+		t.Fatalf("json report missing structured next-call guidance: %#v", payload.NextPincherCalls)
 	}
 }
