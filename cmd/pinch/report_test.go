@@ -68,6 +68,7 @@ func TestWriteProjectReportMarkdown(t *testing.T) {
 		"- `main` — `cmd/app.go:10`",
 		"## Hotspots",
 		"- `Handle` Function — `internal/server.go` (incoming calls: 1)",
+		"Risk score: 3 (inputs: incoming=1, outgoing=0, degree=1, test-adjacent=0, confidence=1.00)",
 		"## Rationale / design intent",
 		"- Attached rationale: 1 · unattached/file-level: 1",
 		"- Attachment: `server.Handle` (1 rationale)",
@@ -103,6 +104,37 @@ func TestWriteProjectReportMarkdown(t *testing.T) {
 	}
 }
 
+func TestReportHotspots_RiskInputsAndStableOrdering(t *testing.T) {
+	syms := []db.Symbol{
+		{ID: "a.go::pkg.Alpha#Function", Name: "Alpha", Kind: "Function", FilePath: "a.go"},
+		{ID: "b.go::pkg.Beta#Function", Name: "Beta", Kind: "Function", FilePath: "b.go"},
+		{ID: "c.go::pkg.CallerOne#Function", Name: "CallerOne", Kind: "Function", FilePath: "c.go"},
+		{ID: "d.go::pkg.CallerTwo#Function", Name: "CallerTwo", Kind: "Function", FilePath: "d.go"},
+		{ID: "e.go::pkg.Target#Function", Name: "Target", Kind: "Function", FilePath: "e.go"},
+	}
+	edges := []db.Edge{
+		{FromID: "c.go::pkg.CallerOne#Function", ToID: "a.go::pkg.Alpha#Function", Kind: "CALLS", Confidence: 1.0},
+		{FromID: "d.go::pkg.CallerTwo#Function", ToID: "a.go::pkg.Alpha#Function", Kind: "CALLS", Confidence: 1.0},
+		{FromID: "a.go::pkg.Alpha#Function", ToID: "e.go::pkg.Target#Function", Kind: "CALLS", Confidence: 1.0},
+		{FromID: "c.go::pkg.CallerOne#Function", ToID: "b.go::pkg.Beta#Function", Kind: "CALLS", Confidence: 1.0},
+		{FromID: "d.go::pkg.CallerTwo#Function", ToID: "b.go::pkg.Beta#Function", Kind: "CALLS", Confidence: 1.0},
+	}
+
+	hotspots := reportHotspots(syms, edges, 10)
+	if len(hotspots) < 2 {
+		t.Fatalf("hotspot count = %d, want at least 2", len(hotspots))
+	}
+	if hotspots[0].Symbol.Name != "Alpha" {
+		t.Fatalf("risk ordering should prefer higher outgoing fan-out after incoming tie: %#v", hotspots[:2])
+	}
+	if hotspots[0].IncomingCalls != 2 || hotspots[0].OutgoingCalls != 1 || hotspots[0].Degree != 3 || hotspots[0].RiskScore != 7 {
+		t.Fatalf("Alpha risk inputs changed: %#v", hotspots[0])
+	}
+	if hotspots[1].Symbol.Name != "Beta" || hotspots[1].IncomingCalls != 2 || hotspots[1].OutgoingCalls != 0 || hotspots[1].Degree != 2 || hotspots[1].RiskScore != 6 {
+		t.Fatalf("Beta risk inputs changed: %#v", hotspots[1])
+	}
+}
+
 func TestWriteProjectReportJSON_HasStructuredNextCallsAndLegacyArgs(t *testing.T) {
 	syms, edges := reportFixture()
 	project := db.Project{
@@ -129,6 +161,13 @@ func TestWriteProjectReportJSON_HasStructuredNextCallsAndLegacyArgs(t *testing.T
 			Why           string         `json:"why"`
 			ExpectedValue string         `json:"expected_value"`
 		} `json:"next_pincher_calls"`
+		Hotspots []struct {
+			IncomingCalls int            `json:"incoming_calls"`
+			OutgoingCalls int            `json:"outgoing_calls"`
+			Degree        int            `json:"degree"`
+			RiskScore     int            `json:"risk_score"`
+			ScoringInputs map[string]any `json:"scoring_inputs"`
+		} `json:"hotspots"`
 	}
 	if err := json.Unmarshal([]byte(b.String()), &payload); err != nil {
 		t.Fatalf("json unmarshal: %v\n%s", err, b.String())
@@ -138,6 +177,12 @@ func TestWriteProjectReportJSON_HasStructuredNextCallsAndLegacyArgs(t *testing.T
 	}
 	if payload.Project.ID != "p-demo" || payload.Project.BinaryVersion != "test-version" || payload.Project.Symbols != 5 || payload.Project.Edges != 2 {
 		t.Fatalf("project fields changed or missing: %#v", payload.Project)
+	}
+	if len(payload.Hotspots) != 1 || payload.Hotspots[0].IncomingCalls != 1 || payload.Hotspots[0].OutgoingCalls != 0 || payload.Hotspots[0].Degree != 1 || payload.Hotspots[0].RiskScore != 3 {
+		t.Fatalf("hotspot risk fields changed or missing: %#v", payload.Hotspots)
+	}
+	if payload.Hotspots[0].ScoringInputs["degree"] != float64(1) {
+		t.Fatalf("hotspot scoring inputs missing degree: %#v", payload.Hotspots[0].ScoringInputs)
 	}
 	if len(payload.NextPincherCalls) != 4 {
 		t.Fatalf("next call count = %d, want 4; payload=%s", len(payload.NextPincherCalls), b.String())

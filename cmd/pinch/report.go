@@ -28,8 +28,12 @@ type reportOptions struct {
 }
 
 type reportHotspot struct {
-	Symbol        db.Symbol
-	IncomingCalls int
+	Symbol            db.Symbol
+	IncomingCalls     int
+	OutgoingCalls     int
+	Degree            int
+	TestAdjacentCalls int
+	RiskScore         int
 }
 
 type reportPackagePair struct {
@@ -229,6 +233,9 @@ func writeProjectReportMarkdown(w io.Writer, project db.Project, symbols []db.Sy
 			if _, err := fmt.Fprintf(w, "- `%s` %s — `%s` (incoming calls: %d)\n", h.Symbol.Name, h.Symbol.Kind, h.Symbol.FilePath, h.IncomingCalls); err != nil {
 				return err
 			}
+			if _, err := fmt.Fprintf(w, "  - Risk score: %d (inputs: incoming=%d, outgoing=%d, degree=%d, test-adjacent=%d, confidence=%.2f)\n", h.RiskScore, h.IncomingCalls, h.OutgoingCalls, h.Degree, h.TestAdjacentCalls, h.Symbol.ExtractionConfidence); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -317,12 +324,16 @@ func writeProjectReportJSON(w io.Writer, project db.Project, symbols []db.Symbol
 		Edges         int    `json:"edges"`
 	}
 	type hotspotJSON struct {
-		ID            string `json:"id"`
-		Name          string `json:"name"`
-		Kind          string `json:"kind"`
-		FilePath      string `json:"file_path"`
-		StartLine     int    `json:"start_line"`
-		IncomingCalls int    `json:"incoming_calls"`
+		ID            string         `json:"id"`
+		Name          string         `json:"name"`
+		Kind          string         `json:"kind"`
+		FilePath      string         `json:"file_path"`
+		StartLine     int            `json:"start_line"`
+		IncomingCalls int            `json:"incoming_calls"`
+		OutgoingCalls int            `json:"outgoing_calls"`
+		Degree        int            `json:"degree"`
+		RiskScore     int            `json:"risk_score"`
+		ScoringInputs map[string]any `json:"scoring_inputs"`
 	}
 	type rationaleJSON struct {
 		ID         string  `json:"id"`
@@ -342,7 +353,15 @@ func writeProjectReportJSON(w io.Writer, project db.Project, symbols []db.Symbol
 	for _, h := range hotspots {
 		hotspotRows = append(hotspotRows, hotspotJSON{
 			ID: h.Symbol.ID, Name: h.Symbol.Name, Kind: h.Symbol.Kind, FilePath: h.Symbol.FilePath,
-			StartLine: h.Symbol.StartLine, IncomingCalls: h.IncomingCalls,
+			StartLine: h.Symbol.StartLine, IncomingCalls: h.IncomingCalls, OutgoingCalls: h.OutgoingCalls,
+			Degree: h.Degree, RiskScore: h.RiskScore,
+			ScoringInputs: map[string]any{
+				"incoming_calls":      h.IncomingCalls,
+				"outgoing_calls":      h.OutgoingCalls,
+				"degree":              h.Degree,
+				"test_adjacent_calls": h.TestAdjacentCalls,
+				"confidence":          h.Symbol.ExtractionConfidence,
+			},
 		})
 	}
 	rationaleRows := make([]rationaleJSON, 0, rationales.TotalVisible)
@@ -577,20 +596,44 @@ func reportHotspots(symbols []db.Symbol, edges []db.Edge, limit int) []reportHot
 		byID[s.ID] = s
 	}
 	incoming := make(map[string]int)
+	outgoing := make(map[string]int)
+	testAdjacent := make(map[string]int)
 	for _, e := range edges {
-		if e.Kind == "CALLS" {
-			incoming[e.ToID]++
+		if e.Kind != "CALLS" {
+			continue
+		}
+		incoming[e.ToID]++
+		outgoing[e.FromID]++
+		from, fromOK := byID[e.FromID]
+		to, toOK := byID[e.ToID]
+		if (fromOK && reportTestOrFixturePath(from.FilePath)) || (toOK && reportTestOrFixturePath(to.FilePath)) {
+			testAdjacent[e.FromID]++
+			testAdjacent[e.ToID]++
 		}
 	}
 	out := make([]reportHotspot, 0, len(incoming))
 	for id, n := range incoming {
 		if s, ok := byID[id]; ok && reportHotspotKind(s.Kind) && !reportTestOrFixturePath(s.FilePath) {
-			out = append(out, reportHotspot{Symbol: s, IncomingCalls: n})
+			h := reportHotspot{
+				Symbol:            s,
+				IncomingCalls:     n,
+				OutgoingCalls:     outgoing[id],
+				Degree:            n + outgoing[id],
+				TestAdjacentCalls: testAdjacent[id],
+			}
+			h.RiskScore = reportHotspotRiskScore(h)
+			out = append(out, h)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
+		if out[i].RiskScore != out[j].RiskScore {
+			return out[i].RiskScore > out[j].RiskScore
+		}
 		if out[i].IncomingCalls != out[j].IncomingCalls {
 			return out[i].IncomingCalls > out[j].IncomingCalls
+		}
+		if out[i].OutgoingCalls != out[j].OutgoingCalls {
+			return out[i].OutgoingCalls > out[j].OutgoingCalls
 		}
 		if out[i].Symbol.FilePath != out[j].Symbol.FilePath {
 			return out[i].Symbol.FilePath < out[j].Symbol.FilePath
@@ -601,6 +644,10 @@ func reportHotspots(symbols []db.Symbol, edges []db.Edge, limit int) []reportHot
 		return out[:limit]
 	}
 	return out
+}
+
+func reportHotspotRiskScore(h reportHotspot) int {
+	return h.IncomingCalls*3 + h.OutgoingCalls + h.TestAdjacentCalls
 }
 
 func reportHotspotKind(kind string) bool {
