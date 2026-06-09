@@ -1,0 +1,1 @@
+Document the `pincher report` token-savings comparison against raw README/tree/full-file baselines for the current Pincher self-index ([#1912](https://github.com/kwad77/pincher/issues/1912)).
