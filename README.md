@@ -9,143 +9,241 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
 [![Coverage](https://img.shields.io/badge/coverage-85%25-22c55e.svg)](docs/reference/)
 
-**Codebase intelligence server for LLM agents.**
-Single binary · No cloud dependencies · Any LLM · MCP stdio or HTTP REST
+**Local graph intelligence for LLM coding agents.**
+Stop paying agents to rediscover the same codebase with raw file reads.
 
-[Quick Start](#quick-start) · [How it works](#how-it-works) · [What you get](#what-you-get) · 📖 **[Reference](docs/reference/)** · [Tutorials](docs/tutorials/) · [CHANGELOG](CHANGELOG.md)
+Single binary · Local index · MCP stdio · HTTP REST · OpenAPI 3.1
+
+[Quick start](#quick-start) · [Why Pincher exists](#why-pincher-exists) · [Agent loop](#the-agent-loop) · [Savings](#savings-you-can-audit) · [Reference](docs/reference/) · [Tutorials](docs/tutorials/)
 
 </div>
 
 ---
 
-## What pincher is
+## Why Pincher exists
 
-An agent asks "what does `processPayment` do?" Pincher returns the symbol's source plus its direct callers and imports in ~300 tokens. The same answer from `Read` over the containing file is ~12 KB. Multiply by every navigation step in a long session and the cost collapses an order of magnitude — measured savings on real codebases routinely sit at 80×+ versus the agent's default read-then-grep loop.
+LLM coding agents are good at reasoning once they have the right context. They are bad at obtaining that context cheaply.
 
-Conventional code-search tools index a codebase for humans browsing a UI. Pincher indexes the same codebase for an LLM agent calling tools: responses sized for a context window, runtime interception of `Read`/`Grep` before the agent opens a file, and a local-only binary so neither the index nor the code leaves the machine.
+The default loop is expensive and noisy:
 
-Under the hood, one Go binary indexes the codebase into three co-located layers — byte-offset symbol store, knowledge graph, and FTS5 full-text search — populated in a single AST parse pass from one shared `symbols` table. All three are exposed through **29 agent-callable MCP tools**, each also reachable over an **HTTP REST gateway** at `/v1/<tool>` with full OpenAPI 3.1 contracts.
+1. Search broadly.
+2. Open whole files.
+3. Guess which function matters.
+4. Open more files to find callers.
+5. Repeat after every context reset.
 
-Every response carries a `_meta` envelope: real BPE token counts, the savings number (totaled across sessions in SQLite), a `complexity_tier`, `capabilities`, `next_steps`, and an `X-Request-ID` for distributed tracing. Pincher is the foundation; the `_meta` envelope makes consequences legible; the LLM in your host's loop does the routing.
+Pincher replaces that loop with source-grounded graph calls. An agent asks for the exact symbol, the direct context around it, the callers, or the blast radius of a diff. Pincher returns compact evidence with file, line, confidence, token accounting, and suggested next calls.
 
-```json
-{
-  "name": "processPayment",
-  "source": "func processPayment(amount float64) error { ... }",
-  "_meta": { "tokens_used": 312, "tokens_saved": 14500, "tokens_saved_pct": 97.9,
-             "complexity_tier": "lite", "latency_ms": 2 }
-}
-```
+That matters because the output is not just smaller. It is routeable. Every tool response carries `_meta`: token counts, baseline method, savings, latency, warnings, capabilities, and `complexity_tier`. A host or Pincher Router can use that signal to decide whether the next step belongs on a fast cheap model, a stronger coding model, or a local long-running lane.
+
+Pincher is not a search UI with an MCP wrapper. It is local code-navigation infrastructure for agent edit loops.
 
 ---
 
-## Quick Start
+## Quick start
 
 ```bash
-# 1. Install — pick one
-go install github.com/kwad77/pincher/cmd/pinch@latest   # Go 1.25+ on PATH
-#   or download a binary:  https://github.com/kwad77/pincher/releases/latest
-#   or build from source:  git clone … && go build -o pincher ./cmd/pinch/
+# 1. Install one binary.
+go install github.com/kwad77/pincher/cmd/pinch@latest
+# Or download a release binary:
+# https://github.com/kwad77/pincher/releases/latest
 
-# 2. Drop the usage policy into your client's config (one-time, idempotent)
-pincher init                       # ./CLAUDE.md (Claude Code, current dir)
-pincher init --target=detect       # auto-detect the host from marker files
-#   other targets: cursor · codex · vscode · vscode-mcp · jetbrains ·
-#   antigravity · antigravity-mcp · windsurf — see the tutorials below
+# 2. Add Pincher's usage policy to your agent client.
+pincher init --target=detect
 
-# 3. Index your project
-pincher index /path/to/your/project
+# 3. Index a project.
+pincher index /path/to/project
 
-# 4. Point your MCP client at the binary, then open the dashboard
-pincher web                        # prints http://localhost:7777/v1/dashboard
+# 4. Run the MCP/HTTP server.
+pincher supervised
+# or, for the browser dashboard + HTTP API:
+pincher web
 ```
 
-Pincher speaks standard JSON-RPC 2.0 MCP over stdio. A minimal Claude Code config (`~/.claude/mcp.json`):
+Minimal Claude Code MCP config:
 
 ```json
 {
   "mcpServers": {
-    "pincher": { "type": "stdio", "command": "/path/to/pincher", "args": ["supervised"] }
+    "pincher": {
+      "type": "stdio",
+      "command": "/path/to/pincher",
+      "args": ["supervised"]
+    }
   }
 }
 ```
 
-`args: ["supervised"]` runs pincher behind a thin supervisor that auto-respawns across crashes and binary upgrades, so a `go build` hot-swaps the running server without a manual `/mcp` reconnect. Drop the `args` to run bare.
+`supervised` keeps the provider stable across crashes and binary upgrades. You can rebuild Pincher and the next tool call restarts the inner server instead of forcing a manual MCP reconnect.
 
-**Per-host setup** — end-to-end walkthroughs (~10 min each) for [Claude Code](docs/tutorials/claude-code.md), [Cursor](docs/tutorials/cursor.md), [VS Code Copilot Chat](docs/tutorials/vscode-copilot.md), [Codex](docs/tutorials/codex.md), [JetBrains](docs/tutorials/jetbrains.md), [Zed](docs/tutorials/zed.md), and the [HTTP dashboard](docs/tutorials/http-dashboard.md). Managed installs (Homebrew, systemd, launchd, Windows service, Docker): [`packaging/README.md`](packaging/README.md).
-
----
-
-## How it works
-
-**Three indexes, one AST pass.** A single `ast.Extract()` call per file populates all three layers — no background sync, no drift between graph and search.
-
-```
-   Source File                 ┌───────────────┐    ┌──────────────┐    ┌─────────────────┐
-        │                      │  Layer 1      │    │  Layer 2     │    │  Layer 3 — FTS5 │
-   ast.Extract()  ─────────►   │  Byte-offset  │    │  Knowledge   │    │  BM25 search    │
-        │                      │  symbol store │    │  graph       │    │  per-corpus     │
-        ▼                      │  O(1), <1 ms  │    │  <2 ms       │    │  routing        │
-   one symbols row             └───────────────┘    └──────────────┘    └─────────────────┘
-```
-
-- **Per-corpus FTS5** — code identifiers, config keys, and Markdown sections live in three separate BM25 indexes, so `search` (defaulting to `corpus=code`) isn't diluted by lockfile keys.
-- **Per-symbol confidence** — lockfile keys score low, real config high; `search` defaults to `min_confidence=0.7` so noise drops out.
-- **Reader pool** — a separate read-only SQLite connection pool means a busy MCP session never blocks the writer.
-- **Self-healing** — `pincher supervised` + `PINCHER_AUTO_RESTART_ON_DRIFT=1` hot-swap the running binary on the next tool call; `pincher health-check` is a non-interactive liveness probe for cron / launchd / k8s.
-
-The index stays current on its own: a per-project watcher polls (2 s active / 30 s idle), content-hashes every file, and re-extracts on change. Run `index force=true` after a pincher binary upgrade; otherwise you rarely call `index` by hand. Full mechanics in [Reference → Architecture](docs/reference/architecture.md).
+Host walkthroughs: [Claude Code](docs/tutorials/claude-code.md), [Cursor](docs/tutorials/cursor.md), [VS Code Copilot Chat](docs/tutorials/vscode-copilot.md), [Codex](docs/tutorials/codex.md), [JetBrains](docs/tutorials/jetbrains.md), [Zed](docs/tutorials/zed.md), and the [HTTP dashboard](docs/tutorials/http-dashboard.md). Managed installs live in [`packaging/README.md`](packaging/README.md).
 
 ---
 
-## What you get
+## The agent loop
 
-The `stats` tool renders a session summary directly in chat:
+Pincher gives agents a small set of high-leverage moves:
+
+| Agent question | Pincher call | What comes back |
+|---|---|---|
+| "Where is this thing?" | `search` | Ranked symbols from code/config/docs corpora, with IDs and confidence. |
+| "What does this function need around it?" | `context` | The symbol source plus direct callees/import context. |
+| "Who breaks if I change this?" | `trace` | Caller/callee paths with depth and risk labels. |
+| "What did my diff touch?" | `changes` | Changed symbols, impacted callers, and tests to run. |
+| "Orient me in this repo." | `architecture`, `onboard_module`, `context_for_task` | Entry points, hotspots, graph stats, module boundaries, and recent-change overlap. |
+| "What should I do next?" | `guide`, `_meta.next_steps` | Recommended follow-up Pincher calls, not a generic checklist. |
+
+Example shape:
+
+```json
+{
+  "name": "processPayment",
+  "file_path": "internal/payments/service.go",
+  "start_line": 84,
+  "source": "func processPayment(amount float64) error { ... }",
+  "_meta": {
+    "tokens_used": 312,
+    "tokens_saved": 14500,
+    "tokens_saved_pct": 97.9,
+    "baseline_method": "full_file_read",
+    "complexity_tier": "lite",
+    "latency_ms": 2,
+    "next_steps": [
+      { "tool": "trace", "why": "check inbound callers before changing behavior" }
+    ]
+  }
+}
+```
+
+The important part is the envelope. Pincher does not merely answer the immediate lookup. It leaves behind evidence a router can learn from.
+
+---
+
+## What Pincher indexes
+
+One Go binary builds three layers from one extraction pass:
 
 ```
-┌────────────────────────────────────────────┐
-│                  SESSION                   │
-│  Tool calls:          5                    │
-│  Without pincher:   ~45,200 tokens         │
-│  With pincher:        1,200 tokens         │
-│  Saved:             ~44,000 tokens  (97%)  │
-└────────────────────────────────────────────┘
+Source files
+    │
+    ▼
+ast.Extract()
+    │
+    ├─► byte-offset symbol store  O(1) source retrieval
+    ├─► knowledge graph           CALLS / IMPORTS / READS / WRITES / REFERENCES
+    └─► FTS5 search               BM25 over code, config, and docs corpora
 ```
 
-Savings persist in SQLite across reconnects, restarts, and binary upgrades — the dashboard at `/v1/dashboard` shows the all-time total. What pincher actually replaces sets the ceiling:
+Current Pincher dogfood index for this repo reports:
 
-| Workflow / tool | Typical saved % |
+- 886 files
+- 8,358 symbols
+- 15,867 graph edges
+- node kinds including functions, methods, modules, sections, settings, and rationale nodes
+- edge kinds including `CALLS`, `IMPORTS`, `READS`, `WRITES`, and `REFERENCES`
+
+The index stays current through a per-project watcher. It content-hashes files, re-extracts changed files, and records schema/binary freshness so stale results are visible instead of silently trusted.
+
+Pincher supports MCP stdio and HTTP REST. The HTTP gateway exposes the same tools at `/v1/<tool>` plus OpenAPI 3.1 contracts, dashboard routes, health probes, and request IDs for tracing.
+
+---
+
+## Savings you can audit
+
+Pincher savings are token math, not vibes. Tool responses include:
+
+- `tokens_used`: what Pincher returned
+- `tokens_saved`: estimated tokens avoided versus the baseline
+- `tokens_saved_pct`: saved / baseline
+- `baseline_method`: for example `full_file_read`
+- `latency_ms`: measured server-side latency
+
+The ceiling depends on the workflow:
+
+| Workflow | Typical outcome |
 |---|---|
-| Reading a function in a large file — `context`, `symbol`, `symbols` | 95-99% |
-| Tracing callers or call-graph traversal — `trace`, `query` | 80-95% |
-| Conceptual / BM25 search — `search` | 60-90% |
-| Project orientation — `architecture`, `health`, `schema`, `list` | not measured |
+| `symbol`, `symbols`, `context` on large files | Often 90-99% fewer tokens than opening whole files. |
+| `trace`, `changes`, `context_for_task` | Replaces multi-step grep/read/caller discovery loops. |
+| `search` | Cuts broad discovery down to ranked symbol rows before the agent reads source. |
+| `architecture`, `health`, `report` | Gives orientation without dumping the tree or hand-reading docs. |
 
-Aggregate session savings land around **70-90%** on large Go/JS projects, **40-70%** on mixed-language mid-size repos, and **break-even to ~30%** on small or stub-tier-language projects where Read/Grep is genuinely competitive. Match the tool to the workflow you actually have.
+Aggregate sessions on large Go/JS projects usually land around 70-90% token reduction. Smaller repos and stub-tier languages can be closer to break-even. Pincher exposes the raw numbers so you can check the claim for your own project.
 
-**Speed** — measured on a 221-file / 3,769-symbol codebase: cold index ~900 ms, single-hop pinchQL 2 ms, BFS depth 3 <5 ms, FTS5 search 1 ms, incremental re-index <50 ms. Full benchmark methodology in [Reference → Architecture](docs/reference/architecture.md).
+For reproducibility, see [`scripts/reproduce-savings.sh`](scripts/reproduce-savings.sh), [`docs/reference/tools.md`](docs/reference/tools.md), and the dashboard at `/v1/dashboard`.
 
 ---
 
-## Documentation
+## Why this is different from normal code search
 
-- 📖 **[Reference](docs/reference/)** — every tool, flag, and endpoint; start with the [`search` runbook](docs/reference/tools.md#tool-search), then branch into pinchQL, language support, HTTP API, and schema history.
-- **[Tutorials](docs/tutorials/)** — per-host end-to-end walkthroughs.
-- **[CHANGELOG](CHANGELOG.md)** — release-by-release history. Milestone burndown: <https://github.com/kwad77/pincher/milestones>.
-- **[Migration guide](docs/migration/v0.4-to-v1.0.md)** — v0.4 → v1.0.
+Normal search helps a human browse. Pincher helps an agent decide.
 
-Current release: **v0.98.0** — v1.0-prep migration-review checkpoint: clean GET-liveness vs POST-tool split on `/v1/health`, FTS5 escape for `--flag`-shaped search tokens, bounded indexer worker pool with a bulk-clear path for force-reindex, two new `pincher doctor` advisories (project schema drift + reclaimable DB free pages), an all-time `baseline_method` breakdown on `pincher stats`, and a shared substring project resolver with a `.` session sentinel across `callflow` / `export-graph` / `project` / `doctor`. **Release candidate: v0.99.0-rc.1** — in 7-day pre-v1.0 hold; no tool surface or schema changes vs v0.98.0, just licensing posture (NOTICE, TRADEMARK, DCO, SPDX) + ADR-0002 acceptance closure + repo hygiene. Latest stable: **v0.90**. v1.0 freezes tool schemas and ships schema attestation + a public launch.
+- It returns symbol IDs that can be reused across calls.
+- It reads source by byte offset instead of reparsing or opening whole files.
+- It traverses graph edges instead of hoping text search finds callers.
+- It projects fields so the agent can ask for only `id,name,file_path` before reading source.
+- It reports empty-result reasons, confidence, stale-index state, and suggested recovery steps.
+- It accumulates savings and call evidence across sessions, which makes routing measurable.
+
+The result is an edit loop with fewer blind reads and better handoffs after context resets.
+
+---
+
+## Report artifacts and v1.2 direction
+
+Pincher v1.0 freezes the core tool/schema surface. The v1.2 direction is Pincher-native graph intelligence and routing leverage.
+
+The first slices are already landing:
+
+- `pincher report` generates a source-grounded architecture briefing from the existing index.
+- Rationale/design-intent comments are indexed as `Rationale` symbols and grouped in reports by attached symbol or explicit file-level fallback.
+- Hotspot risk scoring, surprising-connection triage, falsifiable work-impact reporting, and next-best-call guidance are the next planned pieces.
+
+The boundary is deliberate: no default LLM extraction pipeline, no dashboard-first claims without API/report provenance, and no unsupported savings multipliers. If a report names a symbol or file, it should come with source provenance or say the data is missing.
+
+---
+
+## Tool surface
+
+Pincher currently exposes 29 MCP tools. The high-frequency set:
+
+- `guide` — choose the next Pincher call from a task description
+- `search` — BM25 symbol/config/docs search
+- `symbol` / `symbols` — O(1) source retrieval by stable symbol ID
+- `context` — symbol plus direct callable context
+- `trace` — caller/callee graph traversal with risk labels
+- `changes` — git diff to impacted symbols and tests to run
+- `context_for_task` — composite search/context/trace/changes starter
+- `architecture` — entry points, hotspots, graph stats, surprising connections
+- `health` / `doctor` / `schema` / `stats` — freshness, coverage, diagnostics, savings
+
+The CLI also includes `pincher report`, a source-grounded architecture report artifact built from the same index.
+
+Full reference: [`docs/reference/tools.md`](docs/reference/tools.md). HTTP shape: [`docs/reference/http-api.md`](docs/reference/http-api.md).
 
 ---
 
 ## Known limitations
 
-- **Sequence-rename ID instability in YAML / JSON arrays** — inserting at index 0 renames downstream qualified names. Won't-fix in v0.7.0 ([#205](https://github.com/kwad77/pincher/issues/205)); prefer searching by name over storing the id.
-- **Single-user SQLite** — cross-process indexing is safe; team / enterprise shared indexes need a server mode, out of v1.0 scope.
-- **Haskell has no extractor** — indentation-sensitive layout with no `{`/`def` anchor makes regex-tier representation hard ([#1161](https://github.com/kwad77/pincher/issues/1161)). Every other detected language extracts symbols + same-file CALLS.
-- **Cross-file CALLS resolution covers Go, Python, and TS/JS** — every other language has same-file CALLS only; the graph tools emit a per-language honesty warning. Rust/Java cross-file is gated on a tree-sitter decision ([#1182](https://github.com/kwad77/pincher/issues/1182) / [#1183](https://github.com/kwad77/pincher/issues/1183)).
-- **Binary-version bump triggers re-extract** — a schema migration invalidates the last-indexed stamp; v0.84 language-scoped invalidation limits the blast radius to affected languages.
-- **`tools/list_changed` requires client support** ([#429](https://github.com/kwad77/pincher/issues/429)) — Cursor / Codex / Zed honor it live; Claude Code needs a fresh session to discover newly-added tools.
+- SQLite is local and single-user. Cross-process indexing is safe, but team-shared indexes need a server mode.
+- Some languages have richer graph resolution than others. Go, Python, and TypeScript/JavaScript have cross-file `CALLS`; other languages may have same-file calls or symbol extraction only.
+- Haskell has no extractor today.
+- Sequence-like YAML/JSON arrays can produce unstable IDs when items are inserted before existing entries. Search by name instead of storing those IDs long term.
+- A binary/schema upgrade can require re-indexing. Pincher reports stale indexes rather than pretending old extraction data is current.
+- Some MCP clients do not honor live `tools/list_changed`; they need a fresh session after tool-surface changes.
+
+These are reported through `health`, `doctor`, `_meta.empty_reason`, and per-language extraction coverage where possible.
+
+---
+
+## Documentation
+
+- [Reference](docs/reference/) — tools, HTTP API, schema history, language support, empty reasons.
+- [Tutorials](docs/tutorials/) — host-specific setup.
+- [Packaging](packaging/README.md) — Homebrew, systemd, launchd, Windows service, Docker.
+- [Migration guide](docs/migration/v0.4-to-v1.0.md) — v0.4 to v1.0.
+- [Changelog](CHANGELOG.md) — release history.
+
+Current stable release: [v1.0.0](https://github.com/kwad77/pincher/releases/tag/v1.0.0).
 
 ---
 
@@ -153,9 +251,9 @@ Current release: **v0.98.0** — v1.0-prep migration-review checkpoint: clean GE
 
 pincherMCP source is released under the [MIT License](LICENSE) — © 2025-2026 Kevin Waddell and pincherMCP contributors. Each Go source file carries an `// SPDX-License-Identifier: MIT` header for machine-readable attribution.
 
-- **Third-party attribution** — pincher links code from ~17 direct dependencies (Mozilla Public License 2.0 for HashiCorp HCL, Apache 2.0 for OpenTelemetry, BSD for `modernc/sqlite` and `mvdan.cc/sh`, MIT for the rest). See [NOTICE](NOTICE) for the per-dependency list.
-- **Trademark** — "pincherMCP" and "pincher" are unregistered trademarks of Kevin Waddell. MIT covers the code, not the names. See [TRADEMARK.md](TRADEMARK.md) for what's OK (descriptive use, forks under a different name) and what's not (publishing same-named packages on registries). No USPTO registration.
-- **Contributing** — every commit in a PR must include a `Signed-off-by:` trailer per the [Developer Certificate of Origin](https://developercertificate.org). Sign off with `git commit -s`. The DCO is the project's lightweight alternative to a CLA — no document to sign. Full procedure in [CONTRIBUTING.md → Developer Certificate of Origin](CONTRIBUTING.md#developer-certificate-of-origin-dco).
+- Third-party attribution: see [NOTICE](NOTICE).
+- Trademark: see [TRADEMARK.md](TRADEMARK.md).
+- Contributing: every PR commit needs a `Signed-off-by:` trailer. See [CONTRIBUTING.md](CONTRIBUTING.md#developer-certificate-of-origin-dco).
 
 <div align="center">
   <img src="docs/assets/crab.png" width="32" alt="Pinchy"/>
