@@ -25,14 +25,14 @@ func TestComputeBranchOverlap_VerdictTiers(t *testing.T) {
 	mustUpsertSymbols(t, store, []db.Symbol{
 		{ID: pid + "::pkg.Shared1#Function", ProjectID: pid, FilePath: "shared.go",
 			Name: "Shared1", QualifiedName: "pkg.Shared1", Kind: "Function", Language: "Go",
-			ExtractionConfidence: 1.0},
+			StartLine: 2, EndLine: 4, ExtractionConfidence: 1.0},
 		{ID: pid + "::pkg.Shared2#Function", ProjectID: pid, FilePath: "shared.go",
 			Name: "Shared2", QualifiedName: "pkg.Shared2", Kind: "Function", Language: "Go",
-			ExtractionConfidence: 1.0},
+			StartLine: 8, EndLine: 10, ExtractionConfidence: 1.0},
 	})
 
 	t.Run("independent — disjoint files", func(t *testing.T) {
-		got := computeBranchOverlap(srv, pid, []string{"a.go"}, []string{"b.go"})
+		got := computeBranchOverlap(srv, pid, []string{"a.go"}, []string{"b.go"}, nil, nil)
 		if len(got.OverlappingFiles) != 0 || len(got.OverlappingSymbols) != 0 {
 			t.Errorf("disjoint files should not overlap; got %+v", got)
 		}
@@ -42,7 +42,7 @@ func TestComputeBranchOverlap_VerdictTiers(t *testing.T) {
 	})
 
 	t.Run("low risk — shared file, no indexed symbols", func(t *testing.T) {
-		got := computeBranchOverlap(srv, pid, []string{"config.yaml"}, []string{"config.yaml"})
+		got := computeBranchOverlap(srv, pid, []string{"config.yaml"}, []string{"config.yaml"}, nil, nil)
 		if len(got.OverlappingFiles) != 1 {
 			t.Fatalf("expected 1 overlapping file; got %v", got.OverlappingFiles)
 		}
@@ -55,7 +55,7 @@ func TestComputeBranchOverlap_VerdictTiers(t *testing.T) {
 	})
 
 	t.Run("merge-order risk — shared symbols", func(t *testing.T) {
-		got := computeBranchOverlap(srv, pid, []string{"shared.go", "a.go"}, []string{"shared.go", "b.go"})
+		got := computeBranchOverlap(srv, pid, []string{"shared.go", "a.go"}, []string{"shared.go", "b.go"}, nil, nil)
 		if len(got.OverlappingFiles) != 1 || got.OverlappingFiles[0] != "shared.go" {
 			t.Errorf("expected shared.go to overlap; got %v", got.OverlappingFiles)
 		}
@@ -64,6 +64,23 @@ func TestComputeBranchOverlap_VerdictTiers(t *testing.T) {
 		}
 		if !strings.Contains(got.Verdict, "merge-order risk") {
 			t.Errorf("verdict = %q, want 'merge-order risk'", got.Verdict)
+		}
+	})
+
+	t.Run("hunks narrow shared file to symbols touched by both branches", func(t *testing.T) {
+		got := computeBranchOverlap(
+			srv,
+			pid,
+			[]string{"shared.go"},
+			[]string{"shared.go"},
+			map[string][][2]int{"shared.go": {{2, 3}}},
+			map[string][][2]int{"shared.go": {{3, 4}}},
+		)
+		if len(got.OverlappingSymbols) != 1 || !strings.Contains(got.OverlappingSymbols[0], "Shared1") {
+			t.Fatalf("expected only Shared1 to overlap edited hunks; got %+v", got.OverlappingSymbols)
+		}
+		if got.OverlappingSymbolCount != 1 {
+			t.Fatalf("OverlappingSymbolCount = %d, want 1", got.OverlappingSymbolCount)
 		}
 	})
 }
@@ -111,7 +128,7 @@ func TestHandleBranchOverlap_GitIntegration(t *testing.T) {
 	mustUpsertSymbols(t, store, []db.Symbol{
 		{ID: dir + "::p.Shared#Function", ProjectID: dir, FilePath: "shared.go",
 			Name: "Shared", QualifiedName: "p.Shared", Kind: "Function", Language: "Go",
-			ExtractionConfidence: 1.0},
+			StartLine: 2, EndLine: 2, ExtractionConfidence: 1.0},
 	})
 
 	res, err := srv.handleBranchOverlap(context.Background(), makeReq(map[string]any{

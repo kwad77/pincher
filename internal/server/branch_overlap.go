@@ -44,6 +44,20 @@ func gitChangedFilesBetween(root, base, ref string) ([]string, error) {
 	return files, nil
 }
 
+// gitChangedHunksBetween returns added-side line ranges for the diff a
+// branch introduces relative to base. It mirrors changes' hunk parsing so
+// branch_overlap can report symbols actually touched by each branch instead
+// of every symbol that happens to live in a shared file.
+func gitChangedHunksBetween(root, base, ref string) (map[string][][2]int, error) {
+	cmd := exec.Command("git", "diff", "--unified=0", base+"..."+ref)
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	return parseGitDiffHunks(string(out)), nil
+}
+
 // gitMergeBase returns the merge-base commit of two refs.
 func gitMergeBase(root, a, b string) (string, error) {
 	cmd := exec.Command("git", "merge-base", a, b)
@@ -124,8 +138,10 @@ func (s *Server) handleBranchOverlap(ctx context.Context, req *mcp.CallToolReque
 	if err != nil {
 		return errResult(fmt.Sprintf("branch_overlap: diff %s: %v", branchB, err)), nil
 	}
+	hunksA, hunkErrA := gitChangedHunksBetween(root, base, branchA)
+	hunksB, hunkErrB := gitChangedHunksBetween(root, base, branchB)
 
-	overlap := computeBranchOverlap(s, projectID, filesA, filesB)
+	overlap := computeBranchOverlap(s, projectID, filesA, filesB, hunksA, hunksB)
 	overlap.BranchA = branchA
 	overlap.BranchB = branchB
 	overlap.Base = base
@@ -138,26 +154,44 @@ func (s *Server) handleBranchOverlap(ctx context.Context, req *mcp.CallToolReque
 		"branch_b_file_count": len(filesB),
 		"overlapping_files":   overlap.OverlappingFiles,
 		"overlapping_symbols": overlap.OverlappingSymbols,
-		"verdict":             overlap.Verdict,
+		"summary": map[string]any{
+			"overlapping_files":         len(overlap.OverlappingFiles),
+			"overlapping_symbols":       overlap.OverlappingSymbolCount,
+			"overlapping_symbols_shown": len(overlap.OverlappingSymbols),
+		},
+		"verdict": overlap.Verdict,
+	}
+	meta := map[string]any{}
+	if hunkErrA != nil || hunkErrB != nil {
+		meta["warnings"] = []string{fmt.Sprintf("branch_overlap fell back to file-granular symbols because hunk diff failed (branch_a: %v; branch_b: %v)", hunkErrA, hunkErrB)}
+	}
+	if overlap.SymbolsTrimmed {
+		existing, _ := meta["warnings"].([]string)
+		meta["warnings"] = append(existing, fmt.Sprintf("overlapping_symbols trimmed to %d of %d — see summary.overlapping_symbols for the full count", len(overlap.OverlappingSymbols), overlap.OverlappingSymbolCount))
+	}
+	if len(meta) > 0 {
+		data["_meta"] = meta
 	}
 	return s.jsonResultWithMeta(data, start, tool, args, 0), nil
 }
 
 // branchOverlapResult is the computed overlap between two branches.
 type branchOverlapResult struct {
-	BranchA            string
-	BranchB            string
-	Base               string
-	OverlappingFiles   []string
-	OverlappingSymbols []string
-	Verdict            string
+	BranchA                string
+	BranchB                string
+	Base                   string
+	OverlappingFiles       []string
+	OverlappingSymbols     []string
+	OverlappingSymbolCount int
+	SymbolsTrimmed         bool
+	Verdict                string
 }
 
 // computeBranchOverlap intersects two branches' changed-file sets and
 // the symbol sets those files contain, then derives a merge-order
 // verdict. Split out from the handler so it's unit-testable against a
 // store without spawning git.
-func computeBranchOverlap(s *Server, projectID string, filesA, filesB []string) branchOverlapResult {
+func computeBranchOverlap(s *Server, projectID string, filesA, filesB []string, hunksA, hunksB map[string][][2]int) branchOverlapResult {
 	setA := make(map[string]bool, len(filesA))
 	for _, f := range filesA {
 		setA[f] = true
@@ -171,15 +205,26 @@ func computeBranchOverlap(s *Server, projectID string, filesA, filesB []string) 
 	sort.Strings(overlapFiles)
 
 	// Symbols in the overlapping files are the candidates for a
-	// semantic (not merely textual) collision. A symbol counts as
-	// shared only when BOTH branches' diffs include its file.
+	// semantic (not merely textual) collision. When hunk ranges are
+	// available, a symbol counts as shared only when BOTH branches'
+	// diffs touch that symbol's line range. If hunk parsing failed for a
+	// file, fall back to the older file-granular behavior so the safety
+	// signal over-reports rather than hiding a real collision.
 	symSet := map[string]bool{}
 	for _, f := range overlapFiles {
 		syms, err := s.store.GetSymbolsForFile(projectID, f)
 		if err != nil {
 			continue
 		}
+		fileHunksA, hasHunksA := hunksA[f]
+		fileHunksB, hasHunksB := hunksB[f]
 		for _, sym := range syms {
+			if hasHunksA && len(fileHunksA) > 0 && !symbolOverlapsHunks(sym.StartLine, sym.EndLine, fileHunksA) {
+				continue
+			}
+			if hasHunksB && len(fileHunksB) > 0 && !symbolOverlapsHunks(sym.StartLine, sym.EndLine, fileHunksB) {
+				continue
+			}
 			symSet[sym.ID] = true
 		}
 	}
@@ -188,20 +233,28 @@ func computeBranchOverlap(s *Server, projectID string, filesA, filesB []string) 
 		overlapSymbols = append(overlapSymbols, id)
 	}
 	sort.Strings(overlapSymbols)
+	fullSymbolCount := len(overlapSymbols)
+	symbolsTrimmed := false
+	if len(overlapSymbols) > changesMaxList {
+		overlapSymbols = overlapSymbols[:changesMaxList]
+		symbolsTrimmed = true
+	}
 
 	var verdict string
 	switch {
 	case len(overlapFiles) == 0:
 		verdict = "independent — the two branches change disjoint files; merge order does not matter."
-	case len(overlapSymbols) == 0:
+	case fullSymbolCount == 0:
 		verdict = fmt.Sprintf("low risk — %d shared file(s) but no indexed symbols in them (config/docs); a textual merge conflict is possible, a semantic one is not.", len(overlapFiles))
 	default:
-		verdict = fmt.Sprintf("merge-order risk — the branches share %d file(s) and %d symbol(s). Whichever merges second is sitting on changed foundations; re-review it against the first before merging.", len(overlapFiles), len(overlapSymbols))
+		verdict = fmt.Sprintf("merge-order risk — the branches share %d file(s) and %d touched symbol(s). Whichever merges second is sitting on changed foundations; re-review it against the first before merging.", len(overlapFiles), fullSymbolCount)
 	}
 
 	return branchOverlapResult{
-		OverlappingFiles:   overlapFiles,
-		OverlappingSymbols: overlapSymbols,
-		Verdict:            verdict,
+		OverlappingFiles:       overlapFiles,
+		OverlappingSymbols:     overlapSymbols,
+		OverlappingSymbolCount: fullSymbolCount,
+		SymbolsTrimmed:         symbolsTrimmed,
+		Verdict:                verdict,
 	}
 }
