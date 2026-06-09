@@ -65,6 +65,7 @@ type Target struct {
 // and detection-priority output ordering.
 var AllTargets = []Target{
 	ClaudeTarget,
+	GooseTarget,
 	CursorTarget,
 	CursorLegacyTarget,
 	WindsurfTarget,
@@ -170,6 +171,32 @@ var ClaudeTarget = Target{
 		return err == nil
 	},
 	WriteFn: MergePolicyBlock,
+}
+
+var GooseTarget = Target{
+	Name:     "goose",
+	Describe: "Goose: ./.agents/plugins/pincher Open Plugins hook extension",
+	PathFn: func(cwd string, global bool) (string, error) {
+		if global {
+			return "", fmt.Errorf("goose target is project-scoped; --global is not supported")
+		}
+		return filepath.Join(cwd, ".agents", "plugins", "pincher", "README.md"), nil
+	},
+	DetectFn: func(cwd string) bool {
+		_, err := os.Stat(filepath.Join(cwd, ".agents", "plugins"))
+		return err == nil
+	},
+	WriteFn: gooseReadmeWriter,
+}
+
+func gooseReadmeWriter(existing, policy string) (string, string) {
+	body, action := MergePolicyBlockBare(existing, policy)
+	if existing == "" {
+		return "# Pincher Goose extension\n\n" +
+			"Project-scoped Goose Open Plugins extension. `pincher init --target=goose` also writes `plugin.json`, `hooks/hooks.json`, and `scripts/pincher-hook-check.sh` so Goose can route developer tool calls through `pincher hook-check`.\n\n" +
+			body, action
+	}
+	return body, action
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -596,7 +623,6 @@ func continueJSONWriter(existing, policy string) (string, string) {
 	}
 	return string(out) + "\n", action
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // jetbrains (.junie/guidelines.md — JetBrains Junie project rules)

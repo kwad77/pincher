@@ -119,6 +119,170 @@ func mergePincherHook(settings map[string]any) (map[string]any, string, error) {
 	return settings, action, nil
 }
 
+func installGooseHook(out io.Writer, projectDir string, dryRun bool) error {
+	pluginRoot := filepath.Join(projectDir, ".agents", "plugins", "pincher")
+	hooksPath := filepath.Join(pluginRoot, "hooks", "hooks.json")
+
+	existing := map[string]any{}
+	if raw, err := os.ReadFile(hooksPath); err == nil {
+		if err := json.Unmarshal(raw, &existing); err != nil {
+			return fmt.Errorf("goose hooks.json exists but is not valid JSON (%v) — fix or delete it before re-running init", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", hooksPath, err)
+	}
+
+	updated, action, err := mergeGooseHook(existing)
+	if err != nil {
+		return err
+	}
+	if action == "noop" {
+		fmt.Fprintf(out, "pincher init [goose]: PreToolUse hook already present in %s — no change\n", hooksPath)
+		return nil
+	}
+
+	if dryRun {
+		preview, _ := json.MarshalIndent(updated, "", "  ")
+		fmt.Fprintf(out, "pincher init [goose]: would %s Open Plugins hook extension in %s\n", hookPresentTense(action), pluginRoot)
+		fmt.Fprintln(out, "--- hooks/hooks.json ---")
+		fmt.Fprintln(out, string(preview))
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Join(pluginRoot, "hooks"), 0o755); err != nil {
+		return fmt.Errorf("mkdir hooks: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(pluginRoot, "scripts"), 0o755); err != nil {
+		return fmt.Errorf("mkdir scripts: %w", err)
+	}
+	if err := writeJSONFile(filepath.Join(pluginRoot, "plugin.json"), goosePluginManifest()); err != nil {
+		return err
+	}
+	if err := writeJSONFile(hooksPath, updated); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, "scripts", "pincher-hook-check.sh"), []byte(gooseHookScript), 0o755); err != nil {
+		return fmt.Errorf("write goose hook script: %w", err)
+	}
+	readmePath := filepath.Join(pluginRoot, "README.md")
+	if _, err := os.Stat(readmePath); os.IsNotExist(err) {
+		if err := os.WriteFile(readmePath, []byte(goosePluginREADME), 0o644); err != nil {
+			return fmt.Errorf("write goose README: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("stat goose README: %w", err)
+	}
+	fmt.Fprintf(out, "pincher init [goose]: %s Open Plugins hook extension in %s\n", action, pluginRoot)
+	return nil
+}
+
+func mergeGooseHook(settings map[string]any) (map[string]any, string, error) {
+	if settings == nil {
+		settings = map[string]any{}
+	}
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = map[string]any{}
+	}
+	preToolUse, _ := hooks["PreToolUse"].([]any)
+
+	gooseEntry := map[string]any{
+		"matcher": "developer__shell|developer__text_editor",
+		"hooks": []any{
+			map[string]any{
+				"type":    "command",
+				"command": "${PLUGIN_ROOT}/scripts/pincher-hook-check.sh",
+			},
+		},
+	}
+
+	for _, raw := range preToolUse {
+		entry, _ := raw.(map[string]any)
+		if entry == nil {
+			continue
+		}
+		entryHooks, _ := entry["hooks"].([]any)
+		for _, h := range entryHooks {
+			cmd, _ := h.(map[string]any)
+			if cmd == nil {
+				continue
+			}
+			if c, _ := cmd["command"].(string); contains(c, "pincher-hook-check.sh") || contains(c, "pincher hook-check") {
+				return settings, "noop", nil
+			}
+		}
+	}
+
+	action := "added"
+	if len(preToolUse) == 0 {
+		action = "created"
+	}
+	preToolUse = append(preToolUse, gooseEntry)
+	hooks["PreToolUse"] = preToolUse
+	settings["hooks"] = hooks
+	return settings, action, nil
+}
+
+func writeJSONFile(path string, v any) error {
+	body, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", path, err)
+	}
+	if err := os.WriteFile(path, append(body, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+func hookPresentTense(action string) string {
+	switch action {
+	case "created":
+		return "create"
+	case "added":
+		return "add"
+	}
+	return action
+}
+
+func goosePluginManifest() map[string]any {
+	return map[string]any{
+		"name":        "pincher",
+		"version":     "0.1.0",
+		"description": "Goose Open Plugins hooks that route developer tool calls through Pincher hook-check guardrails.",
+	}
+}
+
+const gooseHookScript = `#!/usr/bin/env bash
+# Goose Open Plugins hook bridge for Pincher.
+set -euo pipefail
+
+payload="$(cat)"
+plugin_root="${PLUGIN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+{
+  printf -- '---- PreToolUse @ %s ----\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  printf '%s\n' "$payload"
+} >> "${plugin_root}/last-event.log" 2>/dev/null || true
+
+printf '%s' "$payload" | pincher hook-check
+`
+
+const goosePluginREADME = `# Pincher Goose extension
+
+Project-scoped Goose Open Plugins extension installed by ` + "`pincher init --target=goose`" + `.
+
+It registers a Goose ` + "`PreToolUse`" + ` hook for ` + "`developer__shell|developer__text_editor`" + ` and forwards the raw Goose hook payload to ` + "`pincher hook-check`" + `.
+
+Run from a repository root:
+
+` + "```bash" + `
+pincher init --target=goose
+goose session
+` + "```" + `
+
+Goose discovers project plugins under ` + "`.agents/plugins/<name>/`" + `. The hook writes local debug payloads to ` + "`last-event.log`" + ` beside this file.
+`
+
 // contains is a small substring check used by mergePincherHook so
 // that idempotency tolerates variations like `pincher hook-check
 // --debug` or `/usr/local/bin/pincher hook-check`.

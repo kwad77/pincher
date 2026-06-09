@@ -324,7 +324,7 @@
   },
   {
     "name": "init",
-    "description": "**Seed an editor's pincher usage policy file** without dropping into a separate shell. Same surface as `pincher init` CLI but defaults to dry-run for safety; pass `write=true` to actually mutate files. Targets: claude / cursor / cursor-legacy / windsurf / aider / codex / zed / gemini / warp / vscode (Copilot rules) / vscode-mcp (Copilot Chat MCP) / jetbrains (#1335, .junie/guidelines.md) / antigravity (#1385, .agents/rules/pincher.md rules) / antigravity-mcp (#1770, ~/.gemini/antigravity/mcp_config.json MCP-server registration) / detect / all. The continue target is rejected outright (always-global; whole request errors); the codex and antigravity-mcp targets appear as `skipped_always_global` per-result entries (their config is always global — under ~/.codex and ~/.gemini/antigravity respectively — use the `pincher init --target=\u003cname\u003e` CLI to write them). Returns per-target {target, path, action, diff_preview, bytes_in, bytes_out} for in-scope writes, or {target, action: \"skipped_always_global\", reason} for filtered targets.",
+    "description": "**Seed an editor's pincher usage policy file** without dropping into a separate shell. Same surface as `pincher init` CLI but defaults to dry-run for safety; pass `write=true` to actually mutate files. Targets: claude / goose (Open Plugins hook extension) / cursor / cursor-legacy / windsurf / aider / codex / zed / gemini / warp / vscode (Copilot rules) / vscode-mcp (Copilot Chat MCP) / jetbrains (#1335, .junie/guidelines.md) / antigravity (#1385, .agents/rules/pincher.md rules) / antigravity-mcp (#1770, ~/.gemini/antigravity/mcp_config.json MCP-server registration) / detect / all. The continue target is rejected outright (always-global; whole request errors); the codex and antigravity-mcp targets appear as `skipped_always_global` per-result entries (their config is always global — under ~/.codex and ~/.gemini/antigravity respectively — use the `pincher init --target=\u003cname\u003e` CLI to write them). Returns per-target {target, path, action, diff_preview, bytes_in, bytes_out} for in-scope writes, or {target, action: \"skipped_always_global\", reason} for filtered targets.",
     "input_schema": {
       "properties": {
         "project_path": {
@@ -332,7 +332,7 @@
           "type": "string"
         },
         "target": {
-          "description": "Editor target: claude|cursor|cursor-legacy|windsurf|aider|codex|zed|gemini|warp|vscode|vscode-mcp|jetbrains|antigravity|antigravity-mcp|detect|all. Default: detect.",
+          "description": "Editor target: claude|goose|cursor|cursor-legacy|windsurf|aider|codex|zed|gemini|warp|vscode|vscode-mcp|jetbrains|antigravity|antigravity-mcp|detect|all. Default: detect.",
           "type": "string"
         },
         "write": {

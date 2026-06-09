@@ -34,6 +34,7 @@ import (
 // rough popularity; the "other" menu entry expands to AllTargets.
 var initPickerShortlist = []struct{ target, label string }{
 	{"claude", "Claude Code"},
+	{"goose", "Goose"},
 	{"codex", "OpenAI Codex"},
 	{"cursor", "Cursor"},
 	{"vscode", "VS Code (Copilot)"},
@@ -149,7 +150,7 @@ func runInitCLI(args []string) {
 	force := fs.Bool("force", false, "Overwrite the marker block without prompting (default behavior anyway, kept for explicit scripted use)")
 	dataDir := fs.String("data-dir", "", "Override data directory (used to discover the running HTTP dashboard URL)")
 	targetFlag := fs.String("target", "", "Editor/agent target: "+strings.Join(pinit.TargetNames(), ", ")+". Default: auto-detect the host pincher is running under (env signal) then editor marker files; refuses rather than guessing when neither is conclusive.")
-	noHook := fs.Bool("no-hook", false, "(claude target only) Skip writing the .claude/settings.json PreToolUse hook. Default false — the hook is what closes the Read/Grep → pincher gap at runtime.")
+	noHook := fs.Bool("no-hook", false, "(claude/goose targets only) Skip writing runtime hook config. Default false — the hook is what closes the Read/Grep → pincher gap at runtime.")
 	gitHooks := fs.Bool("git-hooks", false, "Install post-checkout / post-merge / post-rewrite git hooks into .git/hooks so branch switches and rebases trigger an eager reindex (#1261). Pincher-managed hooks carry a marker comment; pre-existing non-pincher hooks are skipped unless --force is set.")
 	quiet := fs.Bool("quiet", false, "Suppress the per-language extraction-tier profile printed after the wiring step (#631). The wiring itself still runs.")
 	fs.Usage = func() {
@@ -198,6 +199,12 @@ func runInitCLI(args []string) {
 		if t.Name == "claude" && !*global && !*noHook {
 			if err := installClaudeHook(out, cwd, *dryRun); err != nil {
 				fmt.Fprintf(os.Stderr, "pincher init: hook install: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		if t.Name == "goose" && !*global && !*noHook {
+			if err := installGooseHook(out, cwd, *dryRun); err != nil {
+				fmt.Fprintf(os.Stderr, "pincher init: goose hook install: %v\n", err)
 				os.Exit(1)
 			}
 		}
