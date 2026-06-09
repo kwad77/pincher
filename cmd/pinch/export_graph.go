@@ -26,39 +26,92 @@ import (
 // pincher's graph is deterministic and AST-derived — exporting it is a
 // pure SELECT over symbols + edges, no recomputation.
 
+// exportSourceSpan records the exact indexed source span behind an exported
+// graph node. It intentionally duplicates the legacy flat file_path/start_line
+// fields so downstream consumers can migrate without losing provenance.
+type exportSourceSpan struct {
+	FilePath  string `json:"file_path"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	StartByte int    `json:"start_byte"`
+	EndByte   int    `json:"end_byte"`
+	FileHash  string `json:"file_hash,omitempty"`
+	Branch    string `json:"branch,omitempty"`
+}
+
+// exportProvenance records how pincher produced an exported node or edge.
+type exportProvenance struct {
+	ProjectID  string  `json:"project_id"`
+	Source     string  `json:"source"`
+	Confidence float64 `json:"confidence"`
+	Branch     string  `json:"branch,omitempty"`
+}
+
+// exportProject is the explicit project metadata block in the JSON export.
+type exportProject struct {
+	ID                   string `json:"id"`
+	Name                 string `json:"name"`
+	Path                 string `json:"path"`
+	IndexedAt            string `json:"indexed_at,omitempty"`
+	SchemaVersionAtIndex *int   `json:"schema_version_at_index,omitempty"`
+	BinaryVersion        string `json:"binary_version,omitempty"`
+	LastIndexedBranch    string `json:"last_indexed_branch,omitempty"`
+}
+
+// exportSchema is the export contract marker for downstream graph tooling.
+type exportSchema struct {
+	Name            string `json:"name"`
+	Version         int    `json:"version"`
+	DBSchemaVersion int    `json:"db_schema_version"`
+}
+
+// exportMetadata summarizes the deterministic export run.
+type exportMetadata struct {
+	Tool        string `json:"tool"`
+	Format      string `json:"format"`
+	GeneratedAt string `json:"generated_at"`
+	SymbolCount int    `json:"symbol_count"`
+	EdgeCount   int    `json:"edge_count"`
+}
+
 // exportSymbol is the per-node record in the JSON export.
 type exportSymbol struct {
-	ID            string  `json:"id"`
-	Name          string  `json:"name"`
-	QualifiedName string  `json:"qualified_name"`
-	Kind          string  `json:"kind"`
-	Language      string  `json:"language"`
-	FilePath      string  `json:"file_path"`
-	StartLine     int     `json:"start_line"`
-	EndLine       int     `json:"end_line"`
-	Signature     string  `json:"signature,omitempty"`
-	IsExported    bool    `json:"is_exported"`
-	IsTest        bool    `json:"is_test"`
-	IsEntryPoint  bool    `json:"is_entry_point"`
-	Complexity    int     `json:"complexity"`
-	Confidence    float64 `json:"extraction_confidence"`
+	ID            string           `json:"id"`
+	Name          string           `json:"name"`
+	QualifiedName string           `json:"qualified_name"`
+	Kind          string           `json:"kind"`
+	Language      string           `json:"language"`
+	FilePath      string           `json:"file_path"`
+	StartLine     int              `json:"start_line"`
+	EndLine       int              `json:"end_line"`
+	Signature     string           `json:"signature,omitempty"`
+	IsExported    bool             `json:"is_exported"`
+	IsTest        bool             `json:"is_test"`
+	IsEntryPoint  bool             `json:"is_entry_point"`
+	Complexity    int              `json:"complexity"`
+	Confidence    float64          `json:"extraction_confidence"`
+	SourceSpan    exportSourceSpan `json:"source_span"`
+	Provenance    exportProvenance `json:"provenance"`
 }
 
 // exportEdge is the per-edge record in the JSON export.
 type exportEdge struct {
-	From       string  `json:"from"`
-	To         string  `json:"to"`
-	Kind       string  `json:"kind"`
-	Source     string  `json:"source,omitempty"`
-	Confidence float64 `json:"confidence"`
+	From       string           `json:"from"`
+	To         string           `json:"to"`
+	Kind       string           `json:"kind"`
+	Source     string           `json:"source,omitempty"`
+	Confidence float64          `json:"confidence"`
+	Provenance exportProvenance `json:"provenance"`
 }
 
 // exportGraph is the top-level JSON envelope.
 type exportGraph struct {
-	Project     map[string]string `json:"project"`
-	GeneratedAt string            `json:"generated_at"`
-	Symbols     []exportSymbol    `json:"symbols"`
-	Edges       []exportEdge      `json:"edges"`
+	Project     exportProject  `json:"project"`
+	Schema      exportSchema   `json:"schema"`
+	Export      exportMetadata `json:"export"`
+	GeneratedAt string         `json:"generated_at"`
+	Symbols     []exportSymbol `json:"symbols"`
+	Edges       []exportEdge   `json:"edges"`
 }
 
 func runExportGraphCLI(args []string) {
@@ -206,11 +259,34 @@ func writeGraph(w io.Writer, format string, project db.Project, symbols []db.Sym
 }
 
 func writeGraphJSON(w io.Writer, project db.Project, symbols []db.Symbol, edges []db.Edge) error {
+	generatedAt := time.Now().UTC().Format(time.RFC3339)
+	indexedAt := ""
+	if !project.IndexedAt.IsZero() {
+		indexedAt = project.IndexedAt.UTC().Format(time.RFC3339)
+	}
 	g := exportGraph{
-		Project: map[string]string{
-			"id": project.ID, "name": project.Name, "path": project.Path,
+		Project: exportProject{
+			ID:                   project.ID,
+			Name:                 project.Name,
+			Path:                 project.Path,
+			IndexedAt:            indexedAt,
+			SchemaVersionAtIndex: project.SchemaVersionAtIndex,
+			BinaryVersion:        project.BinaryVersion,
+			LastIndexedBranch:    project.CurrentBranch,
 		},
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Schema: exportSchema{
+			Name:            "pincher.export_graph",
+			Version:         1,
+			DBSchemaVersion: db.CurrentSchemaVersion(),
+		},
+		Export: exportMetadata{
+			Tool:        "pincher export-graph",
+			Format:      "json",
+			GeneratedAt: generatedAt,
+			SymbolCount: len(symbols),
+			EdgeCount:   len(edges),
+		},
+		GeneratedAt: generatedAt,
 		Symbols:     make([]exportSymbol, 0, len(symbols)),
 		Edges:       make([]exportEdge, 0, len(edges)),
 	}
@@ -221,16 +297,47 @@ func writeGraphJSON(w io.Writer, project db.Project, symbols []db.Symbol, edges 
 			EndLine: s.EndLine, Signature: s.Signature, IsExported: s.IsExported,
 			IsTest: s.IsTest, IsEntryPoint: s.IsEntryPoint, Complexity: s.Complexity,
 			Confidence: s.ExtractionConfidence,
+			SourceSpan: exportSourceSpan{
+				FilePath: s.FilePath, StartLine: s.StartLine, EndLine: s.EndLine,
+				StartByte: s.StartByte, EndByte: s.EndByte, FileHash: s.FileHash,
+				Branch: s.Branch,
+			},
+			Provenance: exportProvenance{
+				ProjectID:  s.ProjectID,
+				Source:     symbolProvenanceSource(s),
+				Confidence: s.ExtractionConfidence,
+				Branch:     s.Branch,
+			},
 		})
 	}
 	for _, e := range edges {
 		g.Edges = append(g.Edges, exportEdge{
 			From: e.FromID, To: e.ToID, Kind: e.Kind, Source: e.Source, Confidence: e.Confidence,
+			Provenance: exportProvenance{
+				ProjectID:  e.ProjectID,
+				Source:     edgeProvenanceSource(e),
+				Confidence: e.Confidence,
+				Branch:     e.Branch,
+			},
 		})
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(g)
+}
+
+func symbolProvenanceSource(s db.Symbol) string {
+	if s.Language == "" {
+		return "index"
+	}
+	return "index:" + strings.ToLower(s.Language)
+}
+
+func edgeProvenanceSource(e db.Edge) string {
+	if strings.TrimSpace(e.Source) == "" {
+		return "per_file"
+	}
+	return e.Source
 }
 
 // dropDanglingEdges returns only edges whose endpoints both exist in the

@@ -20,18 +20,20 @@ import (
 // (its target is not in the symbol set).
 func exportFixture() ([]db.Symbol, []db.Edge) {
 	syms := []db.Symbol{
-		{ID: "a.go::pkg.Alpha#Function", Name: "Alpha", QualifiedName: "pkg.Alpha",
-			Kind: "Function", Language: "Go", FilePath: "a.go", StartLine: 1, EndLine: 5,
-			IsExported: true, ExtractionConfidence: 1.0},
-		{ID: "a.go::pkg.beta#Function", Name: "beta", QualifiedName: "pkg.beta",
-			Kind: "Function", Language: "Go", FilePath: "a.go", StartLine: 7, EndLine: 9,
+		{ID: "a.go::pkg.Alpha#Function", ProjectID: "p1", Name: "Alpha", QualifiedName: "pkg.Alpha",
+			Kind: "Function", Language: "Go", FilePath: "a.go", StartByte: 10, EndByte: 60,
+			StartLine: 1, EndLine: 5, IsExported: true, FileHash: "abc123", Branch: "main",
+			ExtractionConfidence: 1.0},
+		{ID: "a.go::pkg.beta#Function", ProjectID: "p1", Name: "beta", QualifiedName: "pkg.beta",
+			Kind: "Function", Language: "Go", FilePath: "a.go", StartByte: 80, EndByte: 120,
+			StartLine: 7, EndLine: 9, FileHash: "abc123", Branch: "main",
 			ExtractionConfidence: 1.0},
 	}
 	edges := []db.Edge{
-		{FromID: "a.go::pkg.Alpha#Function", ToID: "a.go::pkg.beta#Function",
-			Kind: "CALLS", Source: "resolve_pass", Confidence: 1.0},
-		{FromID: "a.go::pkg.Alpha#Function", ToID: "external::fmt.Println#Function",
-			Kind: "CALLS", Source: "per_file", Confidence: 0.8},
+		{ProjectID: "p1", FromID: "a.go::pkg.Alpha#Function", ToID: "a.go::pkg.beta#Function",
+			Kind: "CALLS", Source: "resolve_pass", Confidence: 1.0, Branch: "main"},
+		{ProjectID: "p1", FromID: "a.go::pkg.Alpha#Function", ToID: "external::fmt.Println#Function",
+			Kind: "CALLS", Source: "per_file", Confidence: 0.8, Branch: "main"},
 	}
 	return syms, edges
 }
@@ -46,18 +48,51 @@ func TestWriteGraphJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(b.String()), &g); err != nil {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, b.String())
 	}
-	if g.Project["name"] != "demo" {
-		t.Errorf("project.name = %q, want demo", g.Project["name"])
+	if g.Project.Name != "demo" {
+		t.Errorf("project.name = %q, want demo", g.Project.Name)
+	}
+	if g.Schema.Name != "pincher.export_graph" || g.Schema.Version != 1 || g.Schema.DBSchemaVersion != db.CurrentSchemaVersion() {
+		t.Errorf("schema metadata = %+v, want pincher.export_graph v1 db schema %d", g.Schema, db.CurrentSchemaVersion())
+	}
+	if g.Export.Tool != "pincher export-graph" || g.Export.Format != "json" || g.Export.SymbolCount != 2 || g.Export.EdgeCount != 2 {
+		t.Errorf("export metadata = %+v, want json counts 2/2", g.Export)
 	}
 	if len(g.Symbols) != 2 {
 		t.Errorf("symbols = %d, want 2", len(g.Symbols))
+	}
+	if got := g.Symbols[0].SourceSpan; got.FilePath != "a.go" || got.StartByte != 10 || got.EndByte != 60 || got.FileHash != "abc123" || got.Branch != "main" {
+		t.Errorf("symbol source_span = %+v, want exact span/file hash/branch provenance", got)
+	}
+	if got := g.Symbols[0].Provenance; got.ProjectID != "p1" || got.Source != "index:go" || got.Confidence != 1.0 || got.Branch != "main" {
+		t.Errorf("symbol provenance = %+v, want project/source/confidence/branch", got)
 	}
 	// JSON keeps every edge, including the dangling one — it's a raw dump.
 	if len(g.Edges) != 2 {
 		t.Errorf("edges = %d, want 2 (JSON keeps dangling edges)", len(g.Edges))
 	}
+	if got := g.Edges[0].Provenance; got.ProjectID != "p1" || got.Source != "resolve_pass" || got.Confidence != 1.0 || got.Branch != "main" {
+		t.Errorf("edge provenance = %+v, want project/source/confidence/branch", got)
+	}
 	if g.GeneratedAt == "" {
 		t.Error("generated_at not stamped")
+	}
+	if g.Export.GeneratedAt != g.GeneratedAt {
+		t.Errorf("export.generated_at = %q, want top-level generated_at %q", g.Export.GeneratedAt, g.GeneratedAt)
+	}
+}
+
+func TestProvenanceSourceDefaults(t *testing.T) {
+	if got := symbolProvenanceSource(db.Symbol{}); got != "index" {
+		t.Errorf("symbolProvenanceSource(empty) = %q, want index", got)
+	}
+	if got := symbolProvenanceSource(db.Symbol{Language: "Go"}); got != "index:go" {
+		t.Errorf("symbolProvenanceSource(Go) = %q, want index:go", got)
+	}
+	if got := edgeProvenanceSource(db.Edge{}); got != "per_file" {
+		t.Errorf("edgeProvenanceSource(empty) = %q, want per_file", got)
+	}
+	if got := edgeProvenanceSource(db.Edge{Source: "resolve_pass"}); got != "resolve_pass" {
+		t.Errorf("edgeProvenanceSource(resolve_pass) = %q, want resolve_pass", got)
 	}
 }
 
