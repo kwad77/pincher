@@ -89,6 +89,10 @@ func main() {
 		runExportGraphCLI(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "report" {
+		runReportCLI(os.Args[2:])
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "callflow" {
 		runCallflowCLI(os.Args[2:])
 		return
@@ -458,6 +462,7 @@ func printHelpBanner(out io.Writer) {
 	fmt.Fprintln(out, "  pincher verify                 Re-hash every indexed file and report drift vs stored hash (#1399)")
 	fmt.Fprintln(out, "  pincher completion <shell>     Print a bash/zsh/fish completion script")
 	fmt.Fprintln(out, "  pincher export-graph           Dump the symbol+edge graph (json/graphml/dot)")
+	fmt.Fprintln(out, "  pincher report                 Generate a markdown architecture report from indexed graph evidence")
 	fmt.Fprintln(out, "  pincher callflow --symbol=N    Render a Mermaid call-flow diagram for a symbol")
 	fmt.Fprintln(out, "  pincher vacuum                 Reclaim disk space after project removal (rewrites the DB file)")
 	fmt.Fprintln(out, "  pincher --version              Print version and exit")

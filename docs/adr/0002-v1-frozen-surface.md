@@ -77,8 +77,8 @@ by `internal/server/reference_md_cli_subcommand_parity_test.go` are frozen:
 ```
 bench        callflow     completion   doctor       export-graph
 health-check hook-stats   index        init         project
-rebuild-fts  self-test    setup        stats        supervised
-update       vacuum       verify       web
+rebuild-fts  report       self-test    setup        stats
+supervised   update       vacuum       verify       web
 ```
 
 - Adding new subcommands is non-breaking.
@@ -150,7 +150,7 @@ Every surface element declared frozen above is gated by at least one CI contract
 | Tool input + output JSON Schemas | frozen | `TestToolContract_GoldenFile` | `internal/server/testdata/tool-contract.json` (golden) |
 | `_meta` envelope shape | frozen with `_v2`/`_v3` extension points | `TestCapability_PresentInMetaEnvelope`, `TestComplexityTier_MetaEnvelopeCarriesTier`, `TestProjectFields_MetaAlwaysPreserved`, `TestApplyLiteMeta_PreservesEmptyReason`, `TestJsonResultWithMeta_PopulatesStructuredContent`, `TestJsonResultWithMeta_IdleIndexer_NoInProgressFlag`, `TestAttachDriftWarning_AttachesToMeta`, `TestAttachDriftWarning_PreservesExistingMeta`, `TestHandleInit_MetaEnvelopePresent`, `TestHandleSearch_MetaConfidenceDistribution` | [`docs/integrations/meta-envelope-contract.md`](../integrations/meta-envelope-contract.md) |
 | HTTP gateway routes | frozen | `TestHTTPRoutes_AllNonToolEndpointsDocumented`, `TestDeploymentDocsUseCanonicalProbeAndMetricsRoutes`, `TestHTTPRoutes_ReadyEndpointActuallyServes`, `TestHTTPRoutes_MetricsEndpointActuallyServes`, `TestOpenAPI_ParityWithRegisteredHandlers`, `TestOpenAPI_HealthPathCarriesProbeAndTool`, `TestOpenAPI_PerToolSchemaIsRealNotPlaceholder`, `TestOpenAPI_EveryToolHasNonPlaceholderResponseSchema`, `TestOpenAPI_HasSharedMetaAndErrorComponents` | OpenAPI spec served at `GET /v1/openapi.json`; doc parity against [`docs/reference/http-api.md`](../reference/http-api.md) |
-| CLI subcommands + flags (19 frozen) | frozen | `TestReferenceMD_EveryCLISubcommandHasSection`, `TestReferenceMD_NoOrphanCLISection`, `TestReferenceMD_CLISectionHeadingREAllowsIssueSuffix`, `TestDocsDoNotMentionRemovedHealthOrSearchCLIs`, `TestReferenceMD_SelfTestDocumentsJSONMode` | `cmd/pinch/main.go` `printHelpBanner` (canonical list); doc parity against [`docs/reference/cli.md`](../reference/cli.md) |
+| CLI subcommands + flags (20 frozen + additive 1.x subcommands) | frozen | `TestReferenceMD_EveryCLISubcommandHasSection`, `TestReferenceMD_NoOrphanCLISection`, `TestReferenceMD_CLISectionHeadingREAllowsIssueSuffix`, `TestDocsDoNotMentionRemovedHealthOrSearchCLIs`, `TestReferenceMD_SelfTestDocumentsJSONMode` | `cmd/pinch/main.go` `printHelpBanner` (canonical list); doc parity against [`docs/reference/cli.md`](../reference/cli.md) |
 | Symbol ID format `{file}::{qn}#{kind}` | frozen | `TestMakeSymbolID` | `internal/db/db.go` `MakeSymbolID()` |
 | Database schema | evolving | `TestReferenceMD_SchemaVersionParity` (pins doc claim to runtime `CurrentSchemaVersion`); migration-rehearsal workflow (v0.4 → current) | `internal/db/db.go` `schemaMigrations` + [`docs/reference/architecture.md`](../reference/architecture.md) Schema section |
 | pinchQL grammar | evolving | `internal/cypher/` parser tests (additions are non-breaking) | `internal/cypher/engine.go` `tokenize`/`parseQuery` |

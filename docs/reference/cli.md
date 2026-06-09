@@ -340,6 +340,22 @@ tools; `dot` targets Graphviz.
 (case-insensitive), then substring on name or path. Ambiguous substrings fail
 with a disambiguation list.
 
+### `pincher report`
+
+Generates a Pincher-native markdown architecture report from the existing
+symbol and edge index. This is read-only: it selects persisted evidence and
+renders project metrics, languages, entry points, hotspots, rationale snippets,
+surprising connections, and suggested next Pincher calls. It does not run LLM
+extraction or infer missing data.
+
+```bash
+pincher report                                  # markdown to stdout
+pincher report --out PINCHER_REPORT.md          # write report artifact
+pincher report --project pincher --data-dir /x   # select project/data dir
+```
+
+`--project` accepts the same id/name/substring forms as `export-graph`.
+
 ### `pincher callflow`
 
 Renders a bounded Mermaid call-flow diagram around one symbol using persisted
