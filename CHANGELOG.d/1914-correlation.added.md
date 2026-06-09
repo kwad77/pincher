@@ -1,1 +1,0 @@
-Document dogfood correlation between `pincher report` hotspot `risk_score` inputs and `mcp_pincher_changes` blast-radius/ranked-test outputs for recent v1.2 report slices ([#1914](https://github.com/kwad77/pincher/issues/1914)).

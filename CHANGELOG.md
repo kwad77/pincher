@@ -7,6 +7,52 @@ minors.
 
 ## [Unreleased]
 
+## [1.2.0-rc.1] — 2026-06-09 — Pincher-native graph intelligence and routing leverage
+
+First release candidate for the v1.2 minor. v1.2 turns Pincher's
+existing indexed graph and `_meta` envelopes into higher-leverage
+artifacts for humans, agents, and pincher-router — without changing
+Pincher's substrate identity. See [ADR-0004: v1.2 Pincher-native
+graph intelligence](docs/adr/0004-v1.2-pincher-native-graph-intelligence.md)
+and the [v1.2 graph-intelligence handoff](docs/process/v1.2-graph-intelligence-handoff.md)
+for the framing.
+
+The release is deliberately **not** a clone-parity chase for any
+external graph product. Every feature here builds on deterministic
+source-provenance, source spans, and the existing `_meta` envelope.
+No LLM-derived inference in the v1.2 report path.
+
+This RC binary shares its commit ancestry with `v1.1.0-rc.1` —
+the v1.1 stabilization slice and the v1.2 graph-intelligence bundle
+shipped on master in the same window. v1.1.0-rc.1 is the
+stabilization tag; v1.2.0-rc.1 cumulates the feature surface.
+
+### Added — graph-intelligence bundle (per ADR-0004)
+- **`pincher report`** generates a Pincher-native markdown architecture report from indexed graph evidence: project metrics, languages, entry points, production hotspots, rationale snippets, surprising connections, provenance notes, and suggested next Pincher calls ([#1912](https://github.com/kwad77/pincher/issues/1912)).
+- **Rationale map.** Reports now expose additive query/provenance fields on rationale rows (`attachment_state`, `line_span`, `source`, `extraction_method`, grouped rows) without changing legacy report defaults. Rationale is grouped by attached symbol or explicit file-level fallback with per-row extraction confidence ([#1913](https://github.com/kwad77/pincher/issues/1913), [#1920](https://github.com/kwad77/pincher/pull/1920)).
+- **Hotspot risk scoring.** Deterministic, with raw incoming / outgoing / degree / test-adjacent inputs surfaced in markdown and JSON for graph-aware planning and test prioritization ([#1914](https://github.com/kwad77/pincher/issues/1914)).
+- **Surprising-connection triage.** Deterministic metadata (reasons, provenance, suggested action) on each surprising-connection row, preserving existing markdown/JSON shapes ([#1915](https://github.com/kwad77/pincher/issues/1915)).
+- **Falsifiable savings report.** New CLI surface with schema-gap warnings for `_meta`-derived token evidence; refuses unsupported aggregate claims. Raw inputs, formulas, baseline methods, and recent-window separation all surfaced ([#1916](https://github.com/kwad77/pincher/issues/1916)).
+- **Next-best Pincher calls.** Reports now render structured next-best calls (`tool` / `args` / `why` / `expected_value`) instead of legacy args strings; legacy markdown preserved for back-compat. JSON report adds machine-actionable args fields for agent execution follow-through ([#1917](https://github.com/kwad77/pincher/issues/1917)).
+- **Bounded interactive graph tab** in the dashboard at `GET /v1/graph`. Nodes = symbols, edges = CALLS/edges; filter by kind/language, search by name; reuses the `ListSymbolsForProject` / `ListEdgesForProject` store methods ([#1858](https://github.com/kwad77/pincher/issues/1858), [#1932](https://github.com/kwad77/pincher/pull/1932)).
+- **`pincher export-graph` provenance hardening.** Explicit project/schema/export metadata, per-node source spans, node/edge provenance blocks. Round-trip count tests lock fidelity ([#1918](https://github.com/kwad77/pincher/issues/1918), [#1928](https://github.com/kwad77/pincher/pull/1928)).
+
+### Changed
+- **Report next-best-call rendering** moved from prose args strings to structured `tool`/`args`/`why`/`expected_value` fields ([#1917](https://github.com/kwad77/pincher/issues/1917)).
+- **`pincher export-graph --format=json`** adds metadata/provenance blocks (additive — existing fields preserved) ([#1918](https://github.com/kwad77/pincher/issues/1918)).
+
+### Docs / dogfood evidence
+- [v1.2 graph-intelligence handoff](docs/process/v1.2-graph-intelligence-handoff.md) — the canonical framing doc.
+- **Rationale precision audit.** 50-row Pincher self-index analysis separates extracted tagged evidence from inference and weak design-intent rows ([#1913](https://github.com/kwad77/pincher/issues/1913)).
+- **Hotspot risk-score correlation.** Dogfood evidence showing `pincher report` `risk_score` inputs correlate with `mcp_pincher_changes` blast-radius/ranked-test outputs ([#1914](https://github.com/kwad77/pincher/issues/1914)).
+- **Token-savings comparison.** `pincher report` vs raw README/tree/full-file baselines for the current Pincher self-index ([#1912](https://github.com/kwad77/pincher/issues/1912)).
+- **README rewrite.** Token-savings repositioned as the falsifiable, auditable core value; foregrounded the `_meta` envelope contract; added two Mermaid diagrams (extraction pipeline + agent loop) ([#1921](https://github.com/kwad77/pincher/pull/1921)–[#1924](https://github.com/kwad77/pincher/pull/1924)).
+
+### DOGFOOD
+- All v1.2 features built on the Pincher-native substrate — **no LLM-derived inference** in the v1.2 report path. Every claim has a source span, a baseline method, or an explicit `missing` flag.
+- Decision to ship interactive graph view as a bounded read-only tab tied to the evidence-first ordering set in ADR-0004; the visual surface depends on the data substrate, not the other way around.
+- Report next-best-call structure (`tool`/`args`/`why`/`expected_value`) was shaped specifically so pincher-router can train on it: every emitted next-best call is a falsifiable routing prediction that the next-call observation either confirms or rejects.
+
 ## [1.1.0-rc.1] — 2026-06-09 — Post-v1.0 stabilization, Goose host integration, governance follow-through
 
 First release candidate for the v1.1 minor. v1.1 closes out the post-1.0
@@ -4045,7 +4091,8 @@ Highlights:
 - `docs/index.html`: single-file GitHub Pages landing page.
 - CI coverage gate lowered to 83% to match reality.
 
-[Unreleased]: https://github.com/kwad77/pincher/compare/v1.1.0-rc.1...HEAD
+[Unreleased]: https://github.com/kwad77/pincher/compare/v1.2.0-rc.1...HEAD
+[1.2.0-rc.1]: https://github.com/kwad77/pincher/compare/v1.1.0-rc.1...v1.2.0-rc.1
 [1.1.0-rc.1]: https://github.com/kwad77/pincher/compare/v1.0.0...v1.1.0-rc.1
 [1.0.0]: https://github.com/kwad77/pincher/compare/v0.99.0-rc.1...v1.0.0
 [0.99.0-rc.1]: https://github.com/kwad77/pincher/compare/v0.98.0...v0.99.0-rc.1
