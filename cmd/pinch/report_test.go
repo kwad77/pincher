@@ -77,6 +77,7 @@ func TestWriteProjectReportMarkdown(t *testing.T) {
 		"  - `NOTE: file-level rationale stays explicit` — `internal/server.go:6` (confidence: 0.75)",
 		"## Surprising connections",
 		"- `cmd` → `internal`: 1 edge",
+		"  - Triage: CLI package reaches across an internal package boundary; boundary=CLI/internal coupling; action=check whether the CLI should use a narrower internal facade before adding more calls; example `cmd/app.go::main.main#Function` → `internal/server.go::server.Handle#Function` (CALLS, confidence=1.00, source=resolve_pass)",
 		"## Suggested next Pincher calls",
 		"- Tool: `mcp_pincher_context`",
 		"Args: `{\"project\":\"p-demo\",\"id\":\"internal/server.go::server.Handle#Function\"}`",
@@ -168,6 +169,19 @@ func TestWriteProjectReportJSON_HasStructuredNextCallsAndLegacyArgs(t *testing.T
 			RiskScore     int            `json:"risk_score"`
 			ScoringInputs map[string]any `json:"scoring_inputs"`
 		} `json:"hotspots"`
+		SurprisingConnections []struct {
+			From            string `json:"from"`
+			To              string `json:"to"`
+			Edges           int    `json:"edges"`
+			Reason          string `json:"reason"`
+			Boundary        string `json:"boundary"`
+			SuggestedAction string `json:"suggested_action"`
+			ExampleEdge     struct {
+				FromID string `json:"from_id"`
+				ToID   string `json:"to_id"`
+				Kind   string `json:"kind"`
+			} `json:"example_edge"`
+		} `json:"surprising_connections"`
 	}
 	if err := json.Unmarshal([]byte(b.String()), &payload); err != nil {
 		t.Fatalf("json unmarshal: %v\n%s", err, b.String())
@@ -184,6 +198,24 @@ func TestWriteProjectReportJSON_HasStructuredNextCallsAndLegacyArgs(t *testing.T
 	if payload.Hotspots[0].ScoringInputs["degree"] != float64(1) {
 		t.Fatalf("hotspot scoring inputs missing degree: %#v", payload.Hotspots[0].ScoringInputs)
 	}
+	if len(payload.SurprisingConnections) == 0 {
+		t.Fatalf("surprising_connections missing from json: %s", b.String())
+	}
+	foundCLIInternal := false
+	for _, conn := range payload.SurprisingConnections {
+		if conn.From == "cmd" && conn.To == "internal" {
+			foundCLIInternal = true
+			if conn.Edges != 1 || conn.Reason == "" || conn.Boundary != "CLI/internal coupling" || conn.SuggestedAction == "" {
+				t.Fatalf("surprising connection triage fields changed or missing: %#v", conn)
+			}
+			if conn.ExampleEdge.FromID != "cmd/app.go::main.main#Function" || conn.ExampleEdge.ToID != "internal/server.go::server.Handle#Function" || conn.ExampleEdge.Kind != "CALLS" {
+				t.Fatalf("surprising connection example edge changed: %#v", conn.ExampleEdge)
+			}
+		}
+	}
+	if !foundCLIInternal {
+		t.Fatalf("legacy surprising_connections from/to/edges row missing: %#v", payload.SurprisingConnections)
+	}
 	if len(payload.NextPincherCalls) != 4 {
 		t.Fatalf("next call count = %d, want 4; payload=%s", len(payload.NextPincherCalls), b.String())
 	}
@@ -199,6 +231,41 @@ func TestWriteProjectReportJSON_HasStructuredNextCallsAndLegacyArgs(t *testing.T
 	}
 	if payload.NextPincherCalls[3].Args["scope"] != "all" {
 		t.Fatalf("changes scope missing from structured args: %#v", payload.NextPincherCalls[3])
+	}
+}
+
+func TestReportSurprisingConnectionsDetailed_DeterministicExamplesAndCap(t *testing.T) {
+	edges := []db.Edge{
+		{FromID: "zeta/z.go::pkg.Z#Function", ToID: "omega/o.go::pkg.O#Function", Kind: "CALLS", Source: "late", Confidence: 0.9},
+		{FromID: "cmd/app.go::main.Run#Function", ToID: "internal/server.go::server.Handle#Function", Kind: "CALLS", Source: "resolve_pass", Confidence: 0.8},
+		{FromID: "cmd/app.go::main.Main#Function", ToID: "internal/server.go::server.Handle#Function", Kind: "CALLS", Source: "resolve_pass", Confidence: 1.0},
+		{FromID: "cmd/app.go::main.Main#Function", ToID: "internal/server.go::server.Start#Function", Kind: "CALLS", Source: "resolve_pass", Confidence: 1.0},
+		{FromID: "tests/report_test.go::main.TestReport#Function", ToID: "internal/server.go::server.Handle#Function", Kind: "CALLS", Source: "test", Confidence: 1.0},
+	}
+
+	connections := reportSurprisingConnectionsDetailed(edges, 2)
+	if len(connections) != 2 {
+		t.Fatalf("connection count = %d, want capped 2: %#v", len(connections), connections)
+	}
+	if connections[0].FromPackage != "tests" || connections[0].ToPackage != "internal" || connections[0].Triage.Boundary != "test/prod boundary" {
+		t.Fatalf("rarest test/prod connection should sort first with triage: %#v", connections[0])
+	}
+	if connections[1].FromPackage != "zeta" || connections[1].ToPackage != "omega" || connections[1].Triage.Boundary != "cross-package coupling" {
+		t.Fatalf("second rare connection should be deterministic before higher-count pair: %#v", connections[1])
+	}
+
+	all := reportSurprisingConnectionsDetailed(edges, 0)
+	var cliInternal reportPackageConnection
+	for _, conn := range all {
+		if conn.FromPackage == "cmd" && conn.ToPackage == "internal" {
+			cliInternal = conn
+		}
+	}
+	if cliInternal.EdgeCount != 3 || cliInternal.Triage.Boundary != "CLI/internal coupling" {
+		t.Fatalf("cmd/internal aggregate or triage changed: %#v", cliInternal)
+	}
+	if cliInternal.ExampleFrom != "cmd/app.go::main.Main#Function" || cliInternal.ExampleTo != "internal/server.go::server.Handle#Function" {
+		t.Fatalf("representative edge should be lexicographically deterministic, got %#v", cliInternal)
 	}
 }
 

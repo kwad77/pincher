@@ -375,6 +375,9 @@ pincher report --project pincher --data-dir /x   # select project/data dir
 shape is versioned as `pincher_report.v1`, keeps the same deterministic evidence
 sections, and emits machine-actionable `next_pincher_calls[].args` while retaining
 `args_legacy` for consumers that already parse the markdown-era argument string.
+Surprising-connection rows preserve the existing markdown line and JSON
+`from`/`to`/`edges` fields; deterministic triage metadata is additive
+(`reason`, `boundary`, `suggested_action`, and `example_edge`).
 
 `--project` accepts the same id/name/substring forms as `export-graph`.
 

@@ -41,6 +41,22 @@ type reportPackagePair struct {
 	To   string
 }
 
+type reportPackageConnectionTriage struct {
+	Reason          string
+	Boundary        string
+	SuggestedAction string
+	ExampleEdge     db.Edge
+}
+
+type reportPackageConnection struct {
+	FromPackage string
+	ToPackage   string
+	EdgeCount   int
+	ExampleFrom string
+	ExampleTo   string
+	Triage      reportPackageConnectionTriage
+}
+
 type reportRationaleGroup struct {
 	Attachment string
 	Symbols    []db.Symbol
@@ -156,7 +172,7 @@ func writeProjectReportMarkdown(w io.Writer, project db.Project, symbols []db.Sy
 	entryPoints := reportEntryPoints(symbols, 10)
 	hotspots := reportHotspots(symbols, edges, 10)
 	rationales := reportRationaleMapFor(symbols, 10)
-	surprising := reportSurprisingConnections(edges, 10)
+	surprising := reportSurprisingConnectionsDetailed(edges, 10)
 
 	if _, err := fmt.Fprintf(w, "# Pincher report: %s\n\n", emptyAs(project.Name, project.ID)); err != nil {
 		return err
@@ -270,8 +286,11 @@ func writeProjectReportMarkdown(w io.Writer, project db.Project, symbols []db.Sy
 			return err
 		}
 	} else {
-		for _, pair := range sortedPackagePairs(surprising) {
-			if _, err := fmt.Fprintf(w, "- `%s` → `%s`: %d edge%s\n", pair.From, pair.To, surprising[pair], plural(surprising[pair])); err != nil {
+		for _, conn := range surprising {
+			if _, err := fmt.Fprintf(w, "- `%s` → `%s`: %d edge%s\n", conn.FromPackage, conn.ToPackage, conn.EdgeCount, plural(conn.EdgeCount)); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintf(w, "  - Triage: %s; boundary=%s; action=%s; example `%s` → `%s` (%s, confidence=%.2f, source=%s)\n", conn.Triage.Reason, conn.Triage.Boundary, conn.Triage.SuggestedAction, conn.Triage.ExampleEdge.FromID, conn.Triage.ExampleEdge.ToID, conn.Triage.ExampleEdge.Kind, conn.Triage.ExampleEdge.Confidence, emptyAs(conn.Triage.ExampleEdge.Source, "unknown")); err != nil {
 				return err
 			}
 		}
@@ -311,7 +330,7 @@ func writeProjectReportJSON(w io.Writer, project db.Project, symbols []db.Symbol
 	entryPoints := reportEntryPoints(symbols, 10)
 	hotspots := reportHotspots(symbols, edges, 10)
 	rationales := reportRationaleMapFor(symbols, 10)
-	surprising := reportSurprisingConnections(edges, 10)
+	surprising := reportSurprisingConnectionsDetailed(edges, 10)
 
 	type projectJSON struct {
 		ID            string `json:"id"`
@@ -343,10 +362,21 @@ func writeProjectReportJSON(w io.Writer, project db.Project, symbols []db.Symbol
 		StartLine  int     `json:"start_line"`
 		Confidence float64 `json:"confidence"`
 	}
+	type exampleEdgeJSON struct {
+		FromID     string  `json:"from_id"`
+		ToID       string  `json:"to_id"`
+		Kind       string  `json:"kind"`
+		Confidence float64 `json:"confidence"`
+		Source     string  `json:"source"`
+	}
 	type packagePairJSON struct {
-		From  string `json:"from"`
-		To    string `json:"to"`
-		Edges int    `json:"edges"`
+		From            string          `json:"from"`
+		To              string          `json:"to"`
+		Edges           int             `json:"edges"`
+		Reason          string          `json:"reason"`
+		Boundary        string          `json:"boundary"`
+		SuggestedAction string          `json:"suggested_action"`
+		ExampleEdge     exampleEdgeJSON `json:"example_edge"`
 	}
 
 	hotspotRows := make([]hotspotJSON, 0, len(hotspots))
@@ -374,8 +404,22 @@ func writeProjectReportJSON(w io.Writer, project db.Project, symbols []db.Symbol
 		}
 	}
 	surprisingRows := make([]packagePairJSON, 0, len(surprising))
-	for _, pair := range sortedPackagePairs(surprising) {
-		surprisingRows = append(surprisingRows, packagePairJSON{From: pair.From, To: pair.To, Edges: surprising[pair]})
+	for _, conn := range surprising {
+		surprisingRows = append(surprisingRows, packagePairJSON{
+			From:            conn.FromPackage,
+			To:              conn.ToPackage,
+			Edges:           conn.EdgeCount,
+			Reason:          conn.Triage.Reason,
+			Boundary:        conn.Triage.Boundary,
+			SuggestedAction: conn.Triage.SuggestedAction,
+			ExampleEdge: exampleEdgeJSON{
+				FromID:     conn.Triage.ExampleEdge.FromID,
+				ToID:       conn.Triage.ExampleEdge.ToID,
+				Kind:       conn.Triage.ExampleEdge.Kind,
+				Confidence: conn.Triage.ExampleEdge.Confidence,
+				Source:     conn.Triage.ExampleEdge.Source,
+			},
+		})
 	}
 
 	payload := map[string]any{
@@ -696,6 +740,124 @@ func reportSurprisingConnections(edges []db.Edge, limit int) map[reportPackagePa
 		trimmed[pair] = counts[pair]
 	}
 	return trimmed
+}
+
+func reportSurprisingConnectionsDetailed(edges []db.Edge, limit int) []reportPackageConnection {
+	counts := make(map[reportPackagePair]int)
+	examples := make(map[reportPackagePair]db.Edge)
+	for _, e := range edges {
+		from := reportPackageOfSymbolID(e.FromID)
+		to := reportPackageOfSymbolID(e.ToID)
+		if from == "" || to == "" || from == to {
+			continue
+		}
+		pair := reportPackagePair{From: from, To: to}
+		counts[pair]++
+		if prior, ok := examples[pair]; !ok || reportEdgeLess(e, prior) {
+			examples[pair] = e
+		}
+	}
+	if len(counts) == 0 {
+		return nil
+	}
+	pairs := sortedPackagePairs(counts)
+	if limit > 0 && len(pairs) > limit {
+		pairs = pairs[:limit]
+	}
+	out := make([]reportPackageConnection, 0, len(pairs))
+	for _, pair := range pairs {
+		example := examples[pair]
+		out = append(out, reportPackageConnection{
+			FromPackage: pair.From,
+			ToPackage:   pair.To,
+			EdgeCount:   counts[pair],
+			ExampleFrom: example.FromID,
+			ExampleTo:   example.ToID,
+			Triage:      classifyPackageConnection(pair, example),
+		})
+	}
+	return out
+}
+
+func classifyPackageConnection(pair reportPackagePair, example db.Edge) reportPackageConnectionTriage {
+	reason := "cross-package edge is uncommon in the current graph and may deserve review"
+	boundary := "cross-package coupling"
+	if reportPackageMentionsTests(pair.From) || reportPackageMentionsTests(pair.To) || reportTestOrFixturePath(example.FromID) || reportTestOrFixturePath(example.ToID) {
+		reason = "connection crosses test and production code paths"
+		boundary = "test/prod boundary"
+	} else if reportExternalPackage(pair.From) || reportExternalPackage(pair.To) {
+		reason = "connection crosses the project boundary into an external dependency"
+		boundary = "external dependency boundary"
+	} else if reportCmdInternalPair(pair.From, pair.To) {
+		reason = "CLI package reaches across an internal package boundary"
+		boundary = "CLI/internal coupling"
+	} else if reportScriptsPackage(pair.From) || reportScriptsPackage(pair.To) {
+		reason = "automation or script code is coupled to product code"
+		boundary = "automation boundary"
+	}
+	return reportPackageConnectionTriage{
+		Reason:          reason,
+		Boundary:        boundary,
+		SuggestedAction: recommendPackageConnectionAction(boundary),
+		ExampleEdge:     example,
+	}
+}
+
+func recommendPackageConnectionAction(boundary string) string {
+	switch boundary {
+	case "test/prod boundary":
+		return "verify the edge is test-only or move shared helpers behind an explicit fixture seam"
+	case "external dependency boundary":
+		return "confirm the dependency is intentional and documented near the callsite"
+	case "CLI/internal coupling":
+		return "check whether the CLI should use a narrower internal facade before adding more calls"
+	case "automation boundary":
+		return "keep automation entrypoints isolated from runtime packages unless this is a deliberate tool hook"
+	default:
+		return "inspect the representative edge with Pincher context/trace before changing either package"
+	}
+}
+
+func reportEdgeLess(a, b db.Edge) bool {
+	if a.FromID != b.FromID {
+		return a.FromID < b.FromID
+	}
+	if a.ToID != b.ToID {
+		return a.ToID < b.ToID
+	}
+	if a.Kind != b.Kind {
+		return a.Kind < b.Kind
+	}
+	if a.Source != b.Source {
+		return a.Source < b.Source
+	}
+	return a.Confidence < b.Confidence
+}
+
+func reportPackageMentionsTests(pkg string) bool {
+	return reportTestOrFixturePath(pkg+"/placeholder.go") || strings.Contains(strings.ToLower(filepath.ToSlash(pkg)), "test")
+}
+
+func reportExternalPackage(pkg string) bool {
+	low := strings.ToLower(filepath.ToSlash(pkg))
+	return strings.HasPrefix(low, "external") || strings.HasPrefix(low, "vendor/") || strings.Contains(low, "/vendor/") || strings.Contains(low, "pkg/mod/")
+}
+
+func reportCmdInternalPair(from, to string) bool {
+	return (reportPackageRoot(from) == "cmd" && reportPackageRoot(to) == "internal") || (reportPackageRoot(from) == "internal" && reportPackageRoot(to) == "cmd")
+}
+
+func reportScriptsPackage(pkg string) bool {
+	root := reportPackageRoot(pkg)
+	return root == "scripts" || root == "script" || root == "tools" || strings.Contains(strings.ToLower(filepath.ToSlash(pkg)), "/scripts/")
+}
+
+func reportPackageRoot(pkg string) string {
+	pkg = strings.Trim(filepath.ToSlash(pkg), "/")
+	if i := strings.Index(pkg, "/"); i >= 0 {
+		return pkg[:i]
+	}
+	return pkg
 }
 
 func sortedPackagePairs(counts map[reportPackagePair]int) []reportPackagePair {
