@@ -377,7 +377,11 @@ sections, and emits machine-actionable `next_pincher_calls[].args` while retaini
 `args_legacy` for consumers that already parse the markdown-era argument string.
 Surprising-connection rows preserve the existing markdown line and JSON
 `from`/`to`/`edges` fields; deterministic triage metadata is additive
-(`reason`, `boundary`, `suggested_action`, and `example_edge`).
+(`reason`, `boundary`, `suggested_action`, and `example_edge`). Rationale rows
+are extracted evidence only: JSON adds queryable `attachment`,
+`attachment_state`, `line_span`, `source`, `extraction_method`, and `inferred`
+fields plus grouped rationale buckets while preserving the legacy flat
+`rationales.rows` array.
 
 `--project` accepts the same id/name/substring forms as `export-graph`.
 

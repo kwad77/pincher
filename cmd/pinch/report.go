@@ -58,15 +58,18 @@ type reportPackageConnection struct {
 }
 
 type reportRationaleGroup struct {
-	Attachment string
-	Symbols    []db.Symbol
+	Attachment      string
+	AttachmentState string
+	Symbols         []db.Symbol
 }
 
 type reportRationaleMap struct {
 	Groups       []reportRationaleGroup
 	Attached     int
 	Unattached   int
+	TotalIndexed int
 	TotalVisible int
+	Limited      bool
 }
 
 type reportNextCall struct {
@@ -266,12 +269,18 @@ func writeProjectReportMarkdown(w io.Writer, project db.Project, symbols []db.Sy
 		if _, err := fmt.Fprintf(w, "- Attached rationale: %d · unattached/file-level: %d\n", rationales.Attached, rationales.Unattached); err != nil {
 			return err
 		}
+		if _, err := fmt.Fprintf(w, "- Query surface: `kind=Rationale`, `attachment`, `attachment_state`, `file_path`, `line_span`, `extraction_method`, `source=extracted`; no inferred commentary is emitted.\n"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "- Indexed rationale nodes: %d · visible in report: %d · missing/ambiguous attachment: %d\n", rationales.TotalIndexed, rationales.TotalVisible, rationales.Unattached); err != nil {
+			return err
+		}
 		for _, group := range rationales.Groups {
-			if _, err := fmt.Fprintf(w, "- Attachment: `%s` (%d rationale%s)\n", group.Attachment, len(group.Symbols), plural(len(group.Symbols))); err != nil {
+			if _, err := fmt.Fprintf(w, "- Attachment: `%s` (%d rationale%s; attachment_state=%s)\n", group.Attachment, len(group.Symbols), plural(len(group.Symbols)), group.AttachmentState); err != nil {
 				return err
 			}
 			for _, s := range group.Symbols {
-				if _, err := fmt.Fprintf(w, "  - `%s` — `%s:%d` (confidence: %.2f)\n", s.Name, s.FilePath, s.StartLine, s.ExtractionConfidence); err != nil {
+				if _, err := fmt.Fprintf(w, "  - `%s` — `%s:%s` (source=extracted, method=go_comment_tag, confidence: %.2f)\n", s.Name, s.FilePath, reportLineSpan(s), s.ExtractionConfidence); err != nil {
 					return err
 				}
 			}
@@ -355,12 +364,26 @@ func writeProjectReportJSON(w io.Writer, project db.Project, symbols []db.Symbol
 		ScoringInputs map[string]any `json:"scoring_inputs"`
 	}
 	type rationaleJSON struct {
-		ID         string  `json:"id"`
-		Name       string  `json:"name"`
-		Attachment string  `json:"attachment"`
-		FilePath   string  `json:"file_path"`
-		StartLine  int     `json:"start_line"`
-		Confidence float64 `json:"confidence"`
+		ID               string  `json:"id"`
+		Name             string  `json:"name"`
+		Kind             string  `json:"kind"`
+		Language         string  `json:"language"`
+		Attachment       string  `json:"attachment"`
+		AttachmentState  string  `json:"attachment_state"`
+		FilePath         string  `json:"file_path"`
+		StartLine        int     `json:"start_line"`
+		EndLine          int     `json:"end_line"`
+		LineSpan         string  `json:"line_span"`
+		Confidence       float64 `json:"confidence"`
+		Source           string  `json:"source"`
+		ExtractionMethod string  `json:"extraction_method"`
+		Inferred         bool    `json:"inferred"`
+	}
+	type rationaleGroupJSON struct {
+		Attachment      string          `json:"attachment"`
+		AttachmentState string          `json:"attachment_state"`
+		Count           int             `json:"count"`
+		Rows            []rationaleJSON `json:"rows"`
 	}
 	type exampleEdgeJSON struct {
 		FromID     string  `json:"from_id"`
@@ -395,13 +418,30 @@ func writeProjectReportJSON(w io.Writer, project db.Project, symbols []db.Symbol
 		})
 	}
 	rationaleRows := make([]rationaleJSON, 0, rationales.TotalVisible)
+	rationaleGroups := make([]rationaleGroupJSON, 0, len(rationales.Groups))
 	for _, group := range rationales.Groups {
+		groupRows := make([]rationaleJSON, 0, len(group.Symbols))
 		for _, s := range group.Symbols {
-			rationaleRows = append(rationaleRows, rationaleJSON{
-				ID: s.ID, Name: s.Name, Attachment: group.Attachment, FilePath: s.FilePath,
-				StartLine: s.StartLine, Confidence: s.ExtractionConfidence,
-			})
+			row := rationaleJSON{
+				ID:               s.ID,
+				Name:             s.Name,
+				Kind:             s.Kind,
+				Language:         s.Language,
+				Attachment:       group.Attachment,
+				AttachmentState:  group.AttachmentState,
+				FilePath:         s.FilePath,
+				StartLine:        s.StartLine,
+				EndLine:          s.EndLine,
+				LineSpan:         reportLineSpan(s),
+				Confidence:       s.ExtractionConfidence,
+				Source:           "extracted",
+				ExtractionMethod: "go_comment_tag",
+				Inferred:         false,
+			}
+			rationaleRows = append(rationaleRows, row)
+			groupRows = append(groupRows, row)
 		}
+		rationaleGroups = append(rationaleGroups, rationaleGroupJSON{Attachment: group.Attachment, AttachmentState: group.AttachmentState, Count: len(groupRows), Rows: groupRows})
 	}
 	surprisingRows := make([]packagePairJSON, 0, len(surprising))
 	for _, conn := range surprising {
@@ -437,7 +477,16 @@ func writeProjectReportJSON(w io.Writer, project db.Project, symbols []db.Symbol
 		"entry_points": entryPoints,
 		"hotspots":     hotspotRows,
 		"rationales": map[string]any{
-			"attached": rationales.Attached, "unattached": rationales.Unattached, "rows": rationaleRows,
+			"attached":                        rationales.Attached,
+			"unattached":                      rationales.Unattached,
+			"missing_or_ambiguous_attachment": rationales.Unattached,
+			"total_indexed":                   rationales.TotalIndexed,
+			"total_visible":                   rationales.TotalVisible,
+			"limited":                         rationales.Limited,
+			"query_keys":                      []string{"kind", "attachment", "attachment_state", "file_path", "line_span", "extraction_method", "source"},
+			"source_policy":                   "extracted rationale only; inferred commentary is not emitted",
+			"groups":                          rationaleGroups,
+			"rows":                            rationaleRows,
 		},
 		"surprising_connections": surprisingRows,
 		"next_pincher_calls":     reportNextCalls(project, hotspots, rationales),
@@ -588,17 +637,20 @@ func reportRationales(symbols []db.Symbol, limit int) []db.Symbol {
 }
 
 func reportRationaleMapFor(symbols []db.Symbol, limit int) reportRationaleMap {
-	rationales := reportRationales(symbols, limit)
+	all := reportRationales(symbols, 0)
+	rationales := capSymbols(all, limit)
 	byAttachment := make(map[string][]db.Symbol)
-	out := reportRationaleMap{TotalVisible: len(rationales)}
-	for _, s := range rationales {
-		attachment := strings.TrimSpace(s.Parent)
-		if attachment == "" {
-			attachment = "unattached/file-level"
-			out.Unattached++
-		} else {
+	out := reportRationaleMap{TotalIndexed: len(all), TotalVisible: len(rationales), Limited: limit > 0 && len(all) > limit}
+	for _, s := range all {
+		_, state := reportRationaleAttachment(s)
+		if state == "attached" {
 			out.Attached++
+		} else {
+			out.Unattached++
 		}
+	}
+	for _, s := range rationales {
+		attachment, _ := reportRationaleAttachment(s)
 		byAttachment[attachment] = append(byAttachment[attachment], s)
 	}
 	attachments := make([]string, 0, len(byAttachment))
@@ -615,7 +667,7 @@ func reportRationaleMapFor(symbols []db.Symbol, limit int) reportRationaleMap {
 		return attachments[i] < attachments[j]
 	})
 	for _, attachment := range attachments {
-		group := reportRationaleGroup{Attachment: attachment, Symbols: byAttachment[attachment]}
+		group := reportRationaleGroup{Attachment: attachment, AttachmentState: reportRationaleAttachmentState(attachment), Symbols: byAttachment[attachment]}
 		sort.Slice(group.Symbols, func(i, j int) bool {
 			if group.Symbols[i].FilePath != group.Symbols[j].FilePath {
 				return group.Symbols[i].FilePath < group.Symbols[j].FilePath
@@ -625,6 +677,28 @@ func reportRationaleMapFor(symbols []db.Symbol, limit int) reportRationaleMap {
 		out.Groups = append(out.Groups, group)
 	}
 	return out
+}
+
+func reportRationaleAttachment(s db.Symbol) (string, string) {
+	attachment := strings.TrimSpace(s.Parent)
+	if attachment == "" {
+		return "unattached/file-level", "missing_or_ambiguous"
+	}
+	return attachment, "attached"
+}
+
+func reportRationaleAttachmentState(attachment string) string {
+	if attachment == "unattached/file-level" {
+		return "missing_or_ambiguous"
+	}
+	return "attached"
+}
+
+func reportLineSpan(s db.Symbol) string {
+	if s.EndLine > s.StartLine {
+		return fmt.Sprintf("%d-%d", s.StartLine, s.EndLine)
+	}
+	return fmt.Sprintf("%d", s.StartLine)
 }
 
 func capSymbols(symbols []db.Symbol, limit int) []db.Symbol {
