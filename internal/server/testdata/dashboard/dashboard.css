@@ -175,6 +175,23 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .toolbar-check input{accent-color:var(--accent);cursor:pointer}
 .toolbar-count{color:var(--muted);font-size:12px;margin-left:auto;font-variant-numeric:tabular-nums}
 
+/* ── Graph tab (#1858) ── */
+.graph-toolbar{display:flex;gap:10px;margin-bottom:18px;align-items:center;flex-wrap:wrap}
+.graph-toolbar .search-input{min-width:260px;flex:1}
+.graph-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:32px;display:grid;grid-template-columns:minmax(0,2fr) minmax(260px,1fr);gap:16px}
+#graph-canvas{width:100%;min-height:420px;background:radial-gradient(circle at 50% 40%,rgba(88,166,255,.08),transparent 55%),#0b1018;border:1px solid var(--border);border-radius:8px;display:block}
+.graph-edge{stroke:rgba(139,148,158,.45);stroke-width:1.2}
+.graph-node{fill:var(--accent);stroke:#0d1117;stroke-width:2;cursor:pointer}
+.graph-node.method{fill:var(--purple)}
+.graph-node.class,.graph-node.type{fill:var(--green)}
+.graph-node.variable{fill:var(--orange)}
+.graph-node-label{fill:var(--text);font-size:10px;font-family:ui-monospace,monospace;pointer-events:none;text-shadow:0 1px 2px #000}
+.graph-list{max-height:420px;overflow:auto;border:1px solid var(--border);border-radius:8px;background:#0b1018}
+.graph-list-row{padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px;line-height:1.35}
+.graph-list-row:last-child{border-bottom:none}
+.graph-list-name{font-weight:600;color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.graph-list-meta{color:var(--muted);font-family:ui-monospace,monospace;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
 /* ── Pills ── */
 .pill{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;background:rgba(88,166,255,.12);color:var(--accent);border:1px solid rgba(88,166,255,.2);font-family:ui-monospace,monospace}
 .pill.warn{background:rgba(248,81,73,.1);color:var(--red);border-color:rgba(248,81,73,.3)}
@@ -367,6 +384,8 @@ main{max-width:1200px;margin:0 auto;padding:32px}
   .auth-notice{padding:10px 16px}
   .proj-toolbar{flex-wrap:wrap}
   .proj-toolbar .search-input{flex-basis:100%;min-width:0}
+  .graph-card{grid-template-columns:1fr}
+  .graph-toolbar .search-input{flex-basis:100%;min-width:0}
   .search-bar{flex-wrap:wrap}
   .search-bar input,.search-bar select,.search-bar button{flex-basis:100%}
   .adr-toolbar{flex-direction:column;align-items:stretch}

@@ -90,6 +90,7 @@ const dashboardTemplate = `<!DOCTYPE html>
   <button class="tab-btn" data-action="showTab" data-args='["insights"]'>Insights</button>
   <button class="tab-btn" data-action="showTab" data-args='["doctor"]'>Doctor</button>
   <button class="tab-btn" data-action="showTab" data-args='["projects"]'>Projects</button>
+  <button class="tab-btn" data-action="showTab" data-args='["graph"]'>Graph</button>
   <button class="tab-btn" data-action="showTab" data-args='["search"]'>Search</button>
   <button class="tab-btn" data-action="showTab" data-args='["adrs"]'>ADRs</button>
   <button class="tab-btn" data-action="showTab" data-args='["sessions"]'>Sessions</button>
@@ -190,6 +191,30 @@ const dashboardTemplate = `<!DOCTYPE html>
       <button class="detail-close" data-action="closeDetail" title="Close">&#x2715;</button>
     </div>
     <div id="proj-detail-body"><div class="loading">Loading…</div></div>
+  </div>
+</main>
+</div>
+
+<!-- GRAPH -->
+<div id="tab-graph" class="tab-pane">
+<main>
+  <p class="section-title">Interactive Graph</p>
+  <p class="tab-intro">A bounded, read-only project graph. Use filters to inspect symbols without changing existing dashboard/API behavior.</p>
+  <div class="graph-toolbar">
+    <select class="search-select" id="graph-project" data-action-change="loadGraph"><option value="">Current session project</option></select>
+    <input class="search-input" id="graph-filter" type="text" placeholder="Filter symbols by name, file, kind, or language…" data-action-input="debouncedLoadGraph"/>
+    <select class="search-select" id="graph-limit" data-action-change="loadGraph">
+      <option value="50">50 nodes</option>
+      <option value="150" selected>150 nodes</option>
+      <option value="300">300 nodes</option>
+      <option value="500">500 nodes</option>
+    </select>
+    <button class="search-btn" data-action="loadGraph">Refresh graph</button>
+    <span class="toolbar-count" id="graph-count">&nbsp;</span>
+  </div>
+  <div class="graph-card">
+    <svg id="graph-canvas" viewBox="0 0 960 520" role="img" aria-label="Project symbol graph"><text x="480" y="260" text-anchor="middle" fill="#8b949e">Select a project to load graph data.</text></svg>
+    <div id="graph-list" class="graph-list"><div class="loading">Graph nodes appear here.</div></div>
   </div>
 </main>
 </div>
@@ -432,6 +457,23 @@ main{max-width:1200px;margin:0 auto;padding:32px}
 .toolbar-check input{accent-color:var(--accent);cursor:pointer}
 .toolbar-count{color:var(--muted);font-size:12px;margin-left:auto;font-variant-numeric:tabular-nums}
 
+/* ── Graph tab (#1858) ── */
+.graph-toolbar{display:flex;gap:10px;margin-bottom:18px;align-items:center;flex-wrap:wrap}
+.graph-toolbar .search-input{min-width:260px;flex:1}
+.graph-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:32px;display:grid;grid-template-columns:minmax(0,2fr) minmax(260px,1fr);gap:16px}
+#graph-canvas{width:100%;min-height:420px;background:radial-gradient(circle at 50% 40%,rgba(88,166,255,.08),transparent 55%),#0b1018;border:1px solid var(--border);border-radius:8px;display:block}
+.graph-edge{stroke:rgba(139,148,158,.45);stroke-width:1.2}
+.graph-node{fill:var(--accent);stroke:#0d1117;stroke-width:2;cursor:pointer}
+.graph-node.method{fill:var(--purple)}
+.graph-node.class,.graph-node.type{fill:var(--green)}
+.graph-node.variable{fill:var(--orange)}
+.graph-node-label{fill:var(--text);font-size:10px;font-family:ui-monospace,monospace;pointer-events:none;text-shadow:0 1px 2px #000}
+.graph-list{max-height:420px;overflow:auto;border:1px solid var(--border);border-radius:8px;background:#0b1018}
+.graph-list-row{padding:10px 12px;border-bottom:1px solid var(--border);font-size:12px;line-height:1.35}
+.graph-list-row:last-child{border-bottom:none}
+.graph-list-name{font-weight:600;color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.graph-list-meta{color:var(--muted);font-family:ui-monospace,monospace;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
 /* ── Pills ── */
 .pill{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;background:rgba(88,166,255,.12);color:var(--accent);border:1px solid rgba(88,166,255,.2);font-family:ui-monospace,monospace}
 .pill.warn{background:rgba(248,81,73,.1);color:var(--red);border-color:rgba(248,81,73,.3)}
@@ -624,6 +666,8 @@ main{max-width:1200px;margin:0 auto;padding:32px}
   .auth-notice{padding:10px 16px}
   .proj-toolbar{flex-wrap:wrap}
   .proj-toolbar .search-input{flex-basis:100%;min-width:0}
+  .graph-card{grid-template-columns:1fr}
+  .graph-toolbar .search-input{flex-basis:100%;min-width:0}
   .search-bar{flex-wrap:wrap}
   .search-bar input,.search-bar select,.search-bar button{flex-basis:100%}
   .adr-toolbar{flex-direction:column;align-items:stretch}
@@ -984,6 +1028,7 @@ function showTab(name) {
   if (name === 'adrs') loadADRProjects();
   if (name === 'insights') load();
   if (name === 'doctor') loadDoctor();
+  if (name === 'graph') loadGraph();
   if (name === 'search') document.getElementById('search-q').focus();
 }
 
@@ -1807,13 +1852,125 @@ async function deleteProject(id, name) {
 async function populateSearchProjects() {
   try {
     const data = await fetch('/v1/projects').then(r=>r.json());
+    const projects = data.projects || [];
     const sel = document.getElementById('search-proj');
-    (data.projects||[]).forEach(p => {
-      const o=document.createElement('option');
-      o.value=p.ID||p.id||''; o.textContent=p.Name||p.name||o.value;
-      sel.appendChild(o);
-    });
+    if (sel) {
+      (projects||[]).forEach(p => {
+        const o=document.createElement('option');
+        o.value=p.ID||p.id||''; o.textContent=p.Name||p.name||o.value;
+        sel.appendChild(o);
+      });
+    }
+    populateGraphProjects(projects);
   } catch(e) {}
+}
+
+function populateGraphProjects(projects) {
+  const sel = document.getElementById('graph-project');
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = '<option value="">Current session project</option>';
+  (projects || _allProjects || []).forEach(p => {
+    const id = p.ID || p.id || '';
+    if (!id) return;
+    const o = document.createElement('option');
+    o.value = id;
+    o.textContent = p.Name || p.name || id;
+    sel.appendChild(o);
+  });
+  sel.value = current;
+}
+
+// ── Graph ──────────────────────────────────────────────────────────────────
+let _graphDebounceTimer = null;
+function debouncedLoadGraph() {
+  clearTimeout(_graphDebounceTimer);
+  _graphDebounceTimer = setTimeout(loadGraph, 250);
+}
+
+async function loadGraph() {
+  const canvas = document.getElementById('graph-canvas');
+  const list = document.getElementById('graph-list');
+  const count = document.getElementById('graph-count');
+  if (!canvas || !list) return;
+  const projectSel = document.getElementById('graph-project');
+  let project = projectSel?.value || '';
+  const limit = document.getElementById('graph-limit')?.value || '150';
+  const filter = document.getElementById('graph-filter')?.value || '';
+  canvas.innerHTML = '<text x="480" y="260" text-anchor="middle" fill="#8b949e">Loading graph…</text>';
+  list.innerHTML = skeletonRows(6, 'line');
+  try {
+    if (!project && projectSel && projectSel.options.length <= 1) {
+      await populateSearchProjects();
+    }
+    if (!project && projectSel && projectSel.options.length > 1) {
+      projectSel.selectedIndex = 1;
+      project = projectSel.value;
+    }
+    if (!project) {
+      canvas.innerHTML = '<text x="480" y="260" text-anchor="middle" fill="#8b949e">No indexed projects available for graph view.</text>';
+      list.innerHTML = emptyStateCTA('projects');
+      if (count) count.textContent = 'No graph project';
+      return;
+    }
+    const qs = new URLSearchParams({limit, project});
+    if (filter.trim()) qs.set('filter', filter.trim());
+    const r = await tabFetch('graph', '/v1/graph?'+qs.toString());
+    if (!r.ok) {
+      const msg = await extractErrMsg(r);
+      canvas.innerHTML = '<text x="480" y="260" text-anchor="middle" fill="#f85149">'+esc(msg)+'</text>';
+      setTabError('graph-list', 'Failed to load graph: '+msg, 'loadGraph');
+      return;
+    }
+    const data = await r.json();
+    renderGraph(data);
+    if (count) {
+      const shown = (data.symbols || []).length;
+      count.textContent = shown+' of '+(data.total_symbols||0)+' symbols · '+(data.edges||[]).length+' visible edges'+(data.has_more_symbols?' · capped':'');
+    }
+  } catch(e) {
+    if (e.name === 'AbortError') return;
+    canvas.innerHTML = '<text x="480" y="260" text-anchor="middle" fill="#f85149">'+esc(e.message)+'</text>';
+    setTabError('graph-list', 'Failed to load graph: '+e.message, 'loadGraph');
+  }
+}
+
+function renderGraph(data) {
+  const canvas = document.getElementById('graph-canvas');
+  const list = document.getElementById('graph-list');
+  const nodes = data.symbols || [];
+  const edges = data.edges || [];
+  const W = 960, H = 520, cx = W/2, cy = H/2;
+  if (!nodes.length) {
+    canvas.innerHTML = '<text x="480" y="260" text-anchor="middle" fill="#8b949e">No symbols match this graph filter.</text>';
+    list.innerHTML = '<div class="empty">No graph nodes to show.</div>';
+    return;
+  }
+  const pos = {};
+  const R = Math.min(210, Math.max(90, 26 * Math.sqrt(nodes.length)));
+  nodes.forEach((n, i) => {
+    const a = (Math.PI * 2 * i / nodes.length) - Math.PI/2;
+    pos[n.id] = {x: cx + Math.cos(a)*R, y: cy + Math.sin(a)*R};
+  });
+  let svg = '';
+  edges.forEach(e => {
+    const a = pos[e.from], b = pos[e.to];
+    if (!a || !b) return;
+    svg += '<line class="graph-edge" x1="'+a.x.toFixed(1)+'" y1="'+a.y.toFixed(1)+'" x2="'+b.x.toFixed(1)+'" y2="'+b.y.toFixed(1)+'"><title>'+esc(e.kind||'edge')+'</title></line>';
+  });
+  nodes.forEach(n => {
+    const p = pos[n.id];
+    const cls = String(n.kind || '').toLowerCase();
+    svg += '<circle class="graph-node '+esc(cls)+'" cx="'+p.x.toFixed(1)+'" cy="'+p.y.toFixed(1)+'" r="8"><title>'+esc((n.qualified_name||n.name||n.id)+' · '+(n.file_path||''))+'</title></circle>';
+    svg += '<text class="graph-node-label" x="'+(p.x+11).toFixed(1)+'" y="'+(p.y+4).toFixed(1)+'">'+esc(n.name||'node')+'</text>';
+  });
+  canvas.innerHTML = svg;
+  list.innerHTML = nodes.map(n =>
+    '<div class="graph-list-row">'+
+      '<div class="graph-list-name">'+esc(n.qualified_name||n.name||n.id)+'</div>'+
+      '<div class="graph-list-meta">'+esc(n.kind||'')+' · '+esc(n.language||'')+' · '+esc(n.file_path||'')+(n.start_line?' :'+n.start_line:'')+'</div>'+
+    '</div>'
+  ).join('');
 }
 
 // #547: debounce wrapper. Wraps a function so rapid invocations
@@ -2508,7 +2665,7 @@ function _parseHash() {
 }
 function _restoreFromHash() {
   const { tab, project } = _parseHash();
-  if (['overview','projects','search','adrs','sessions'].includes(tab)) {
+  if (['overview','projects','graph','search','adrs','sessions','insights','doctor'].includes(tab)) {
     showTab(tab);
   }
   // #554: if hash includes a project ID, open the detail panel for it
@@ -2534,12 +2691,13 @@ window.addEventListener('hashchange', _restoreFromHash);
 //   g p   → switch to projects tab
 //   g o   → switch to overview tab
 //   g a   → switch to ADRs tab
+//   g g   → switch to graph tab
 //   g h   → switch to sessions tab (h = history)
 //   Esc   → close detail panel + dismiss confirm modal
 //   j/k   → next/prev project card in Projects tab
 const SHORTCUT_HELP = [
   ['/', 'Focus search'],
-  ['g s', 'Search tab'], ['g p', 'Projects tab'],
+  ['g s', 'Search tab'], ['g p', 'Projects tab'], ['g g', 'Graph tab'],
   ['g o', 'Overview'], ['g a', 'ADRs'], ['g h', 'Sessions'],
   ['j/k', 'Next/prev project'],
   ['Esc', 'Close panel/modal'],
@@ -2572,7 +2730,7 @@ document.addEventListener('keydown', (ev) => {
     return;
   }
   if (_kbdLeader === 'g') {
-    const map = { s: 'search', p: 'projects', o: 'overview', a: 'adrs', h: 'sessions' };
+    const map = { s: 'search', p: 'projects', g: 'graph', o: 'overview', a: 'adrs', h: 'sessions' };
     if (map[ev.key]) { ev.preventDefault(); showTab(map[ev.key]); }
     _kbdLeader = '';
     return;
