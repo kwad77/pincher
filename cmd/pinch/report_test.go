@@ -71,10 +71,12 @@ func TestWriteProjectReportMarkdown(t *testing.T) {
 		"Risk score: 3 (inputs: incoming=1, outgoing=0, degree=1, test-adjacent=0, confidence=1.00)",
 		"## Rationale / design intent",
 		"- Attached rationale: 1 · unattached/file-level: 1",
-		"- Attachment: `server.Handle` (1 rationale)",
-		"  - `WHY: preserve provenance for routing evidence` — `internal/server.go:34` (confidence: 1.00)",
-		"- Attachment: `unattached/file-level` (1 rationale)",
-		"  - `NOTE: file-level rationale stays explicit` — `internal/server.go:6` (confidence: 0.75)",
+		"Query surface: `kind=Rationale`, `attachment`, `attachment_state`, `file_path`, `line_span`, `extraction_method`, `source=extracted`; no inferred commentary is emitted.",
+		"Indexed rationale nodes: 2 · visible in report: 2 · missing/ambiguous attachment: 1",
+		"- Attachment: `server.Handle` (1 rationale; attachment_state=attached)",
+		"  - `WHY: preserve provenance for routing evidence` — `internal/server.go:34` (source=extracted, method=go_comment_tag, confidence: 1.00)",
+		"- Attachment: `unattached/file-level` (1 rationale; attachment_state=missing_or_ambiguous)",
+		"  - `NOTE: file-level rationale stays explicit` — `internal/server.go:6` (source=extracted, method=go_comment_tag, confidence: 0.75)",
 		"## Surprising connections",
 		"- `cmd` → `internal`: 1 edge",
 		"  - Triage: CLI package reaches across an internal package boundary; boundary=CLI/internal coupling; action=check whether the CLI should use a narrower internal facade before adding more calls; example `cmd/app.go::main.main#Function` → `internal/server.go::server.Handle#Function` (CALLS, confidence=1.00, source=resolve_pass)",
@@ -169,6 +171,34 @@ func TestWriteProjectReportJSON_HasStructuredNextCallsAndLegacyArgs(t *testing.T
 			RiskScore     int            `json:"risk_score"`
 			ScoringInputs map[string]any `json:"scoring_inputs"`
 		} `json:"hotspots"`
+		Rationales struct {
+			Attached                     int      `json:"attached"`
+			Unattached                   int      `json:"unattached"`
+			MissingOrAmbiguousAttachment int      `json:"missing_or_ambiguous_attachment"`
+			TotalIndexed                 int      `json:"total_indexed"`
+			TotalVisible                 int      `json:"total_visible"`
+			Limited                      bool     `json:"limited"`
+			QueryKeys                    []string `json:"query_keys"`
+			SourcePolicy                 string   `json:"source_policy"`
+			Rows                         []struct {
+				Kind             string  `json:"kind"`
+				Language         string  `json:"language"`
+				Attachment       string  `json:"attachment"`
+				AttachmentState  string  `json:"attachment_state"`
+				StartLine        int     `json:"start_line"`
+				EndLine          int     `json:"end_line"`
+				LineSpan         string  `json:"line_span"`
+				Source           string  `json:"source"`
+				ExtractionMethod string  `json:"extraction_method"`
+				Inferred         bool    `json:"inferred"`
+				Confidence       float64 `json:"confidence"`
+			} `json:"rows"`
+			Groups []struct {
+				Attachment      string `json:"attachment"`
+				AttachmentState string `json:"attachment_state"`
+				Count           int    `json:"count"`
+			} `json:"groups"`
+		} `json:"rationales"`
 		SurprisingConnections []struct {
 			From            string `json:"from"`
 			To              string `json:"to"`
@@ -197,6 +227,18 @@ func TestWriteProjectReportJSON_HasStructuredNextCallsAndLegacyArgs(t *testing.T
 	}
 	if payload.Hotspots[0].ScoringInputs["degree"] != float64(1) {
 		t.Fatalf("hotspot scoring inputs missing degree: %#v", payload.Hotspots[0].ScoringInputs)
+	}
+	if payload.Rationales.Attached != 1 || payload.Rationales.Unattached != 1 || payload.Rationales.MissingOrAmbiguousAttachment != 1 || payload.Rationales.TotalIndexed != 2 || payload.Rationales.TotalVisible != 2 || payload.Rationales.Limited {
+		t.Fatalf("rationale summary fields changed or missing: %#v", payload.Rationales)
+	}
+	if len(payload.Rationales.QueryKeys) == 0 || !strings.Contains(payload.Rationales.SourcePolicy, "inferred commentary is not emitted") {
+		t.Fatalf("rationale query/provenance policy missing: %#v", payload.Rationales)
+	}
+	if len(payload.Rationales.Rows) != 2 || payload.Rationales.Rows[0].Kind != "Rationale" || payload.Rationales.Rows[0].Attachment != "server.Handle" || payload.Rationales.Rows[0].AttachmentState != "attached" || payload.Rationales.Rows[0].LineSpan != "34" || payload.Rationales.Rows[0].Source != "extracted" || payload.Rationales.Rows[0].ExtractionMethod != "go_comment_tag" || payload.Rationales.Rows[0].Inferred {
+		t.Fatalf("rationale rows are not machine-queryable extracted evidence: %#v", payload.Rationales.Rows)
+	}
+	if len(payload.Rationales.Groups) != 2 || payload.Rationales.Groups[1].AttachmentState != "missing_or_ambiguous" || payload.Rationales.Groups[1].Count != 1 {
+		t.Fatalf("rationale groups missing attachment-state counts: %#v", payload.Rationales.Groups)
 	}
 	if len(payload.SurprisingConnections) == 0 {
 		t.Fatalf("surprising_connections missing from json: %s", b.String())
