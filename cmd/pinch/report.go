@@ -36,6 +36,18 @@ type reportPackagePair struct {
 	To   string
 }
 
+type reportRationaleGroup struct {
+	Attachment string
+	Symbols    []db.Symbol
+}
+
+type reportRationaleMap struct {
+	Groups       []reportRationaleGroup
+	Attached     int
+	Unattached   int
+	TotalVisible int
+}
+
 func runReportCLI(args []string) {
 	os.Exit(reportCLI(args, os.Stdout, os.Stderr))
 }
@@ -121,7 +133,7 @@ func writeProjectReportMarkdown(w io.Writer, project db.Project, symbols []db.Sy
 	edgeKinds := countEdgesBy(edges, func(e db.Edge) string { return emptyAs(e.Kind, "Unknown") })
 	entryPoints := reportEntryPoints(symbols, 10)
 	hotspots := reportHotspots(symbols, edges, 10)
-	rationales := reportRationales(symbols, 10)
+	rationales := reportRationaleMapFor(symbols, 10)
 	surprising := reportSurprisingConnections(edges, 10)
 
 	if _, err := fmt.Fprintf(w, "# Pincher report: %s\n\n", emptyAs(project.Name, project.ID)); err != nil {
@@ -189,14 +201,22 @@ func writeProjectReportMarkdown(w io.Writer, project db.Project, symbols []db.Sy
 	if _, err := fmt.Fprintf(w, "\n## Rationale / design intent\n\n"); err != nil {
 		return err
 	}
-	if len(rationales) == 0 {
+	if len(rationales.Groups) == 0 {
 		if _, err := fmt.Fprintln(w, "- none found in the current index"); err != nil {
 			return err
 		}
 	} else {
-		for _, s := range rationales {
-			if _, err := fmt.Fprintf(w, "- `%s` — `%s:%d`\n", s.Name, s.FilePath, s.StartLine); err != nil {
+		if _, err := fmt.Fprintf(w, "- Attached rationale: %d · unattached/file-level: %d\n", rationales.Attached, rationales.Unattached); err != nil {
+			return err
+		}
+		for _, group := range rationales.Groups {
+			if _, err := fmt.Fprintf(w, "- Attachment: `%s` (%d rationale%s)\n", group.Attachment, len(group.Symbols), plural(len(group.Symbols))); err != nil {
 				return err
+			}
+			for _, s := range group.Symbols {
+				if _, err := fmt.Fprintf(w, "  - `%s` — `%s:%d` (confidence: %.2f)\n", s.Name, s.FilePath, s.StartLine, s.ExtractionConfidence); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -316,6 +336,46 @@ func reportRationales(symbols []db.Symbol, limit int) []db.Symbol {
 		return out[i].StartLine < out[j].StartLine
 	})
 	return capSymbols(out, limit)
+}
+
+func reportRationaleMapFor(symbols []db.Symbol, limit int) reportRationaleMap {
+	rationales := reportRationales(symbols, limit)
+	byAttachment := make(map[string][]db.Symbol)
+	out := reportRationaleMap{TotalVisible: len(rationales)}
+	for _, s := range rationales {
+		attachment := strings.TrimSpace(s.Parent)
+		if attachment == "" {
+			attachment = "unattached/file-level"
+			out.Unattached++
+		} else {
+			out.Attached++
+		}
+		byAttachment[attachment] = append(byAttachment[attachment], s)
+	}
+	attachments := make([]string, 0, len(byAttachment))
+	for attachment := range byAttachment {
+		attachments = append(attachments, attachment)
+	}
+	sort.Slice(attachments, func(i, j int) bool {
+		if attachments[i] == "unattached/file-level" {
+			return false
+		}
+		if attachments[j] == "unattached/file-level" {
+			return true
+		}
+		return attachments[i] < attachments[j]
+	})
+	for _, attachment := range attachments {
+		group := reportRationaleGroup{Attachment: attachment, Symbols: byAttachment[attachment]}
+		sort.Slice(group.Symbols, func(i, j int) bool {
+			if group.Symbols[i].FilePath != group.Symbols[j].FilePath {
+				return group.Symbols[i].FilePath < group.Symbols[j].FilePath
+			}
+			return group.Symbols[i].StartLine < group.Symbols[j].StartLine
+		})
+		out.Groups = append(out.Groups, group)
+	}
+	return out
 }
 
 func capSymbols(symbols []db.Symbol, limit int) []db.Symbol {
