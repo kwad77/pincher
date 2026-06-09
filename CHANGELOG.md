@@ -7,6 +7,62 @@ minors.
 
 ## [Unreleased]
 
+## [1.1.0-rc.1] — 2026-06-09 — Post-v1.0 stabilization, Goose host integration, governance follow-through
+
+First release candidate for the v1.1 minor. v1.1 closes out the post-1.0
+stabilization slice + the Goose Open Plugins host integration, formalizes
+the DCO + SPDX governance gates that shipped operationally with v0.99, and
+scaffolds v1.3 (substrate / language coverage / MCP protocol completeness)
+with [ADR-0005](docs/adr/0005-v1.3-substrate-and-language-coverage.md) and
+umbrella tracker [#1945](https://github.com/kwad77/pincher/issues/1945).
+
+The v1.2 graph-intelligence bundle also shipped on master in this window
+but is documented separately in `[1.2.0-rc.1]` below — v1.1.0-rc.1 is the
+stabilization tag; v1.2.0-rc.1 cumulates the feature surface. Both RC
+binaries share the same tested HEAD; the changelog tells the contract
+story.
+
+### Added
+- **Goose Open Plugins init target.** `pincher init --target=goose` now installs a project-scoped Goose extension that routes developer shell / text-editor tool hooks through `pincher hook-check` ([#1941](https://github.com/kwad77/pincher/pull/1941)). New per-host tutorial at [`docs/tutorials/goose.md`](docs/tutorials/goose.md) and an `integrations/goose/benefits.md` explainer ([#1942](https://github.com/kwad77/pincher/pull/1942), [#1943](https://github.com/kwad77/pincher/pull/1943)).
+- **`pincher doctor` interactive-PATH advisory.** Warns when the binary lives in a Go-install dir (`$GOBIN` / `$GOPATH/bin` / `~/go/bin`) that only an interactive shell rc adds to PATH, so MCP hosts launching from a non-interactive shell can't start the server and the tools silently never register ([#1939](https://github.com/kwad77/pincher/issues/1939)).
+- **DCO sign-off requirement.** Every commit in a PR must now include a `Signed-off-by:` trailer per the [Developer Certificate of Origin](https://developercertificate.org). New `DCO sign-off` GitHub Actions gate runs on `pull_request` and fails if any commit in the diff lacks the trailer. Sign existing commits with `git commit --amend -s` or `git rebase -i <base> --exec 'git commit --amend --no-edit -s'`. Configure git to sign globally with `git config --global format.signoff true`. CONTRIBUTING.md updated with the full procedure. (Drafted v0.99; formally shipping here.)
+- **SPDX-License-Identifier headers on every Go file.** All 747 Go source files now carry `// SPDX-License-Identifier: MIT` at the top (after any leading `//go:build` constraint). Standard machine-readable license attribution recognized by GitHub's dependency-graph, FOSSA, REUSE, and SBOM generators. Helper at `scripts/add-spdx-headers.py` is idempotent. (Drafted v0.99; formally shipping here.)
+- **v1.3 scaffolding.** [ADR-0005: v1.3 substrate, language coverage, and MCP protocol completeness](docs/adr/0005-v1.3-substrate-and-language-coverage.md) accepted, with the umbrella tracker [#1945](https://github.com/kwad77/pincher/issues/1945) holding 16 issues re-milestoned out of v1.1 — Tier-2 AST extractors (Rust / Java / Swift), the long-deferred [#1397](https://github.com/kwad77/pincher/issues/1397) SCP-aligned envelope spike, MCP protocol completions (Resources / Prompts / Progress / Completion / Tool icons), plugin-extractor graduation per ADR-0003, and schema Phase 2b.
+
+### Fixed
+- **Binary-drift reindex write-batch bounding.** Bound the full-reindex symbol batches so maintenance refreshes yield SQLite writer access to live HTTP/session flushes more often, avoiding the dogfood-observed multi-second pauses on live `_meta.tokens_used` flushes during a forced reindex ([#1899](https://github.com/kwad77/pincher/issues/1899), [#1938](https://github.com/kwad77/pincher/pull/1938)).
+- **`branch_overlap` granularity.** Now reports symbols touched by both branch diffs instead of every symbol in shared files, and caps large `overlapping_symbols` responses with summary counts so the merge-order-risk signal isn't inflated by file-granular overlap ([#1910](https://github.com/kwad77/pincher/issues/1910), [#1937](https://github.com/kwad77/pincher/pull/1937)).
+
+### Changed
+- **Packaging.** Homebrew formula and Scoop manifest bumped to `v1.0.0` to track the channel retag.
+- **README rewrite.** Repositioned around token-savings as the auditable, falsifiable core value; foregrounded the `_meta` envelope contract; added two Mermaid diagrams (extraction pipeline + agent loop). ([#1921](https://github.com/kwad77/pincher/pull/1921), [#1922](https://github.com/kwad77/pincher/pull/1922), [#1923](https://github.com/kwad77/pincher/pull/1923), [#1924](https://github.com/kwad77/pincher/pull/1924)).
+
+### DOGFOOD
+- **Goose Open Plugins integration** — written from the dogfood gap that the existing init targets covered Claude Code / Cursor / Codex / Zed but not Goose, the open MCP-host superset. The host-conformance corpus now covers Goose alongside the original five.
+- **Doctor binary-on-interactive-PATH gotcha** ([#1939](https://github.com/kwad77/pincher/issues/1939)) — surfaced when `go install` users had their binary in `~/go/bin/` (Linux convention) but their MCP host launched from a non-interactive shell that didn't source `~/.profile` / `~/.bashrc`. The host's "no pincher tools available" symptom carried no diagnostic; doctor's new advisory points at the cause and remediation.
+- **Hermes Codex MCP transport** ([#1901](https://github.com/kwad77/pincher/issues/1901)) — surfaced when post-supervised-update probes failed to reconnect; held out of v1.1.0 ship for triage on the patch line.
+
+## [1.0.0] — 2026-06-04 — First stable release
+
+v1.0.0 is the channel retag of the held `v0.99.0-rc.1` binary per the
+[v0.99 sign-off protocol](docs/release-signoff-v0.99.md). No code or
+behavior changes from `v0.99.0-rc.1`; this tag commits Pincher to the
+frozen surface promises defined in [ADR-0002](docs/adr/0002-v1-frozen-surface.md):
+
+- 26 MCP tool names + their I/O schemas
+- the `_meta` envelope contract with named `*_v2`/`*_v3` extension points
+- HTTP gateway routes
+- 19 advertised CLI subcommands
+- the `{file}::{qn}#{kind}` symbol-ID format
+
+Schema, pinchQL, resource URIs, and the plugin-extractor API remain
+`evolving` or `experimental` per the ADR. Every frozen surface element
+is gated by a named CI contract test — full audit in ADR-0002.
+
+The release artifact is `pincherMCP v1.0.0`. See [`v0.99.0-rc.1`
+below](#0990-rc1--2026-06-03--release-candidate-for-v099--pre-v10-hold)
+for the actual content this tag promotes.
+
 ## [0.99.0-rc.1] — 2026-06-03 — Release candidate for v0.99 / pre-v1.0 hold
 
 v0.99.0-rc.1 is the first release candidate for the v0.99 final-hardening
@@ -3989,7 +4045,9 @@ Highlights:
 - `docs/index.html`: single-file GitHub Pages landing page.
 - CI coverage gate lowered to 83% to match reality.
 
-[Unreleased]: https://github.com/kwad77/pincher/compare/v0.99.0-rc.1...HEAD
+[Unreleased]: https://github.com/kwad77/pincher/compare/v1.1.0-rc.1...HEAD
+[1.1.0-rc.1]: https://github.com/kwad77/pincher/compare/v1.0.0...v1.1.0-rc.1
+[1.0.0]: https://github.com/kwad77/pincher/compare/v0.99.0-rc.1...v1.0.0
 [0.99.0-rc.1]: https://github.com/kwad77/pincher/compare/v0.98.0...v0.99.0-rc.1
 [0.98.0]: https://github.com/kwad77/pincher/compare/v0.97.3...v0.98.0
 [0.97.3]: https://github.com/kwad77/pincher/compare/v0.97.2...v0.97.3
