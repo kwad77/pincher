@@ -150,6 +150,30 @@ func TestOpenStoreReadOnlyOrCreate_MigratesStaleSchema(t *testing.T) {
 		VALUES('stale', '/tmp/stale', 'stale', 1, 2, 3, 4, 35, '0.95.0', 'master')`); err != nil {
 		t.Fatalf("insert stale project: %v", err)
 	}
+	// Reset edges to its pre-v39 shape so the synthetic downgrade to v35
+	// + replay of migrations 35→39 doesn't trip on the v38→v39
+	// "ALTER TABLE edges ADD COLUMN provenance_tier" duplicate-column
+	// error. Same convention as the projects table reset above — explicit
+	// pre-migration shape, no ALTER survives the downgrade.
+	// (#1945 / ADR-0005.)
+	if _, err := store.DB().Exec(`DROP TABLE edges`); err != nil {
+		t.Fatalf("drop edges: %v", err)
+	}
+	if _, err := store.DB().Exec(`
+		CREATE TABLE edges (
+			id INTEGER PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			from_id TEXT NOT NULL,
+			to_id TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			confidence REAL DEFAULT 1.0,
+			properties TEXT,
+			source TEXT,
+			branch TEXT NOT NULL DEFAULT '',
+			UNIQUE(project_id, from_id, to_id, kind)
+		)`); err != nil {
+		t.Fatalf("create pre-v39 edges: %v", err)
+	}
 	if _, err := store.DB().Exec(`UPDATE schema_version SET version = 35`); err != nil {
 		t.Fatalf("downgrade schema_version: %v", err)
 	}
