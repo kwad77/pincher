@@ -129,8 +129,15 @@ func TestReportCorpus_FidelityAcrossLanguages(t *testing.T) {
 				t.Fatalf("read golden %s: %v\n\nIf this is the first run after adding the test, regenerate with:\n  go test ./cmd/pinch -run TestReportCorpus -update-report-corpus",
 					goldenPath, err)
 			}
-			if got != string(wantBytes) {
-				t.Errorf("%s report drift — review the diff and re-run with -update-report-corpus to refresh\n%s", name, diffLeadingLines(got, string(wantBytes), 40))
+			// Normalise line endings before comparing — Windows git
+			// checkouts convert LF to CRLF by default, which would otherwise
+			// make every byte-identical golden look "drifted" because of
+			// invisible \r characters. The visual diff in the failure
+			// message would show identical lines, masking the cause.
+			gotN := strings.ReplaceAll(got, "\r\n", "\n")
+			wantN := strings.ReplaceAll(string(wantBytes), "\r\n", "\n")
+			if gotN != wantN {
+				t.Errorf("%s report drift — review the diff and re-run with -update-report-corpus to refresh\n%s", name, diffLeadingLines(gotN, wantN, 40))
 			}
 		})
 	}
