@@ -1,6 +1,6 @@
 # ADR-0006: Non-Go AST strategy — regex tier sufficient, non-Go AST work deferred
 
-**Status:** Accepted
+**Status:** Accepted — **Option-D ("regex sufficient, no non-Go AST") superseded in part by [ADR-0008](0008-treesitter-via-pure-go-wasm.md)**, which re-opens this decision on the cost axis (a pure-Go tree-sitter via WASM now exists, satisfying re-open trigger #3). The regex tier remains the universal fallback; ADR-0008 governs AST-tier promotion.
 **Date:** 2026-06-10
 **Decision-maker:** kwad77 (sole maintainer)
 **Issues:** [#1689](https://github.com/kwad77/pincher/issues/1689) (decision request) · [#1452](https://github.com/kwad77/pincher/issues/1452) Swift AST · [#1182](https://github.com/kwad77/pincher/issues/1182) Rust AST · [#1183](https://github.com/kwad77/pincher/issues/1183) Java AST
