@@ -150,7 +150,14 @@ jobs:
         run: |
           mkdir -p covdata
           go test ${{ matrix.packages }} ${{ matrix.test-flags }} -coverprofile=cover.out
-          go tool cover -func=cover.out | awk '/^total/ { gsub("%", "", $3); print $3 }' > coverage-total.txt
+          # Exclude vendored third-party code from the coverage gate. The
+          # subprocess -coverpkg=./... instrumentation folds every package
+          # (including internal/tsbridge, the vendored wazero<->tree-sitter
+          # binding) into cover.out; we don't gate coverage on upstream glue.
+          # The binding's own correctness is covered by its dedicated test
+          # suite (differential + fuzz, #1957), not the line-coverage gate.
+          grep -v '/internal/tsbridge/' cover.out > cover.filtered.out
+          go tool cover -func=cover.filtered.out | awk '/^total/ { gsub("%", "", $3); print $3 }' > coverage-total.txt
 
       - name: Upload coverage profile
         if: matrix.coverage == true
