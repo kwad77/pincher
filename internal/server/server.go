@@ -481,6 +481,11 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 		},
 	)
 	s.registerTools()
+	// #1082: expose `guide` as a user-controlled MCP prompt in addition to
+	// the model-controlled tool. Registering it makes the SDK advertise the
+	// `prompts` capability in initialize; the host surfaces it as a slash
+	// command. Same recommendation core as the tool (computeGuide).
+	s.registerPrompts()
 	// #649: compute capability advertisement once at startup. Routers
 	// consume this from _meta.capabilities to make integration decisions
 	// (do I need to fall back to polling, or can I subscribe via SSE?
@@ -3892,6 +3897,14 @@ func computeCapabilities(s *Server) []string {
 		// must subscribe via logging/setLevel to receive them; pincher
 		// emits opportunistically and never blocks on delivery.
 		"mcp_logging",
+
+		// User-controlled MCP prompts (#1082, v1.3). Pincher registers the
+		// `guide` prompt — the slash-command twin of the `guide` tool —
+		// so a host can offer "recommend tools for a task" directly to the
+		// user instead of waiting for the model to decide to call the tool.
+		// Always wired; declaring it makes the SDK advertise the `prompts`
+		// capability in the initialize handshake.
+		"mcp_prompts",
 	}
 
 	// Conditional capability — present when the operator has wired
@@ -12358,43 +12371,7 @@ func (s *Server) handleGuide(ctx context.Context, req *mcp.CallToolRequest) (*mc
 				"why": "works for understanding tasks too, not just fixes"},
 		}), nil
 	}
-	shape := classifyTaskShape(task)
-	hint := taskHintFromString(task)
-	if hint == "" {
-		// Fall back to the first non-trivial token so search args isn't
-		// completely empty. Edge case for very short or all-stop-word tasks.
-		hint = task
-	}
-	// #1028: guide's schema declares a `project` arg ("Project name or
-	// ID. Defaults to session project."), but the handler used to ignore
-	// it entirely. A typo'd project name returned recommendations as if
-	// the caller hadn't scoped at all — no signal the lookup failed.
-	// Same contract-drift shape as #1024 (stats). Now: surface the
-	// resolution failure via _meta.warnings so the caller sees the
-	// scope hint was dropped. The recommendations themselves stay
-	// shape-driven and are not re-scoped — guide is advisory, not
-	// project-aware in its recommendation logic.
-	var guideProjectWarning string
-	if projectArg := str(args, "project"); projectArg != "" {
-		if _, err := s.resolveProjectID(projectArg); err != nil {
-			guideProjectWarning = fmt.Sprintf(
-				"project %q did not resolve — recommendations are shape-driven and unaffected, but the scope hint was dropped. Call `list` to see indexed projects.",
-				projectArg,
-			)
-		}
-	}
-	// #497: scan the raw task once for an audited tool name. Passed to
-	// guideRecommendations so shapeToolAudit can name the right tool —
-	// the hint string usually drops it.
-	auditedTool := extractAuditedTool(strings.ToLower(task))
-	recommendations := guideRecommendations(shape, hint, auditedTool, task)
-	// #397: if the task mentions a pincher-domain concept, prepend a
-	// concept-aware starter that points at the actual file/symbol where
-	// the concept lives. The shape-default recommendations follow as
-	// the broader workflow.
-	if cc := domainConceptHint(task); cc != nil {
-		recommendations = append([]map[string]string{*cc}, recommendations...)
-	}
+	shape, hint, recommendations, guideProjectWarning := s.computeGuide(task, str(args, "project"))
 
 	data := map[string]any{
 		"task":                   task,
@@ -12409,6 +12386,54 @@ func (s *Server) handleGuide(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		attachWarning(data, guideProjectWarning)
 	}
 	return s.jsonResultWithMeta(data, start, tool, args, 0), nil
+}
+
+// computeGuide is the shape-driven recommendation core shared by the
+// `guide` tool (handleGuide) and the `guide` MCP prompt (handleGuidePrompt,
+// #1082). Both invocation surfaces must return identical recommendations;
+// keeping the logic here rather than forking it prevents tool/prompt drift.
+//
+// task must be non-empty (the empty-task pedagogy lives in the tool handler).
+// projectArg is optional; a non-empty value that fails to resolve yields a
+// non-empty warning (advisory only — recommendations stay shape-driven and
+// are not re-scoped).
+func (s *Server) computeGuide(task, projectArg string) (shape guideShape, hint string, recommendations []map[string]string, projectWarning string) {
+	shape = classifyTaskShape(task)
+	hint = taskHintFromString(task)
+	if hint == "" {
+		// Fall back to the first non-trivial token so search args isn't
+		// completely empty. Edge case for very short or all-stop-word tasks.
+		hint = task
+	}
+	// #1028: guide's schema declares a `project` arg ("Project name or
+	// ID. Defaults to session project."), but the handler used to ignore
+	// it entirely. A typo'd project name returned recommendations as if
+	// the caller hadn't scoped at all — no signal the lookup failed.
+	// Same contract-drift shape as #1024 (stats). Surface the resolution
+	// failure so the caller sees the scope hint was dropped. The
+	// recommendations themselves stay shape-driven and are not re-scoped
+	// — guide is advisory, not project-aware in its recommendation logic.
+	if projectArg != "" {
+		if _, err := s.resolveProjectID(projectArg); err != nil {
+			projectWarning = fmt.Sprintf(
+				"project %q did not resolve — recommendations are shape-driven and unaffected, but the scope hint was dropped. Call `list` to see indexed projects.",
+				projectArg,
+			)
+		}
+	}
+	// #497: scan the raw task once for an audited tool name. Passed to
+	// guideRecommendations so shapeToolAudit can name the right tool —
+	// the hint string usually drops it.
+	auditedTool := extractAuditedTool(strings.ToLower(task))
+	recommendations = guideRecommendations(shape, hint, auditedTool, task)
+	// #397: if the task mentions a pincher-domain concept, prepend a
+	// concept-aware starter that points at the actual file/symbol where
+	// the concept lives. The shape-default recommendations follow as
+	// the broader workflow.
+	if cc := domainConceptHint(task); cc != nil {
+		recommendations = append([]map[string]string{*cc}, recommendations...)
+	}
+	return shape, hint, recommendations, projectWarning
 }
 
 // extractTextFromHTML strips HTML markup and returns (title, bodyText).
