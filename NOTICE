@@ -125,6 +125,29 @@ To regenerate this file with full transitive coverage:
 truth pre-1.0.)
 
 ================================================================================
+Tree-sitter AST extraction (ADR-0008, internal/tsbridge)
+================================================================================
+
+github.com/tetratelabs/wazero v1.12.0
+  License: Apache License 2.0
+  Used as: pure-Go (CGO_ENABLED=0) WebAssembly runtime that executes the
+  bundled tree-sitter parser. Apache 2.0 Section 4(d) attribution satisfied
+  by this entry.
+
+github.com/malivvan/tree-sitter (MIT)
+  License: MIT — Copyright (c) malivvan
+  Used as: the wazero<->tree-sitter binding glue, vendored and adapted into
+  internal/tsbridge/ (memory marshaling, parser/node/query API). Each vendored
+  file carries an SPDX-License-Identifier and an adaptation note.
+
+tree-sitter and tree-sitter-rust grammar
+  License: MIT — Copyright (c) 2018-2024 Max Brunsfeld and tree-sitter
+  contributors
+  Used as: the real upstream tree-sitter C runtime + Rust grammar, compiled to
+  WebAssembly (internal/tsbridge/ts.wasm) with `zig cc` and embedded. The .wasm
+  is a build artifact produced from the upstream MIT-licensed sources.
+
+================================================================================
 Pincher project itself
 ================================================================================
 
