@@ -1771,6 +1771,15 @@ END;`,
 	// planner variants and future non-recursive trace helpers.
 	`CREATE INDEX IF NOT EXISTS idx_edge_project_from_kind_to ON edges(project_id, from_id, kind, to_id);
 	 CREATE INDEX IF NOT EXISTS idx_edge_project_to_kind_from ON edges(project_id, to_id, kind, from_id);`,
+
+	// v38 → v39: first-class edge provenance tier for deterministic
+	// cross-modal graph edges. Existing edges default to EXTRACTED because
+	// they were emitted by direct extractors or current resolver passes;
+	// future cross-modal resolver work can write INFERRED / AMBIGUOUS
+	// without hiding that audit signal in properties JSON. Pure additive
+	// DDL, deliberately non-invalidating so this groundwork does not force
+	// a full reindex after the #1899 writer-starvation fix.
+	`ALTER TABLE edges ADD COLUMN provenance_tier TEXT NOT NULL DEFAULT 'EXTRACTED';`,
 }
 
 // schemaMigrationInvalidates classifies each migration in schemaMigrations
@@ -1854,6 +1863,7 @@ var schemaMigrationInvalidates = []MigrationInvalidates{
 	invalidatesNothing, // [34] v35→v36: projects.index_state/index_started_at (metadata-only crash recovery marker)
 	invalidatesNothing, // [35] v36→v37: edge project/to_id grouping index for hotspots (pure DDL; no extracted data changes)
 	invalidatesNothing, // [36] v37→v38: trace endpoint planner indexes (pure DDL; no extracted data changes)
+	invalidatesNothing, // [37] v38→v39: edges.provenance_tier DEFAULT 'EXTRACTED' (pure additive DDL; existing edge data remains valid)
 }
 
 func init() {
@@ -2598,6 +2608,11 @@ CREATE TABLE IF NOT EXISTS edges (
     kind       TEXT    NOT NULL,
     confidence REAL    DEFAULT 1.0,
     properties TEXT,
+    -- provenance_tier column added by v39 migration (#1945 / ADR-0005).
+    -- Intentionally not in baseline so the ALTER TABLE in the migration
+    -- doesn't double-declare on a fresh-DB path — same pattern as
+    -- projects.schema_version_at_index (v15) and other later-added
+    -- columns documented above.
     UNIQUE(project_id, from_id, to_id, kind)
 );
 CREATE INDEX IF NOT EXISTS idx_edge_from ON edges(from_id);
@@ -2678,6 +2693,13 @@ type Edge struct {
 	Kind       string
 	Confidence float64
 	Properties map[string]any
+	// ProvenanceTier records HOW the relationship was derived. It is
+	// categorical and queryable (schema v39): EXTRACTED for source-explicit
+	// relations, INFERRED for deterministic unique heuristic matches, and
+	// AMBIGUOUS when more than one deterministic candidate exists. It is
+	// intentionally separate from Confidence, which remains the numeric
+	// strength of the edge.
+	ProvenanceTier string
 	// Source is the origin marker added in schema v20 (#475). One of:
 	//   - "per_file"     (default; per-file extractor goroutine output)
 	//   - "resolve_pass" (resolveCalls / resolveImports / resolveReads)
@@ -2691,6 +2713,25 @@ type Edge struct {
 	// widen the UNIQUE constraint to include branch so the same
 	// (from_id, to_id, kind) tuple can coexist across branches.
 	Branch string
+}
+
+const (
+	EdgeProvenanceExtracted = "EXTRACTED"
+	EdgeProvenanceInferred  = "INFERRED"
+	EdgeProvenanceAmbiguous = "AMBIGUOUS"
+)
+
+func normalizeEdgeProvenanceTier(tier string) string {
+	switch strings.TrimSpace(strings.ToUpper(tier)) {
+	case EdgeProvenanceInferred:
+		return EdgeProvenanceInferred
+	case EdgeProvenanceAmbiguous:
+		return EdgeProvenanceAmbiguous
+	case EdgeProvenanceExtracted, "":
+		return EdgeProvenanceExtracted
+	default:
+		return EdgeProvenanceExtracted
+	}
 }
 
 // Project summarises an indexed repository.
@@ -3926,8 +3967,8 @@ func (s *Store) BulkUpsertEdges(edges []Edge) error {
 // INSERT shape has exactly one definition.
 func insertEdgesTx(tx *sql.Tx, edges []Edge) error {
 	stmt, err := tx.Prepare(`
-	INSERT OR IGNORE INTO edges(project_id, from_id, to_id, kind, confidence, properties, source, branch)
-	VALUES (?,?,?,?,?,?,?,?)`)
+	INSERT OR IGNORE INTO edges(project_id, from_id, to_id, kind, confidence, properties, source, branch, provenance_tier)
+	VALUES (?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return err
 	}
@@ -3943,7 +3984,15 @@ func insertEdgesTx(tx *sql.Tx, edges []Edge) error {
 		if source == "" {
 			source = "per_file"
 		}
-		if _, err := stmt.Exec(e.ProjectID, e.FromID, e.ToID, e.Kind, e.Confidence, ns(propsJSON), source, e.Branch); err != nil {
+		// Default empty ProvenanceTier to EXTRACTED so existing call
+		// sites (per-file extractors, current resolve passes) don't need
+		// to set it explicitly. Schema v39 #1945 / ADR-0005 — the tier
+		// is the substrate that v1.4+ inferred-edge work writes into.
+		tier := e.ProvenanceTier
+		if tier == "" {
+			tier = EdgeProvenanceExtracted
+		}
+		if _, err := stmt.Exec(e.ProjectID, e.FromID, e.ToID, e.Kind, e.Confidence, ns(propsJSON), source, e.Branch, tier); err != nil {
 			return err
 		}
 	}
@@ -4481,7 +4530,7 @@ func (s *Store) EdgesToScoped(projectID, toID string, kinds []string) ([]Edge, e
 }
 
 func (s *Store) queryEdges(projectID, col, id string, kinds []string) ([]Edge, error) {
-	q := `SELECT id, project_id, from_id, to_id, kind, confidence, properties FROM edges WHERE ` + col + `=?`
+	q := `SELECT id, project_id, from_id, to_id, kind, confidence, properties, provenance_tier FROM edges WHERE ` + col + `=?`
 	args := []any{id}
 	if projectID != "" {
 		q += " AND project_id=?"
@@ -4508,7 +4557,7 @@ func (s *Store) queryEdges(projectID, col, id string, kinds []string) ([]Edge, e
 	for rows.Next() {
 		var e Edge
 		var propsStr sql.NullString
-		if err := rows.Scan(&e.ID, &e.ProjectID, &e.FromID, &e.ToID, &e.Kind, &e.Confidence, &propsStr); err != nil {
+		if err := rows.Scan(&e.ID, &e.ProjectID, &e.FromID, &e.ToID, &e.Kind, &e.Confidence, &propsStr, &e.ProvenanceTier); err != nil {
 			return nil, err
 		}
 		if propsStr.Valid && propsStr.String != "" {
@@ -4525,7 +4574,7 @@ func (s *Store) queryEdges(projectID, col, id string, kinds []string) ([]Edge, e
 // empty slice so JSON consumers can iterate without a null check.
 func (s *Store) ListEdgesForProject(projectID string) ([]Edge, error) {
 	rows, err := s.ro.Query(
-		`SELECT id, project_id, from_id, to_id, kind, confidence, properties, source, branch
+		`SELECT id, project_id, from_id, to_id, kind, confidence, properties, source, branch, provenance_tier
 		   FROM edges WHERE project_id=? ORDER BY id`, projectID)
 	if err != nil {
 		return nil, err
@@ -4536,7 +4585,7 @@ func (s *Store) ListEdgesForProject(projectID string) ([]Edge, error) {
 		var e Edge
 		var propsStr, source, branch sql.NullString
 		if err := rows.Scan(&e.ID, &e.ProjectID, &e.FromID, &e.ToID, &e.Kind,
-			&e.Confidence, &propsStr, &source, &branch); err != nil {
+			&e.Confidence, &propsStr, &source, &branch, &e.ProvenanceTier); err != nil {
 			return nil, err
 		}
 		if propsStr.Valid && propsStr.String != "" {
