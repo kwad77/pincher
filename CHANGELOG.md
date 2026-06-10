@@ -7,6 +7,55 @@ minors.
 
 ## [Unreleased]
 
+## [1.3.0-rc.1] — 2026-06-10 — Substrate separability + MCP protocol completeness
+
+First release candidate for the v1.3 minor. v1.3 is a **substrate +
+protocol** release, not a user-facing feature sprint: it lands the
+provenance-tier separability column that every future inferred-edge
+feature depends on (per [ADR-0004](docs/adr/0004-v1.2-pincher-native-graph-intelligence.md)'s
+separability non-goal), advances MCP protocol completeness with two
+additive capability surfaces (progress notifications + a user-controlled
+prompt), and records the architectural decisions that scope v1.x — the
+non-Go AST strategy, the schema multi-branch deferral, and the SCP
+envelope alignment spike. See [ADR-0005](docs/adr/0005-v1.3-substrate-and-language-coverage.md)
+for the v1.3 framing.
+
+Everything in this RC is **additive** against `v1.2.0-rc.2`: a new
+`edges.provenance_tier` column (additive DDL, `invalidatesNothing` — no
+reindex forced), two new `_meta.capabilities` tags (`schema_v39`,
+`mcp_prompts`), and two new MCP protocol surfaces. No tool was renamed,
+removed, or had its I/O schema changed; the `guide` tool is unchanged.
+The frozen-surface review (ADR-0002) against `v1.2.0-rc.2` passed clean.
+
+The MCP-completeness story is carried by **Progress (#1080)** and
+**Prompts (#1082)**. The remaining MCP capability surfaces — Resources
+([#1083](https://github.com/kwad77/pincher/issues/1083)), tool icons
+([#1079](https://github.com/kwad77/pincher/issues/1079)) — and
+**Completion ([#1084](https://github.com/kwad77/pincher/issues/1084))**,
+which is unimplementable against the current SDK (`CompleteReference` has
+no `ref/tool`), are documented decisions deferred to v1.4, not gaps. The
+v1.3 resolver/perf and schema-granularity threads
+([#1611](https://github.com/kwad77/pincher/issues/1611),
+[#1642](https://github.com/kwad77/pincher/issues/1642),
+[#1701](https://github.com/kwad77/pincher/issues/1701)) and the
+plugin-extractor surface ([#1333](https://github.com/kwad77/pincher/issues/1333))
+were each adversarially reviewed and deferred to v1.4 with recorded
+rationale.
+
+### Added
+- **MCP `notifications/progress` for the `index` tool ([#1080](https://github.com/kwad77/pincher/issues/1080)).** When a client supplies a `progressToken` on an `index` call, pincher now streams `notifications/progress` events (MCP 2025-11-25 progress utility) polled from the indexer's atomic file counters, so a UI host can render a live progress bar during the 30s+ fresh-repo pass instead of seeing `_meta.index_in_progress` on the *next* unrelated call. Strictly opt-in — no `progressToken` or no live MCP session means zero notifier overhead. Cancellation already works via the SDK's `notifications/cancelled` → ctx-cancel mapping, which `index` honors per-iteration. The notifier goroutine is joined before the handler returns (no leak). Generic `runWithProgress` helper in `internal/server/progress_notify.go`; `fetch` + `rebuild_fts` granular progress tracked for v1.4 in #1950.
+- **MCP `guide` prompt — user-controlled twin of the `guide` tool ([#1082](https://github.com/kwad77/pincher/issues/1082)).** Pincher now registers `guide` as an MCP **prompt** (MCP 2025-11-25 prompts utility) in addition to the existing tool. Prompts are user-controlled primitives: a host surfaces `guide` in its slash-command / menu UI, the user types their task, and `prompts/get` returns the same 2-3 shape-driven pincher tool recommendations the `guide` tool produces — no LLM round-trip needed to decide to call it. The tool stays unchanged for back-compat. Both surfaces share one recommendation core (`computeGuide`) so they cannot drift. Declaring the prompt makes the SDK advertise the `prompts` capability in `initialize`; pincher also advertises `mcp_prompts` in `_meta.capabilities`. New handler in `internal/server/guide_prompt.go`.
+- **ADR-0007: schema Phase 2b deferral ([#1371](https://github.com/kwad77/pincher/issues/1371)).** Accepted: schema Phase 2b (widen PKs/UNIQUEs on `symbols` / `edges` / `files` / `pending_edges` to include `branch` so two branches of the same project coexist in one DB without re-index on switch-back) is deferred for v1.x. The Phase 2a doctor branch-drift advisory (shipped v0.96) is the v1.x answer to multi-branch correctness; coexistence-without-reindex is a UX improvement whose cost — table rebuild + FTS5 vtab recreate + read-path threading on every query path — is not justified by current dogfood evidence. Re-open trigger: 3+ `dogfood-found severity-2+` issues on a new `axis-multi-branch-reindex` label + measured branch-switch frequency budget + staged-rollout plan respecting the [#1371](https://github.com/kwad77/pincher/issues/1371) caveat that the work "should be cut cleanly from a stable base and merged on its own." [ADR-0005](docs/adr/0005-v1.3-substrate-and-language-coverage.md) v1.3 scope updated: schema Phase 2b marked resolved-deferred alongside the [ADR-0006](docs/adr/0006-non-go-ast-strategy.md) Tier-2 AST deferral. v1.3.0 ship cut now: substrate (provenance-tier ✅, schema Phase 2b deferred) + MCP capability + plugin-extractor decision.
+- **SCP-aligned envelope strategic review ([#1397](https://github.com/kwad77/pincher/issues/1397)).** Recorded `docs/architecture/scp-alignment-review.md` — the v1.3 spike outcome (ADR-0005 §7) on whether pincher's `_meta` envelope should align with the Stoa-family SCP (Stoa Component Protocol) envelope. Findings: `request_id`↔`ID` (both ULID) and the `/v1/events` SSE body↔`Payload` map exactly; cost-accounting and agent-steering fields stay pincher-specific by design; `RunID`/`ParentID` lineage is out of scope absent multi-step orchestrated runs. Decision: **no `_meta` change in v1.3** — the default posture is a consumer-side projection adapter; any future alignment ships as additive `*_v3` fields (`ts`/`kind`/consolidated `provenance`) behind hard latency/token/allocation perf gates, never redefining existing fields (ADR-0002). The v1.3 provenance-tier substrate is the precondition that makes a future consolidated `_meta.provenance` projection clean.
+- **ADR-0006: non-Go AST strategy ([#1689](https://github.com/kwad77/pincher/issues/1689)).** Accepted: pincher commits to the regex tier (0.85) as the v1.x answer for Swift / Rust / Java; no bundled-helper, build-on-first-use, or tree-sitter+CGo work ships in v1.x without concrete dogfood evidence that the regex tier is materially blocking user value. Three issues close as deferred ([#1452](https://github.com/kwad77/pincher/issues/1452) Swift, [#1182](https://github.com/kwad77/pincher/issues/1182) Rust, [#1183](https://github.com/kwad77/pincher/issues/1183) Java) with a documented re-open trigger (>3 `dogfood-found` `severity-2+` issues per language axis + measured falsifiability budget + pure-Go-preserving distribution plan). [ADR-0005](docs/adr/0005-v1.3-substrate-and-language-coverage.md) v1.3 scope updated: Tier-2 AST extractors marked resolved-deferred, and the v1.3.0 ship-cut minimum drops the language-extractor requirement.
+- **Provenance-tier substrate column on edges (v1.3 groundwork) ([#1945](https://github.com/kwad77/pincher/issues/1945)).** Schema v38 → v39 adds `edges.provenance_tier TEXT NOT NULL DEFAULT 'EXTRACTED'` plus the corresponding `Edge.ProvenanceTier` Go field and three constants (`EdgeProvenanceExtracted`, `EdgeProvenanceInferred`, `EdgeProvenanceAmbiguous`). Existing edges default to `EXTRACTED` because they were emitted by direct extractors or current resolver passes; future cross-modal / inferred / plugin-emitted edges write `INFERRED` or `AMBIGUOUS` so the audit signal stays out of the `properties` JSON. Required precondition per [ADR-0005](docs/adr/0005-v1.3-substrate-and-language-coverage.md) — separability is what enables any future inferred-edge feature in v1.4+. Pure additive DDL, classified `invalidatesNothing` so the bump does not force a reindex.
+
+### DOGFOOD
+- **`#1084` was found unimplementable by reading the SDK, not by building it.** The v1.3 loop's adversarial review of MCP `completion/complete` discovered the go-sdk's `CompleteReference.Type` only accepts `ref/prompt` / `ref/resource` — there is no `ref/tool`, so tool-argument completion is not expressible in MCP today. Recording the spec mismatch and deferring to v1.4 saved building a dead-end surface.
+- **The provenance-tier migration caught the baseline-vs-ALTER duplicate-column trap.** Landing `edges.provenance_tier` surfaced that a fresh DB runs the baseline `CREATE TABLE` *and* the `ALTER` migration — so the column must be omitted from the baseline or fresh-DB creation fails with "duplicate column name". Fixed before merge; the fan-out (schema-v39 capability tag, 7 corpus snapshots, doctor/architecture docs) was reconciled in the same PR.
+- **The `#1080` progress tests caught an SDK token-write gotcha.** The SDK's `setProgressToken` silently drops the write when `Meta` is nil (it allocates a throwaway local map), so the in-memory test harness had to initialize `Meta: mcp.Meta{}` before `SetProgressToken`. Real wire requests always arrive with `Meta` populated; only test construction hits the edge — documented inline so the next harness author doesn't relearn it.
+- **The `#1642` triage corrected the issue's own premise by reading the extractor.** The recorded fix shape assumed IMPORTS edges carry a per-file `FromQN`; reading `internal/ast/extractor.go` showed `fileModuleQN` is already the package directory, so the duplicates are byte-identical rows and the eventual fix is a pure persist-time dedupe with no edge-semantics change — a materially lower-risk v1.4 task than the issue described.
+
 ## [1.2.0-rc.2] — 2026-06-10 — Tier 1 test-coverage hardening on top of v1.2.0-rc.1
 
 `v1.2.0-rc.2` is `v1.2.0-rc.1` plus three additive Tier 1 test gates landed in [#1946](https://github.com/kwad77/pincher/pull/1946) — no feature or schema changes vs v1.2.0-rc.1. Re-cut so the v1.2 release artifact is the binary that passed the new gates from a clean tag push.
