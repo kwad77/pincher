@@ -7,6 +7,25 @@ minors.
 
 ## [Unreleased]
 
+## [1.2.0-rc.2] — 2026-06-10 — Tier 1 test-coverage hardening on top of v1.2.0-rc.1
+
+`v1.2.0-rc.2` is `v1.2.0-rc.1` plus three additive Tier 1 test gates landed in [#1946](https://github.com/kwad77/pincher/pull/1946) — no feature or schema changes vs v1.2.0-rc.1. Re-cut so the v1.2 release artifact is the binary that passed the new gates from a clean tag push.
+
+### Added (test infrastructure)
+- **Cross-language `pincher report` markdown fidelity snapshots** in `cmd/pinch/report_corpus_fidelity_test.go`. Indexes `testdata/corpus/{python-app, go-project, node-monorepo}`, normalises temp paths + per-run `IndexedAt`, compares against golden files at `testdata/corpus/<name>.report.md`. Catches v1.2 report-format drift across three language profiles instead of just the Pincher self-index. Regenerate with `go test ./cmd/pinch -run TestReportCorpus -update-report-corpus`.
+- **`pincher_report.v1` JSON wire contract** in `cmd/pinch/report_v1_contract_test.go`. Pins the v1.2-shipped top-level fields (`format`, `generated_at`, `project`, `counts`, `entry_points`, `hotspots`, `rationales`, `surprising_connections`, `next_pincher_calls`, `provenance`), nested object shapes, rationale `query_keys` verbs ([#1913](https://github.com/kwad77/pincher/issues/1913) / [#1920](https://github.com/kwad77/pincher/pull/1920)), and the `next_pincher_calls[*].args` structured-object contract from [#1917](https://github.com/kwad77/pincher/issues/1917).
+- **Race detector promoted to a release gate** in `.github/workflows/race-detector.yml`. Now triggers on push to `v*` tags in addition to the daily cron and manual `workflow_dispatch`. Every RC and stable tag now pays the ~20–25 min race-instrumented test bill before its artifacts are trusted; previously race was advisory-only.
+
+### DOGFOOD
+- The cross-language fidelity test caught two cross-platform normalisation bugs during the PR cycle that would otherwise have shipped silently: macOS `/tmp → /private/tmp` symlink resolution making `project.ID != project.Path`, and Windows `%q`-escaped paths in the export-graph hint (`d:\\a\\pincher\\...`). Both were normalised before merge. The test was worth shipping for those alone.
+
+## [1.1.0-rc.2] — 2026-06-10 — Tier 1 test-coverage hardening on top of v1.1.0-rc.1
+
+`v1.1.0-rc.2` is `v1.1.0-rc.1` plus the same Tier 1 hardening landed in [#1946](https://github.com/kwad77/pincher/pull/1946). Same RC binary contents as v1.2.0-rc.2; documented separately because the stabilization (v1.1) and feature-cumulative (v1.2) contracts differ.
+
+### Added (test infrastructure)
+- Same three Tier 1 gates listed in `[1.2.0-rc.2]` above. The race-detector promotion is the v1.1-relevant headline — every future v1.1.x stable tag will now also pay the race-instrumented test bill at tag time.
+
 ## [1.2.0-rc.1] — 2026-06-09 — Pincher-native graph intelligence and routing leverage
 
 First release candidate for the v1.2 minor. v1.2 turns Pincher's
@@ -4091,7 +4110,9 @@ Highlights:
 - `docs/index.html`: single-file GitHub Pages landing page.
 - CI coverage gate lowered to 83% to match reality.
 
-[Unreleased]: https://github.com/kwad77/pincher/compare/v1.2.0-rc.1...HEAD
+[Unreleased]: https://github.com/kwad77/pincher/compare/v1.2.0-rc.2...HEAD
+[1.2.0-rc.2]: https://github.com/kwad77/pincher/compare/v1.2.0-rc.1...v1.2.0-rc.2
+[1.1.0-rc.2]: https://github.com/kwad77/pincher/compare/v1.1.0-rc.1...v1.1.0-rc.2
 [1.2.0-rc.1]: https://github.com/kwad77/pincher/compare/v1.1.0-rc.1...v1.2.0-rc.1
 [1.1.0-rc.1]: https://github.com/kwad77/pincher/compare/v1.0.0...v1.1.0-rc.1
 [1.0.0]: https://github.com/kwad77/pincher/compare/v0.99.0-rc.1...v1.0.0
