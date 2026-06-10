@@ -145,21 +145,31 @@ func TestReportCorpus_FidelityAcrossLanguages(t *testing.T) {
 
 // normaliseCorpusReport replaces machine-specific paths, IDs, and the
 // per-run IndexedAt timestamp with stable placeholders so the golden
-// file is portable across the TempDir hierarchy and CI runners.
+// file is portable across platforms (Linux, macOS where `/tmp` is a
+// `/private/tmp` symlink, and Windows where paths use backslashes and
+// some report passages `%q`-escape the path so backslashes appear
+// doubled in the rendered text).
 //
-// project.ID and project.Path can diverge on macOS (where `/tmp` is a
-// symlink to `/private/tmp` so `os.Getwd()` resolves further than
-// `t.TempDir()` produces) and on Windows (drive letters, separators).
-// We unconditionally replace both with the same stable marker so the
-// golden file looks identical regardless of platform — the project's
-// "identity" in the report is the corpus name, not the absolute path.
+// We unconditionally replace both project.ID and project.Path against
+// every plausible encoded form: raw, `\\`-escaped (the `%q` shape), and
+// the forward-slash form (in case any future report site
+// `filepath.ToSlash`-es it). The project's "identity" in the snapshot
+// is the corpus name, not whichever path or encoding the platform chose.
 func normaliseCorpusReport(s string, project db.Project, corpusName string) string {
 	stable := "/corpus/" + corpusName
-	if project.Path != "" {
-		s = strings.ReplaceAll(s, project.Path, stable)
-	}
-	if project.ID != "" && project.ID != project.Path {
-		s = strings.ReplaceAll(s, project.ID, stable)
+	for _, raw := range []string{project.Path, project.ID} {
+		if raw == "" {
+			continue
+		}
+		for _, candidate := range []string{
+			raw,
+			strings.ReplaceAll(raw, `\`, `\\`),
+			filepath.ToSlash(raw),
+		} {
+			if candidate != "" {
+				s = strings.ReplaceAll(s, candidate, stable)
+			}
+		}
 	}
 	s = indexedAtRE.ReplaceAllString(s, "- Indexed: 2026-01-01T00:00:00Z")
 	return s
