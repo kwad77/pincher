@@ -4782,7 +4782,21 @@ func (s *Server) handleIndex(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		}
 	}
 
-	result, err := s.indexer.Index(ctx, path, force)
+	// #1080: emit notifications/progress during the index pass when the
+	// client supplied a progressToken. Keyed on the project the pass
+	// writes to so GetProgress reads the right atomic counters. Opt-in;
+	// no-op when no token / no session (see runWithProgress).
+	progressProjectID := db.ProjectIDFromPath(path)
+	var result *index.IndexResult
+	err := s.runWithProgress(ctx, req,
+		func() (int64, int64, bool) { return s.indexer.GetProgress(progressProjectID) },
+		"indexed files",
+		func() error {
+			var ierr error
+			result, ierr = s.indexer.Index(ctx, path, force)
+			return ierr
+		},
+	)
 	if err != nil {
 		// #712: failure-as-pedagogy — the most common index error is a
 		// path that doesn't exist on disk; point at `list` so the caller
