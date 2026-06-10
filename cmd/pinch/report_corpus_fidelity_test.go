@@ -139,16 +139,20 @@ func TestReportCorpus_FidelityAcrossLanguages(t *testing.T) {
 // normaliseCorpusReport replaces machine-specific paths, IDs, and the
 // per-run IndexedAt timestamp with stable placeholders so the golden
 // file is portable across the TempDir hierarchy and CI runners.
+//
+// project.ID and project.Path can diverge on macOS (where `/tmp` is a
+// symlink to `/private/tmp` so `os.Getwd()` resolves further than
+// `t.TempDir()` produces) and on Windows (drive letters, separators).
+// We unconditionally replace both with the same stable marker so the
+// golden file looks identical regardless of platform — the project's
+// "identity" in the report is the corpus name, not the absolute path.
 func normaliseCorpusReport(s string, project db.Project, corpusName string) string {
 	stable := "/corpus/" + corpusName
 	if project.Path != "" {
 		s = strings.ReplaceAll(s, project.Path, stable)
 	}
-	// project.ID is the canonical project ID, which on temp-dir mode is the
-	// absolute path's content hash. Don't try to replace it directly —
-	// instead, replace anywhere it shows up by its path substring.
 	if project.ID != "" && project.ID != project.Path {
-		s = strings.ReplaceAll(s, project.ID, "CORPUS_"+strings.ToUpper(strings.ReplaceAll(corpusName, "-", "_")))
+		s = strings.ReplaceAll(s, project.ID, stable)
 	}
 	s = indexedAtRE.ReplaceAllString(s, "- Indexed: 2026-01-01T00:00:00Z")
 	return s
