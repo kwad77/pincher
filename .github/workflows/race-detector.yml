@@ -1,9 +1,23 @@
 name: Race detector
 
+# Triggers:
+#   - push to a `v*` tag — release gate. Every RC / stable tag pays the
+#     ~20–25 min race-instrumented test bill before the artifacts are
+#     trusted. Promoted from advisory-only in v1.1.0-rc.2 per Tier 1
+#     test-coverage hardening; before that race only ran via the daily
+#     cron and was not part of the release path.
+#   - daily schedule — drift detection between releases. Catches races
+#     introduced by non-release commits on routine master pushes that
+#     don't pay the per-commit race bill.
+#   - workflow_dispatch — manual trigger for ad-hoc verification on any
+#     ref.
 on:
   workflow_dispatch:
   schedule:
     - cron: '17 10 * * *'
+  push:
+    tags:
+      - 'v*'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -27,7 +41,7 @@ jobs:
         env:
           CGO_ENABLED: 1
         # Race instrumentation is expensive on SQLite-heavy packages.
-        # Keep the full signal out of release-blocking CI, but bound the
-        # standalone advisory workflow so it cannot sit in the runner pool
-        # indefinitely.
+        # The 1800s test timeout bounds a single internal-package shard's
+        # cost; the workflow-level timeout-minutes: 35 above bounds the
+        # whole job so it cannot sit in the runner pool indefinitely.
         run: go test -race ./internal/... -timeout 1800s
