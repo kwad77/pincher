@@ -9,7 +9,6 @@ require (
 	github.com/hashicorp/hcl/v2 v2.24.0
 	github.com/modelcontextprotocol/go-sdk v1.4.1
 	github.com/nikolalohinski/gonja v1.5.3
-	github.com/odvcencio/gotreesitter v0.20.2
 	github.com/tdewolff/parse/v2 v2.8.12
 	github.com/tetratelabs/wazero v1.12.0
 	github.com/tiktoken-go/tokenizer v0.7.0
