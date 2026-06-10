@@ -1,3 +1,5 @@
+//go:build treesitter_experimental
+
 // SPDX-License-Identifier: MIT
 
 // Gated differential test (ADR-0008 / #1957 EGDL Stage 7): real-tree-sitter

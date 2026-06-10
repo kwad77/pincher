@@ -1,3 +1,5 @@
+//go:build treesitter_experimental
+
 // SPDX-License-Identifier: MIT
 
 // Experimental real-tree-sitter Rust extractor (ADR-0008 / #1957). NOT wired

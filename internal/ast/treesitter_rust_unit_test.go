@@ -1,3 +1,5 @@
+//go:build treesitter_experimental
+
 // SPDX-License-Identifier: MIT
 
 package ast
