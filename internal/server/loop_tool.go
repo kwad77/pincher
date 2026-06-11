@@ -80,10 +80,22 @@ func (s *Server) handleLoop(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 		if err != nil {
 			return errResult(fmt.Sprintf("loop %s: %v", action, err)), nil
 		}
+		// Eviction-shaped receipt: one canonical line a context-window
+		// summarizer naturally keeps while dropping the payload it
+		// refers to. The window holds the pointer table; the ledger
+		// holds the payloads — re-derivable via `loop resume`.
+		receiptLabel := cp.Claim
+		if receiptLabel == "" {
+			receiptLabel = cp.Decision
+		}
+		if r := []rune(receiptLabel); len(r) > 80 {
+			receiptLabel = string(r[:77]) + "..."
+		}
 		data := map[string]any{
 			"loop":      name,
 			"seq":       seq,
 			"watermark": cp.Watermark,
+			"receipt":   fmt.Sprintf("%s#%d stored: %s — evict the payload; recover via loop resume", name, seq, receiptLabel),
 			"_meta": map[string]any{
 				"next_steps": []map[string]string{
 					{"tool": "loop", "args": fmt.Sprintf(`{"action":"resume","name":%q}`, name),
