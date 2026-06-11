@@ -248,6 +248,18 @@ func (x *tsTSExtractor) walk(n tsbridge.Node, src []byte, c tsWalkCtx, fr *FileR
 		}
 	case "call_expression":
 		x.handleCall(n, src, c, fr)
+	case "new_expression":
+		// `new Greeter()` is a constructor invocation, not a call_expression —
+		// emit a CALLS edge to the constructed type so "who instantiates X"
+		// stays in the graph (the regex `name(` scan counted these; without
+		// this the hotspot/trace signal for instantiated classes is lost).
+		if t := x.nameOfType(n, src, "identifier"); t != "" {
+			from := c.enclosing
+			if from == "" {
+				from = c.scope
+			}
+			fr.Edges = append(fr.Edges, ExtractedEdge{FromQN: from, ToName: t, Kind: "CALLS", Confidence: 0.6})
+		}
 	}
 	for i := 0; i < x.ncount(n); i++ {
 		if x.walk(x.nchild(n, i), src, child, fr) {
