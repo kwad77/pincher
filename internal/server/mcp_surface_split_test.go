@@ -48,6 +48,7 @@ var expectedMCPTools = map[string]bool{
 	// zelos → agent fires init/index/architecture" workflows
 	"architecture": true,
 	"branch_overlap": true, // #1856 v1.1 — merge-order risk between two branches
+	"coach":          true, // retro-coaching mined from recorded usage telemetry
 	"dead_code":    true,
 	"neighborhood": true,
 	"health":       true,

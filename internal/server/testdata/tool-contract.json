@@ -135,6 +135,31 @@
     }
   },
   {
+    "name": "coach",
+    "description": "**Retro-coaching from pincher's own usage telemetry.** Mines the recorded per-call events (session_tool_calls), the query-failure counters, and hook_invocations for the current session (default) or the trailing 7 days, and returns priced findings — \"you did X N times; pattern Y would have cost ~Z fewer tokens\" — every number computed from recorded telemetry, each finding carrying a `basis` string documenting the arithmetic. Patterns: `single_fact_burst` (≥3 sub-600-token search/symbol/trace calls → batch with `symbols`), `unbudgeted_heavy_context` (context/symbols responses \u003e2000 tokens → cap with `fields`/`lite`), `zero_result_churn` (unexpected-empty queries → recover with `why_empty`), `hook_fall_through` (ignored PreToolUse redirects; counts-only when the schema lacks per-row token estimates). Returns empty findings plus a note when fewer than 10 calls are recorded in the window — never extrapolates from noise.",
+    "input_schema": {
+      "properties": {
+        "limit": {
+          "description": "Max findings returned, biggest measured win first. Default 5, max 20.",
+          "type": "integer"
+        },
+        "project": {
+          "description": "Accepted for interface consistency and validated, but telemetry is recorded per-session (not per-project), so it does not scope the analysis.",
+          "type": "string"
+        },
+        "window": {
+          "description": "Telemetry window to analyze. \"session\" (default) = this process's recorded calls; \"7d\" = trailing 7 days across all sessions.",
+          "enum": [
+            "session",
+            "7d"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
     "name": "context",
     "description": "**Use before editing a function** to read it together with everything it directly imports and calls — one shot, ~90% token reduction vs reading files. Returns `{symbol: {source, ...}, imports: [{source, ...}], callees: [{source, ...}]}` — `imports` is cross-package dependencies (IMPORTS edges), `callees` is the in-package helpers it directly calls (CALLS edges). De-duplicated so a symbol that's both imported and called only appears once. Prefer this over `symbol` whenever you need to understand how a function works in context, not just see its source. Pass `fields=symbol,callees` to drop sections you don't need. Pass `lite=true` for source-only retrieval — minimum-envelope shape used by the PreToolUse hook redirect when replacing a Read call.",
     "input_schema": {
