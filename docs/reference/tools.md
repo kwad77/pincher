@@ -58,7 +58,7 @@ Token savings: ~90% vs reading files.
 
 ### `search` {#tool-search}
 
-FTS5 BM25 across names, signatures, docstrings. Wildcards (`auth*`), phrases (`"process order"`), AND/OR. `kind`/`language`/`corpus` filters. `corpus` defaults to `code`; pass `config` for YAML/JSON/HCL settings, `docs` for Markdown / Documents. The legacy `all` value was removed in v0.5; older callers passing it get soft-redirected to `code` with a deprecation log line. `fields` projects columns. `project=*` searches all repos. `format="text"` replaces the `results` array with `results_text` — a TSV block (header row, then `id<TAB>kind<TAB>file:line<TAB>signature-or-name` per hit) at ~0.45× the JSON token cost on a representative 20-hit search; the rest of the envelope (`count`/`total`/`has_more`/`_meta`) is unchanged.
+FTS5 BM25 across names, signatures, docstrings. Wildcards (`auth*`), phrases (`"process order"`), AND/OR. `kind`/`language`/`corpus` filters. `corpus` defaults to `code`; pass `config` for YAML/JSON/HCL settings, `docs` for Markdown / Documents. The legacy `all` value was removed in v0.5; older callers passing it get soft-redirected to `code` with a deprecation log line. `fields` projects columns. `project=*` searches all repos. `format="text"` replaces the `results` array with `results_text` — a TSV block (header row, then `id<TAB>kind<TAB>file:line<TAB>signature-or-name` per hit) at ~0.45× the JSON token cost on a representative 20-hit search; the rest of the envelope (`count`/`total`/`has_more`/`_meta`) is unchanged. `format="toon"` replaces it with `results_toon` — a TOON (Token-Oriented Object Notation) tabular block: the field list declared once (`results[N]{file,id,kind,line,name,signature}:`), then one bare comma-delimited row per hit, strings quoted only when needed; ~0.50× the JSON token cost on the same fixture. Opt-in only — ids/file paths/names appear verbatim, so follow-up calls can copy them exactly.
 
 Tested latency: 1 ms.
 
@@ -70,7 +70,7 @@ Tested latency: 2 ms (single-hop).
 
 ### `trace` {#tool-trace}
 
-BFS call-path trace — who calls this, or what does it call. Grouped by depth. Risk labels: CRITICAL (depth 1) → LOW (depth 4+). `format="text"` replaces the `hops` array with `results_text` — a TSV block (header row, then `depth<TAB>risk<TAB>id` per hop). `compact=true` additionally ditto-compresses consecutive same-file nodes within a depth block: a node repeating the previous node's `file_path` omits the field — scan up to the nearest node carrying `file_path` to decode.
+BFS call-path trace — who calls this, or what does it call. Grouped by depth. Risk labels: CRITICAL (depth 1) → LOW (depth 4+). `format="text"` replaces the `hops` array with `results_text` — a TSV block (header row, then `depth<TAB>risk<TAB>id` per hop). `format="toon"` replaces it with `results_toon` — a TOON tabular block (`hops[N]{depth,id,risk}:`, one bare comma-delimited row per hop). `compact=true` additionally ditto-compresses consecutive same-file nodes within a depth block: a node repeating the previous node's `file_path` omits the field — scan up to the nearest node carrying `file_path` to decode.
 
 Tested latency: <5 ms (depth 3).
 

@@ -103,8 +103,9 @@ var outputSchemas = map[string]string{
 
 	// 5. search — BM25-ranked. v0.25 #532: pagination via limit/offset
 	// with total/has_more in the response envelope.
-	// `results` is required unless format=text was passed, in which
-	// case `results_text` replaces it — so neither is in `required`.
+	// `results` is required unless format=text/toon was passed, in
+	// which case `results_text`/`results_toon` replaces it — so none
+	// of the three is in `required`.
 	"search": `{
 		"type":"object",
 		"required":["query","count","total","has_more","offset","limit","_meta"],
@@ -135,6 +136,7 @@ var outputSchemas = map[string]string{
 				}
 			}},
 			"results_text":{"type":"string","description":"format=text rendering: TSV block replacing the results array — header row, then one line per hit (id<TAB>kind<TAB>file:line<TAB>signature-or-name)."},
+			"results_toon":{"type":"string","description":"format=toon rendering: TOON (Token-Oriented Object Notation) tabular block replacing the results array — results[N]{file,id,kind,line,name,signature}: header, then one bare comma-delimited row per hit (strings quoted only when needed)."},
 			"_meta":` + metaRef + `
 		}
 	}`,
@@ -153,8 +155,9 @@ var outputSchemas = map[string]string{
 	}`,
 
 	// 7. trace — graph BFS.
-	// `hops` is required unless format=text was passed, in which case
-	// `results_text` replaces it — so neither is in `required`.
+	// `hops` is required unless format=text/toon was passed, in which
+	// case `results_text`/`results_toon` replaces it — so none of the
+	// three is in `required`.
 	"trace": `{
 		"type":"object",
 		"required":["root","direction","total","_meta"],
@@ -163,6 +166,7 @@ var outputSchemas = map[string]string{
 			"direction":{"type":"string","enum":["inbound","outbound","both"]},
 			"hops":{"type":"array","items":{"type":"object"}},
 			"results_text":{"type":"string","description":"format=text rendering: TSV block replacing the hops array — header row, then one line per hop (depth<TAB>risk<TAB>id)."},
+			"results_toon":{"type":"string","description":"format=toon rendering: TOON (Token-Oriented Object Notation) tabular block replacing the hops array — hops[N]{depth,id,risk}: header, then one bare comma-delimited row per hop."},
 			"total":{"type":"integer"},
 			"risk_summary":{"type":"object","properties":{
 				"CRITICAL":{"type":"integer"},
