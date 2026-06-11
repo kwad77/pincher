@@ -226,6 +226,17 @@ func (j *javaTSExtractor) walk(n tsbridge.Node, src []byte, c javaWalkCtx, fr *F
 			// resolver upgrades them; the AST gain is in the symbols (1.0).
 			fr.Edges = append(fr.Edges, ExtractedEdge{FromQN: from, ToName: callee, Kind: "CALLS", Confidence: 0.6})
 		}
+	case "object_creation_expression":
+		// `new Foo()` is a constructor invocation — emit a CALLS edge to the
+		// constructed type so "who instantiates Foo" stays in the graph (the
+		// regex `name(` scan counted these; #1958).
+		if t := j.ctorTypeName(n, src); t != "" {
+			from := c.caller
+			if from == "" {
+				from = c.scope
+			}
+			fr.Edges = append(fr.Edges, ExtractedEdge{FromQN: from, ToName: t, Kind: "CALLS", Confidence: 0.6})
+		}
 	}
 	for i := 0; i < j.ncount(n); i++ {
 		if j.walk(j.nchild(n, i), src, child, fr) {
@@ -287,4 +298,17 @@ func (j *javaTSExtractor) calleeName(n tsbridge.Node, src []byte) string {
 		}
 	}
 	return name
+}
+
+// ctorTypeName returns the bare type name constructed by an
+// object_creation_expression (`new Foo()` → "Foo", `new a.b.Foo<T>()` → "Foo").
+func (j *javaTSExtractor) ctorTypeName(n tsbridge.Node, src []byte) string {
+	for i := 0; i < j.ncount(n); i++ {
+		c := j.nchild(n, i)
+		switch j.kind(c) {
+		case "type_identifier", "generic_type", "scoped_type_identifier":
+			return baseTypeName(j.text(c, src))
+		}
+	}
+	return ""
 }
