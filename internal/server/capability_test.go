@@ -382,8 +382,11 @@ func TestCapability_AllProbesPass(t *testing.T) {
 }
 
 // TestCapability_PresentInMetaEnvelope verifies _meta.capabilities is
-// populated on a normal tool response (the contract every router will
-// rely on).
+// populated on the FIRST tool response of a session (the contract
+// every router relies on). With session-delta _meta (default on),
+// subsequent responses omit the array and stamp `meta_delta: true`
+// instead — covered by meta_delta_test.go, including the
+// PINCHER_META_DELTA=0 kill-switch that restores every-call emission.
 func TestCapability_PresentInMetaEnvelope(t *testing.T) {
 	t.Parallel()
 	srv, _, _ := newTestServer(t)
@@ -417,6 +420,11 @@ func TestCapability_PresentInMetaEnvelope(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("_meta.capabilities missing schema_v41; got %v", caps)
+	}
+	// First response must NOT carry the delta marker — nothing was
+	// omitted.
+	if _, present := meta["meta_delta"]; present {
+		t.Errorf("first response must not carry meta_delta; got %v", meta["meta_delta"])
 	}
 }
 
