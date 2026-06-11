@@ -49,6 +49,45 @@
     }
   },
   {
+    "name": "assert_graph",
+    "description": "**Check a structural invariant server-side** instead of pulling N rows to conclude pass/fail yourself. Evaluates entirely against the edge graph and returns `{pass, checked}` when passing, plus `violations` (up to 10 `{id, file_path}`) when failing. Kinds: `no_callers_outside` (every caller of `target` lives under a `scope` path prefix — the violations are the strays), `max_callers` (`target` has at most `limit` direct callers), `no_calls_to` (nothing under `scope` calls `target` — enforce a layering rule), `exists` (`target` resolves to at least one indexed symbol; presence check via exact name then FTS5 search). Caller-shaped kinds count direct CALLS/HTTP_CALLS/ASYNC_CALLS edges; test files are included — an assertion is about the whole graph.",
+    "input_schema": {
+      "properties": {
+        "kind": {
+          "description": "Which invariant to evaluate. Unknown kinds rich-error with the full catalog.",
+          "enum": [
+            "no_callers_outside",
+            "max_callers",
+            "no_calls_to",
+            "exists"
+          ],
+          "type": "string"
+        },
+        "limit": {
+          "description": "Required for max_callers: the maximum number of direct callers allowed (inclusive). Ignored by other kinds.",
+          "type": "integer"
+        },
+        "project": {
+          "description": "Project name or ID. Defaults to session project.",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Comma-separated path prefix(es), e.g. 'cmd/,internal/server/'. Required for no_callers_outside (the allowed homes for callers) and no_calls_to (the region that must not call target). Ignored by other kinds.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Symbol to assert about: a stable symbol ID ('{file_path}::{qualified_name}#{kind}') or a short name (resolved like trace's name= — callable kinds preferred). For kind=exists, any name or search phrase.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "target"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "audit_unused",
     "description": "**Use to find safe-to-delete dead code with per-candidate confirmation.** Runs the existing `dead_code` SQL path then, per candidate, fires a scoped inbound CALLS trace at `confirm_depth` (default 2). Classifies each candidate by what the deep trace surfaced: `high` (zero callers — safe to delete), `medium` (deeper callers — likely a dynamic path the static call graph missed, read before deleting), `low` (depth-1 caller — almost always a resolver bug, file an issue rather than delete). Returns `{candidates, summary}` where summary counts the three classification buckets. Replaces the N+1 round trips of `dead_code` + per-candidate `trace direction=in depth=2/4` confirmations. Read-only; safe to call repeatedly.",
     "input_schema": {
@@ -581,6 +620,10 @@
           ],
           "type": "string"
         },
+        "count_only": {
+          "description": "Conclusion-density mode: return {query, total, by_kind} — counts only, no result rows, no snippets (the per-hit disk read is skipped entirely). Use when the question is 'how many matches?' rather than 'which matches?'. Composes with kind/language/corpus/min_confidence filters; total is the same post-filter count the row-shaped call reports. Default false.",
+          "type": "boolean"
+        },
         "fields": {
           "description": "Comma-separated fields to include in each result, e.g. 'id,name,file_path'. Omit for all fields. Use to reduce token usage when you only need IDs or signatures.",
           "type": "string"
@@ -711,6 +754,10 @@
       "properties": {
         "compact": {
           "description": "#1225: thin-client envelope. Drops per-hop kind + via fields and the top-level risk_summary block. Default false. On hot traces these account for 30-50% of payload that thin-client consumers (Cursor / Continue / Claude Desktop) don't render. Risk-aware consumers (dashboards, dogfood) stick with the default.",
+          "type": "boolean"
+        },
+        "count_only": {
+          "description": "Conclusion-density mode: return {root, direction, total, by_depth, by_risk} — counts only, nothing row-shaped. Use when the question is 'how many callers?' rather than 'which callers?'. Composes with every filter (kinds/min_confidence/include_tests/depth/direction); counts are computed from the exact same traversal the row-shaped call would return. Default false.",
           "type": "boolean"
         },
         "depth": {
