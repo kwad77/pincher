@@ -67,6 +67,14 @@ func (t TreeSitter) LanguageCSharp(ctx context.Context) (Language, error) {
 	return NewLanguage(p[0], t), nil
 }
 
+func (t TreeSitter) LanguageKotlin(ctx context.Context) (Language, error) {
+	p, err := t.languageKotlin.Call(ctx)
+	if err != nil {
+		return Language{}, fmt.Errorf("initiating kotlin language: %w", err)
+	}
+	return NewLanguage(p[0], t), nil
+}
+
 func (t TreeSitter) LanguageRuby(ctx context.Context) (Language, error) {
 	p, err := t.languageRuby.Call(ctx)
 	if err != nil {

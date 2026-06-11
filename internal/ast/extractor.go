@@ -446,6 +446,11 @@ func init() {
 		// expect/actual.
 		confidence: 0.85,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			if kotlinASTEnabled() {
+				if r, ok := extractKotlinTreeSitter(s, p); ok {
+					return r
+				}
+			}
 			return extractKotlin(s, p)
 		},
 	})
