@@ -71,19 +71,7 @@ func buildPincherBinaryOnce() (string, error) {
 	// coverage. The CI Coverage job sets GOCOVERDIR; local `go test`
 	// runs typically do not.
 	if os.Getenv("GOCOVERDIR") != "" {
-		// Instrument all packages EXCEPT the vendored WASM binding
-		// (internal/tsbridge). Under the full-repo coverage shard
-		// (`go test ./...`), the subprocess pinch binary's covmeta must
-		// match the package set the run is collecting; including tsbridge
-		// here (it links into pinch via the Rust AST dispatcher, #1957)
-		// makes the subprocess covmeta diverge and the runner silently
-		// drops the folded dispatch-wrapper counters (all runXxxCLI → 0%).
-		// We don't gate coverage on the vendored binding anyway.
-		cp, err := pinchCoverPkg()
-		if err != nil {
-			return "", err
-		}
-		args = append(args, "-cover", "-coverpkg="+cp)
+		args = append(args, "-cover", "-coverpkg=./...")
 	}
 	args = append(args, "-o", bin, ".")
 
@@ -92,23 +80,6 @@ func buildPincherBinaryOnce() (string, error) {
 		return "", execBuildError{args: args, err: err, out: out}
 	}
 	return bin, nil
-}
-
-// pinchCoverPkg lists every module package except the vendored WASM binding,
-// for the subprocess pinch binary's -coverpkg (see buildPincherBinaryOnce).
-func pinchCoverPkg() (string, error) {
-	out, err := exec.Command("go", "list", "./...").Output()
-	if err != nil {
-		return "", err
-	}
-	var keep []string
-	for _, p := range strings.Fields(string(out)) {
-		if strings.HasSuffix(p, "/internal/tsbridge") {
-			continue
-		}
-		keep = append(keep, p)
-	}
-	return strings.Join(keep, ","), nil
 }
 
 type execBuildError struct {
