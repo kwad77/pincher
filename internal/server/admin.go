@@ -484,6 +484,58 @@ func fts5FragmentationAdvisory(rows []db.FTS5CorpusFragmentation) string {
 		joined, db.FTS5FragmentationThreshold)
 }
 
+// settingsFloodAdvisory returns a human-readable advisory when a
+// project's symbol surface is dominated by Setting-kind symbols, or ""
+// when every project looks healthy. This is the signature of indexed
+// data/model artifacts: observed in the wild as data/*.json model files
+// (2.5 MB each — under the 4 MB per-file cap, so the size gate never
+// fired) becoming 27,672 junk Setting symbols, 96% of the project.
+// Search ranking, the dashboard, and aggregate stats all drown in the
+// noise, and pre-.pincherignore there was no user-facing way out.
+//
+// Thresholds: > 1000 total symbols (below that, a genuinely
+// config-heavy repo — dotfiles, Ansible inventory — can legitimately
+// be all Settings and small enough not to matter) AND Setting share
+// strictly above 80% (real code repos with generous YAML/TOML config
+// sit well below this; the observed pathological case was 96%).
+//
+// settingCounts is keyed by project ID (from
+// db.Store.SettingSymbolCountsByProject — one aggregate query).
+// projects must be sorted by symbol count descending (handleDoctor
+// already does this) so the worst offenders surface first.
+func settingsFloodAdvisory(projects []doctorProjectSummary, settingCounts map[string]int) string {
+	const symThreshold = 1000
+	const maxShare = 0.80
+	var flooded []string
+	for _, p := range projects {
+		if p.Symbols <= symThreshold {
+			continue
+		}
+		settings := settingCounts[p.ID]
+		share := float64(settings) / float64(p.Symbols)
+		if share <= maxShare {
+			continue
+		}
+		flooded = append(flooded, fmt.Sprintf("%q (%d of %d symbols are Settings — %.0f%%)",
+			p.Name, settings, p.Symbols, share*100))
+		// Cap at the worst 3 so the advisory stays scannable.
+		if len(flooded) == 3 {
+			break
+		}
+	}
+	if len(flooded) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"project%s dominated by Setting symbols (data-artifact flood signature): %s. "+
+			"This usually means generated config/data files (JSON model artifacts, exported fixtures) are being "+
+			"indexed as thousands of low-signal Setting symbols, drowning out real code in search and stats. "+
+			"Remediation: add a .pincherignore file (gitignore semantics) at the project root covering the "+
+			"artifact paths (e.g. `data/` or `*.generated.json`), then re-index — symbols of newly-ignored "+
+			"files are garbage-collected automatically on the next index run.",
+		pluralS(len(flooded)), strings.Join(flooded, "; "))
+}
+
 func walBloatAdvisory(dbSizeBytes, walSizeBytes int64) string {
 	const absThreshold = 512 << 20 // 512 MiB
 	// The percent rule (WAL > 10% of DB) is only meaningful once the
@@ -1148,6 +1200,16 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// no rows and the advisory stays silent.
 	if fragRows, err := s.store.FTS5Fragmentation(); err == nil {
 		if a := fts5FragmentationAdvisory(fragRows); a != "" {
+			advisories = append(advisories, a)
+		}
+	}
+	// settings_flood advisory: a project whose symbol surface is
+	// dominated by Setting symbols indexed data artifacts (the 27k
+	// junk-Setting-symbols shape) — point the user at .pincherignore.
+	// One aggregate GROUP BY query; walks the full project list so a
+	// flooded project outside the display slice still surfaces.
+	if settingCounts, err := s.store.SettingSymbolCountsByProject(); err == nil {
+		if a := settingsFloodAdvisory(allProjects, settingCounts); a != "" {
 			advisories = append(advisories, a)
 		}
 	}

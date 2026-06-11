@@ -221,15 +221,20 @@ func (idx *Indexer) GetProgressDetail(projectID string) (done, total, startedAtU
 
 // IndexResult summarises a completed indexing run.
 type IndexResult struct {
-	ProjectID  string
-	Project    string
-	Path       string
-	Files      int
-	Symbols    int
-	Edges      int
-	Skipped    int // files skipped (unchanged hash)
-	Blocked    int // files refused by ast.ShouldSkip (lockfiles, minified bundles, source maps)
-	Deleted    int // files removed from disk since last index — symbols GC'd this run (#326)
+	ProjectID string
+	Project   string
+	Path      string
+	Files     int
+	Symbols   int
+	Edges     int
+	Skipped   int // files skipped (unchanged hash)
+	Blocked   int // files refused by ast.ShouldSkip (lockfiles, minified bundles, source maps)
+	Deleted   int // files removed from disk since last index — symbols GC'd this run (#326)
+	// NOTE: there is deliberately no Ignored counter for .pincherignore.
+	// Ignore filtering happens inside gocodewalker (walker.CustomIgnore),
+	// which never yields the dropped files, so counting them would need a
+	// second unfiltered walk per index run. See the CustomIgnore comment
+	// in indexImpl.
 	DurationMS int64
 
 	// #1231 v0.66 DOGFOOD: post-pass parity check. ParityMismatchFiles
@@ -562,6 +567,29 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 	fileListQueue := make(chan *gocodewalker.File, 256)
 	walker := gocodewalker.NewFileWalker(absPath, fileListQueue)
 	walker.ExcludeDirectory = skippedDirSlice()
+	// .pincherignore: user-controlled ignore file with gitignore semantics
+	// (parsed by gocodewalker exactly like a .gitignore, including nested
+	// files in subdirectories and `!` negation). Motivation: a real
+	// project's data/*.json model artifacts (2.5 MB each — under the 4 MB
+	// cap) became 27,672 junk Setting symbols, 96% of the project, with no
+	// user-facing way to exclude them. Two properties fall out of doing
+	// this at the walker level:
+	//
+	//   1. GC correctness for free: ignored files are never yielded, so
+	//      they never enter seenFiles — the #326 tail-pass GC below reaps
+	//      previously-indexed symbols of newly-ignored files on the next
+	//      ordinary (non-force) index run.
+	//   2. No Ignored counter on IndexResult: gocodewalker filters inside
+	//      the walk and never surfaces what it dropped, so counting
+	//      ignored files would require a second unfiltered walk per index
+	//      run. Deliberately skipped — `pincher.index.gc.summary`
+	//      (files_reaped) is the observable signal when an ignore rule
+	//      newly takes effect.
+	//
+	// Keep in sync with the init profiler's walker (internal/init/profile.go),
+	// which applies the same ignore file so `pincher init`'s census matches
+	// what indexing will actually extract.
+	walker.CustomIgnore = []string{".pincherignore"}
 
 	// Start walker in background; gocodewalker closes the channel when done.
 	go func() {

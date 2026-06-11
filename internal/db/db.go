@@ -796,6 +796,32 @@ func (s *Store) FTS5Fragmentation() ([]FTS5CorpusFragmentation, error) {
 	return out, nil
 }
 
+// SettingSymbolCountsByProject returns, per project, how many symbols
+// have kind='Setting'. One aggregate GROUP BY query — cheap enough for
+// doctor's advisory pass. Used by the settings_flood advisory: a
+// project whose symbol surface is dominated by Setting symbols (the
+// signature of indexed data/model artifacts — observed in the wild as
+// 27,672 junk Setting symbols, 96% of a project) should be pointed at
+// .pincherignore rather than left to discover the noise via search.
+func (s *Store) SettingSymbolCountsByProject() (map[string]int, error) {
+	rows, err := s.ro.Query(
+		`SELECT project_id, COUNT(*) FROM symbols WHERE kind = 'Setting' GROUP BY project_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var pid string
+		var n int
+		if err := rows.Scan(&pid, &n); err != nil {
+			return nil, err
+		}
+		out[pid] = n
+	}
+	return out, rows.Err()
+}
+
 // MigrationInvalidates declares what previously-extracted data a
 // migration makes stale (#1497). Used by upstream consumers (doctor,
 // the future binaryDriftForce gate) to distinguish "schema bumped but
