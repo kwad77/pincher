@@ -731,12 +731,13 @@ var writerRoutedStoreMethods = map[string]bool{
 	// Mixed read+write — kept on writer for transactional consistency.
 	"BuildClosure": true, // #652 phase 1 — DELETE + INSERT in a tx
 	// Pragmas / lifecycle (writer-pool by definition).
-	"Optimize":           true,
-	"CheckpointTruncate": true,
-	"RebuildFTS":         true,
-	"Vacuum":             true,
-	"Close":              true,
-	"DB":                 true,
+	"Optimize":               true,
+	"CheckpointTruncate":     true,
+	"RebuildFTS":             true,
+	"RebuildFTSWithProgress": true, // #1950 — same writer tx as RebuildFTS
+	"Vacuum":                 true,
+	"Close":                  true,
+	"DB":                     true,
 	// Configuration (operates on the reader pool but is itself a write
 	// to the *Store — classified writer).
 	"SetReaderPoolSize": true,

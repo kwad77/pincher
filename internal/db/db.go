@@ -611,6 +611,26 @@ type VacuumResult struct {
 // symbol count — not a hot path, expect seconds-to-minutes on large
 // repos.
 func (s *Store) RebuildFTS() (rows int64, err error) {
+	return s.RebuildFTSWithProgress(nil)
+}
+
+// RebuildFTSStages is the number of progress stages
+// RebuildFTSWithProgress reports: drops, schema recreate, the three
+// per-corpus backfills, and the final row count.
+const RebuildFTSStages = 6
+
+// RebuildFTSWithProgress is RebuildFTS with an optional stage-progress
+// callback (#1950). report (nil = no reporting) is invoked after each
+// completed stage with (done, RebuildFTSStages), on the calling
+// goroutine — wire it to atomic counters when polling from another
+// goroutine (see server.runWithProgress).
+func (s *Store) RebuildFTSWithProgress(report func(done, total int64)) (rows int64, err error) {
+	step := func(done int64) {
+		if report != nil {
+			report(done, RebuildFTSStages)
+		}
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("begin: %w", err)
@@ -644,13 +664,22 @@ func (s *Store) RebuildFTS() (rows int64, err error) {
 			return 0, fmt.Errorf("drop %s: %w", stmt, err)
 		}
 	}
+	step(1)
 
 	// Recreate per-corpus DDL — the v9 migration body is the source of
-	// truth (vtab DDL + sync triggers + bulk backfill). Re-exec it here
-	// so a future change to ftsCorpusSplitDDL's backfill rules
-	// propagates to RebuildFTS automatically.
-	if _, err = tx.Exec(ftsCorpusSplitDDL); err != nil {
+	// truth (vtab DDL + sync triggers + bulk backfill). Exec the same
+	// consts it is composed from, so a future change to the backfill
+	// rules propagates to RebuildFTS automatically; per-corpus exec is
+	// what gives the progress callback its granularity (#1950).
+	if _, err = tx.Exec(ftsCorpusSchemaDDL); err != nil {
 		return 0, fmt.Errorf("recreate corpus fts: %w", err)
+	}
+	step(2)
+	for i, stmt := range []string{ftsCorpusBackfillCode, ftsCorpusBackfillConfig, ftsCorpusBackfillDocs} {
+		if _, err = tx.Exec(stmt); err != nil {
+			return 0, fmt.Errorf("backfill corpus fts: %w", err)
+		}
+		step(int64(3 + i))
 	}
 
 	// Sum rows across the three corpora — each symbol is in exactly one.
@@ -668,6 +697,7 @@ func (s *Store) RebuildFTS() (rows int64, err error) {
 	if err = tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit: %w", err)
 	}
+	step(6)
 	return rows, nil
 }
 
@@ -2392,7 +2422,13 @@ func joinEqClauses(cols, table string) string {
 // edit required) — only "config" and "docs" enumerate.
 //
 // RebuildFTS knows about all four vtabs so the escape hatch stays valid.
-const ftsCorpusSplitDDL = `
+//
+// #1950: the schema (vtabs + triggers) and the three per-corpus
+// backfills are separate consts so RebuildFTSWithProgress can exec the
+// backfills individually and report per-corpus progress. The migration
+// body ftsCorpusSplitDDL concatenates them, so a backfill-rule change
+// still propagates to both paths automatically.
+const ftsCorpusSchemaDDL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_code_fts USING fts5(
     symbol_id UNINDEXED,
     name,
@@ -2506,23 +2542,39 @@ END;
 
 -- One-time backfill from existing symbols. Migrations only run once per
 -- DB version, so this is safe (no idempotency concern).
+`
+
+// Per-corpus backfill statements — see the #1950 note above
+// ftsCorpusSchemaDDL for why these are split out.
+const (
+	ftsCorpusBackfillCode = `
 INSERT INTO symbols_code_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
 SELECT rowid, id, name, qualified_name, COALESCE(signature,''), COALESCE(docstring,'')
 FROM symbols
 WHERE kind != 'Document'
   AND language NOT IN ('Markdown', 'HTML', 'YAML', 'JSON', 'HCL', 'TOML', 'XML');
-
+`
+	ftsCorpusBackfillConfig = `
 INSERT INTO symbols_config_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
 SELECT rowid, id, name, qualified_name, COALESCE(signature,''), COALESCE(docstring,'')
 FROM symbols
 WHERE kind != 'Document'
   AND language IN ('YAML', 'JSON', 'HCL', 'TOML', 'XML');
-
+`
+	ftsCorpusBackfillDocs = `
 INSERT INTO symbols_docs_fts(rowid, symbol_id, name, qualified_name, signature, docstring)
 SELECT rowid, id, name, qualified_name, COALESCE(signature,''), COALESCE(docstring,'')
 FROM symbols
 WHERE kind = 'Document' OR language = 'Markdown';
 `
+)
+
+// ftsCorpusSplitDDL is the v9 migration body: schema + sync triggers +
+// the one-time per-corpus backfill, in order.
+const ftsCorpusSplitDDL = ftsCorpusSchemaDDL +
+	ftsCorpusBackfillCode +
+	ftsCorpusBackfillConfig +
+	ftsCorpusBackfillDocs
 
 const schema = `
 CREATE TABLE IF NOT EXISTS projects (

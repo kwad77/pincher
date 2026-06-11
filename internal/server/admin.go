@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -1360,8 +1361,20 @@ func (s *Server) handleRebuildFTS(ctx context.Context, req *mcp.CallToolRequest)
 	}
 
 	t0 := time.Now()
-	rows, err := s.store.RebuildFTS()
-	if err != nil {
+	// #1950: stage-level progress (drops, schema recreate, 3 per-corpus
+	// backfills, row count) when the client supplied a progressToken.
+	// Opt-in; no-op without a token / live session (see runWithProgress).
+	var stagesDone atomic.Int64
+	var rows int64
+	if err := s.runWithProgress(ctx, req,
+		func() (int64, int64, bool) { return stagesDone.Load(), db.RebuildFTSStages, true },
+		"rebuild_fts: stage",
+		func() error {
+			var rerr error
+			rows, rerr = s.store.RebuildFTSWithProgress(func(done, _ int64) { stagesDone.Store(done) })
+			return rerr
+		},
+	); err != nil {
 		return errResult(fmt.Sprintf("rebuild_fts: %v", err)), nil
 	}
 	return s.jsonResultWithMeta(map[string]any{
