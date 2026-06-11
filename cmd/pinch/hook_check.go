@@ -135,17 +135,33 @@ func runHookCheckCLI(args []string) {
 	}
 	defer store.Close()
 
+	// PreCompact (precompact-hook): event routing stays inside
+	// hook-check so init registers ONE command for both events. The
+	// summarizer is told what the ledger already holds, so it can drop
+	// checkpointed payloads to pointers instead of reproducing them.
+	if input.HookEventName == "PreCompact" {
+		decision := decidePreCompact(store, input, *debug)
+		logPreCompactInvocation(store, input, decision)
+		emitPreCompactResponse(decision)
+		return
+	}
+
 	decision := decideHook(store, input, *debug)
 	logHookDecision(store, input, decision)
 	emitHookResponse(decision)
 }
 
-// hookCheckInput mirrors Claude Code's PreToolUse hook payload shape.
-// Only the fields we read are declared; the rest are ignored.
+// hookCheckInput mirrors Claude Code's hook payload shape. Only the
+// fields we read are declared; the rest are ignored. PreToolUse events
+// carry tool_name/tool_input; PreCompact events (precompact-hook) carry
+// hook_event_name="PreCompact" + cwd and no tool fields — the same
+// struct decodes both, with absent fields zero-valued.
 type hookCheckInput struct {
-	ToolName  string         `json:"tool_name"`
-	ToolInput map[string]any `json:"tool_input"`
-	SessionID string         `json:"session_id"`
+	HookEventName string         `json:"hook_event_name"`
+	ToolName      string         `json:"tool_name"`
+	ToolInput     map[string]any `json:"tool_input"`
+	SessionID     string         `json:"session_id"`
+	CWD           string         `json:"cwd"`
 }
 
 type hookDecision struct {
@@ -460,9 +476,9 @@ func decideGrepHook(store *db.Store, in hookCheckInput, debug bool) hookDecision
 //   - Go:     *_test.go
 //   - Python: *_test.py / test_*.py
 //   - Rust:   *_test.rs (also covers internal #[cfg(test)] modules
-//             whose tests live in same file — those won't match)
+//     whose tests live in same file — those won't match)
 //   - JS/TS:  *.test.js / *.test.ts / *.test.jsx / *.test.tsx /
-//             *.spec.js / *.spec.ts / *.spec.jsx / *.spec.tsx
+//     *.spec.js / *.spec.ts / *.spec.jsx / *.spec.tsx
 //   - Ruby:   *_spec.rb / *_test.rb
 //   - Java:   *Test.java / *Tests.java / *IT.java
 //   - Swift:  *Test.swift / *Tests.swift / *Spec.swift

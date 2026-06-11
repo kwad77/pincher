@@ -91,6 +91,56 @@ func (s *Store) ListLoopCheckpoints(projectID, loopName string, limit int) ([]Lo
 	return out, rows.Err()
 }
 
+// LoopLedgerStat is one loop's aggregate row for the PreCompact
+// advisory (precompact-hook). Cheap by construction: the whole set is
+// produced by ONE grouped query so the hook stays inside its <50ms /
+// ≤3-query budget.
+type LoopLedgerStat struct {
+	LoopName      string // loop name
+	Checkpoints   int    // total ledger rows for the loop
+	LatestSeq     int    // highest seq (the "<loop>#<seq>" pointer)
+	OpenTriggers  int    // rows with a non-empty reopen_trigger (all rows, not the resume 20-row window)
+	LatestReceipt string // latest row's claim (decision when claim empty) — the receipt one-liner
+	LastCreatedAt string // RFC3339 of the newest row (ordering key)
+}
+
+// LoopLedgerStats returns per-loop aggregates for a project, most
+// recently touched first, in a single grouped query. Backs the
+// PreCompact hook advisory: name + checkpoint count + latest seq +
+// open reopen-trigger count + the latest receipt line. Reader-routed.
+func (s *Store) LoopLedgerStats(projectID string) ([]LoopLedgerStat, error) {
+	// Reader pool (#51). The correlated subselect resolves the latest
+	// row's claim/decision; it runs once per loop (loops are few).
+	rows, err := s.ro.Query(
+		`SELECT loop_name,
+		        COUNT(*),
+		        MAX(seq),
+		        SUM(CASE WHEN TRIM(COALESCE(reopen_trigger,'')) != '' THEN 1 ELSE 0 END),
+		        COALESCE((SELECT COALESCE(NULLIF(lc2.claim,''), lc2.decision)
+		           FROM loop_checkpoints lc2
+		          WHERE lc2.project_id = lc.project_id AND lc2.loop_name = lc.loop_name
+		          ORDER BY lc2.seq DESC LIMIT 1), ''),
+		        MAX(created_at)
+		   FROM loop_checkpoints lc
+		  WHERE project_id = ?
+		  GROUP BY loop_name
+		  ORDER BY MAX(created_at) DESC`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LoopLedgerStat
+	for rows.Next() {
+		var st LoopLedgerStat
+		if err := rows.Scan(&st.LoopName, &st.Checkpoints, &st.LatestSeq,
+			&st.OpenTriggers, &st.LatestReceipt, &st.LastCreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
 // ListLoops returns per-loop summaries for a project, most recently
 // touched first.
 func (s *Store) ListLoops(projectID string, limit int) ([]LoopSummary, error) {
