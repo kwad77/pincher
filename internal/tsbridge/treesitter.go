@@ -35,6 +35,7 @@ type TreeSitter struct {
 	languageVersion api.Function
 
 	treeRootNode api.Function
+	treeDelete   api.Function
 
 	queryNew              api.Function
 	queryCursorNew        api.Function
@@ -96,6 +97,7 @@ func New(ctx context.Context) (TreeSitter, error) {
 		//	languageName:          mod.ExportedFunction("ts_language_name"),
 		languageVersion:     mod.ExportedFunction("ts_language_version"),
 		treeRootNode:        mod.ExportedFunction("ts_tree_root_node"),
+		treeDelete:          mod.ExportedFunction("ts_tree_delete"),
 		nodeString:          mod.ExportedFunction("ts_node_string"),
 		nodeChildCount:      mod.ExportedFunction("ts_node_child_count"),
 		nodeNamedChildCount: mod.ExportedFunction("ts_node_named_child_count"),

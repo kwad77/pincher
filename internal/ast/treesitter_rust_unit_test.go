@@ -1,5 +1,3 @@
-//go:build treesitter_experimental
-
 // SPDX-License-Identifier: MIT
 
 package ast
@@ -82,8 +80,10 @@ fn helper(n: i64) -> i64 { n * 2 }
 			addParent = s.Parent
 		}
 	}
-	if addParent != "Calc" {
-		t.Errorf("method add parent = %q, want Calc", addParent)
+	// Parent follows pincher's moduleQN convention (relPath stem + "::" +
+	// type), matching the regex tier so symbol IDs stay stable.
+	if addParent != "src::calc::Calc" {
+		t.Errorf("method add parent = %q, want src::calc::Calc", addParent)
 	}
 
 	// Grouped use-tree enumerated (regex truncates at '{').
