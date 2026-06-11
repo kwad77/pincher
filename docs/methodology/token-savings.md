@@ -11,7 +11,7 @@ For every MCP tool call, pincher returns a `_meta.tokens_used` value (the bytes 
 - **Actual** — bytes of the pincher response, divided by 4.
 - **Baseline** — bytes an agent would have read WITHOUT pincher to obtain the same information.
 
-The baseline isn't theoretical — every tool has a `baseline_method` registered in `internal/server/server.go baselineMethodForTool`. Three baseline shapes cover all 29 tools:
+The baseline isn't theoretical — every tool has a `baseline_method` registered in `internal/server/server.go baselineMethodForTool`. Three baseline shapes cover all 30 tools:
 
 | Baseline method | Tools | What "baseline" measures |
 |---|---|---|

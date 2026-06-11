@@ -1,4 +1,4 @@
-# The 29 MCP tools
+# The 30 MCP tools
 
 [Back to reference index](README.md)
 
@@ -58,7 +58,7 @@ Token savings: ~90% vs reading files.
 
 ### `search` {#tool-search}
 
-FTS5 BM25 across names, signatures, docstrings. Wildcards (`auth*`), phrases (`"process order"`), AND/OR. `kind`/`language`/`corpus` filters. `corpus` defaults to `code`; pass `config` for YAML/JSON/HCL settings, `docs` for Markdown / Documents. The legacy `all` value was removed in v0.5; older callers passing it get soft-redirected to `code` with a deprecation log line. `fields` projects columns. `project=*` searches all repos.
+FTS5 BM25 across names, signatures, docstrings. Wildcards (`auth*`), phrases (`"process order"`), AND/OR. `kind`/`language`/`corpus` filters. `corpus` defaults to `code`; pass `config` for YAML/JSON/HCL settings, `docs` for Markdown / Documents. The legacy `all` value was removed in v0.5; older callers passing it get soft-redirected to `code` with a deprecation log line. `fields` projects columns. `project=*` searches all repos. `count_only=true` returns just `{query, total, by_kind}` — the conclusion-density shape for "how many matches?" questions; composes with every filter and skips the per-hit snippet disk read.
 
 Tested latency: 1 ms.
 
@@ -70,9 +70,15 @@ Tested latency: 2 ms (single-hop).
 
 ### `trace` {#tool-trace}
 
-BFS call-path trace — who calls this, or what does it call. Grouped by depth. Risk labels: CRITICAL (depth 1) → LOW (depth 4+).
+BFS call-path trace — who calls this, or what does it call. Grouped by depth. Risk labels: CRITICAL (depth 1) → LOW (depth 4+). `count_only=true` returns just `{root, direction, total, by_depth, by_risk}` — the conclusion-density shape for "how many callers?" questions; counts come from the exact same traversal + filters the row-shaped call runs.
 
 Tested latency: <5 ms (depth 3).
+
+### `assert_graph` {#tool-assert_graph}
+
+Server-side invariant evaluation over the edge graph — the conclusion-density sibling of `count_only`. Pass `kind` + `target` (+ `scope` / `limit` per kind) and get `{pass, checked}` back when the assertion holds, plus `violations` (up to 10 `{id, file_path}`) when it doesn't. Kinds (the set is closed at exactly four; unknown kinds rich-error with the full catalog): `no_callers_outside` (every caller of `target` lives under a `scope` path prefix), `max_callers` (at most `limit` direct callers), `no_calls_to` (nothing under `scope` calls `target` — layering rule), `exists` (`target` resolves to at least one indexed symbol; exact name first, FTS5 fallback). Caller-shaped kinds count direct CALLS/HTTP_CALLS/ASYNC_CALLS edges; test files are included — an assertion is about the whole graph.
+
+Tested latency: ~1-5 ms (one edge query + per-caller lookups).
 
 ### `context_for_task` {#tool-context_for_task}
 

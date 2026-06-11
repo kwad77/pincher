@@ -102,12 +102,16 @@ var outputSchemas = map[string]string{
 	}`,
 
 	// 5. search — BM25-ranked. v0.25 #532: pagination via limit/offset
-	// with total/has_more in the response envelope.
+	// with total/has_more in the response envelope. count_only=true
+	// (conclusion-density) returns only {query, total, by_kind, _meta},
+	// so the row/pagination fields are present on the default shape but
+	// not required by the schema.
 	"search": `{
 		"type":"object",
-		"required":["query","count","results","total","has_more","offset","limit","_meta"],
+		"required":["query","total","_meta"],
 		"properties":{
 			"query":{"type":"string"},
+			"by_kind":{"type":"object","additionalProperties":{"type":"integer"},"description":"count_only=true only: post-filter match count per symbol kind."},
 			"count":{"type":"integer","description":"Number of results in this page (len(results))."},
 			"total":{"type":"integer","description":"Total post-filter result count considered. Lower bound when has_more is true and the FTS5 fetch hit the cap (5000)."},
 			"has_more":{"type":"boolean","description":"True when there's at least one row past offset+limit. Drives the dashboard's Load more button."},
@@ -149,15 +153,19 @@ var outputSchemas = map[string]string{
 		}
 	}`,
 
-	// 7. trace — graph BFS.
+	// 7. trace — graph BFS. count_only=true (conclusion-density) returns
+	// only {root, direction, total, by_depth, by_risk, _meta}, so hops
+	// is present on the default shape but not required by the schema.
 	"trace": `{
 		"type":"object",
-		"required":["root","direction","hops","total","_meta"],
+		"required":["root","direction","total","_meta"],
 		"properties":{
 			"root":{"type":"string"},
 			"direction":{"type":"string","enum":["inbound","outbound","both"]},
 			"hops":{"type":"array","items":{"type":"object"}},
 			"total":{"type":"integer"},
+			"by_depth":{"type":"object","additionalProperties":{"type":"integer"},"description":"count_only=true only: hop count per BFS depth."},
+			"by_risk":{"type":"object","additionalProperties":{"type":"integer"},"description":"count_only=true only (risk=true): hop count per risk label."},
 			"risk_summary":{"type":"object","properties":{
 				"CRITICAL":{"type":"integer"},
 				"HIGH":{"type":"integer"},
@@ -242,6 +250,25 @@ var outputSchemas = map[string]string{
 			"overlapping_files":{"type":"array","items":{"type":"string"}},
 			"overlapping_symbols":{"type":"array","items":{"type":"string"}},
 			"verdict":{"type":"string"},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
+	// 10c. assert_graph — conclusion-density: server-side invariant
+	// evaluation over the edge graph. violations only present on fail.
+	"assert_graph": `{
+		"type":"object",
+		"required":["kind","target","pass","checked","_meta"],
+		"properties":{
+			"kind":{"type":"string","enum":["no_callers_outside","max_callers","no_calls_to","exists"]},
+			"target":{"type":"string","description":"The resolved symbol id (caller-shaped kinds) or the input target (exists)."},
+			"pass":{"type":"boolean"},
+			"checked":{"type":"integer","description":"Direct callers examined (caller-shaped kinds) or matches found (exists)."},
+			"violations":{"type":"array","items":{"type":"object","properties":{
+				"id":{"type":"string"},
+				"file_path":{"type":"string"}
+			}},"description":"Only present when pass=false; capped at 10."},
+			"violations_total":{"type":"integer","description":"Only present when pass=false; the uncapped violation count."},
 			"_meta":` + metaRef + `
 		}
 	}`,
