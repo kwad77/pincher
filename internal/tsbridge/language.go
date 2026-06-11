@@ -66,3 +66,19 @@ func (t TreeSitter) LanguageCSharp(ctx context.Context) (Language, error) {
 	}
 	return NewLanguage(p[0], t), nil
 }
+
+func (t TreeSitter) LanguageTypeScript(ctx context.Context) (Language, error) {
+	p, err := t.languageTypeScript.Call(ctx)
+	if err != nil {
+		return Language{}, fmt.Errorf("initiating typescript language: %w", err)
+	}
+	return NewLanguage(p[0], t), nil
+}
+
+func (t TreeSitter) LanguageTSX(ctx context.Context) (Language, error) {
+	p, err := t.languageTSX.Call(ctx)
+	if err != nil {
+		return Language{}, fmt.Errorf("initiating tsx language: %w", err)
+	}
+	return NewLanguage(p[0], t), nil
+}
