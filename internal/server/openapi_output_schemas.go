@@ -246,6 +246,25 @@ var outputSchemas = map[string]string{
 		}
 	}`,
 
+	// 10c. coach — priced findings mined from recorded usage telemetry.
+	"coach": `{
+		"type":"object",
+		"required":["window","calls_analyzed","findings","_meta"],
+		"properties":{
+			"window":{"type":"string"},
+			"calls_analyzed":{"type":"integer"},
+			"findings":{"type":"array","items":{"type":"object","properties":{
+				"pattern":{"type":"string"},
+				"occurrences":{"type":"integer"},
+				"est_tokens_left_on_table":{"type":"integer"},
+				"recommendation":{"type":"string"},
+				"basis":{"type":"string"}
+			}}},
+			"note":{"type":"string"},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
 	// 11. schema — schema diagram.
 	"schema": `{
 		"type":"object",

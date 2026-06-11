@@ -652,6 +652,13 @@ var readerRoutedStoreMethods = map[string]bool{
 	"HookConversionRate7d": true,
 	"HookOverrideRate7d":   true,
 	"HookCountsByTool7d":   true,
+	// coach telemetry readers — pure SELECT / PRAGMA over recorded
+	// telemetry; coach never mutates what it mines.
+	"ToolCallsSince":                true,
+	"QueryMetricsSince":             true,
+	"HookRedirectOutcomes":          true,
+	"HookTokenColumnsPresent":       true,
+	"HookRedirectTokensLeftOnTable": true,
 	// Accessors that return the underlying *sql.DB. RO() returns the
 	// reader pool by definition; DB() returns the writer (semantic
 	// belongs to writer-routed since callers may write through it).
