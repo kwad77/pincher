@@ -206,7 +206,7 @@ Notes: useful for in-file refactor planning.
 
 Write CLAUDE.md / `.claude/config.json` / Cursor rules / Codex AGENTS.md / Goose Open Plugins hooks / etc. — preflight (diff_preview) or `apply=true`. Supports multiple targets via `target=<name>` or `target=all`, including `goose` for a project-scoped `.agents/plugins/pincher/` hook extension. Codex AGENTS.md always lives in `~/.codex/AGENTS.md` and emits a `skipped_always_global` entry when `target=all` is used in a project context.
 
-Notes: per-target `{target, path, action, diff_preview, bytes_in, bytes_out}`. Codex emits `{target, action: "skipped_always_global", reason}`.
+Notes: per-target `{target, path, action, diff_preview, bytes_in, bytes_out}`. Codex emits `{target, action: "skipped_always_global", reason}`. `target=claude-skills` (the shipped methodology-skills installer) is refused over MCP — it writes into the always-global `~/.claude/skills/`, outside `project_path`; use the `pincher init --target=claude-skills --write` CLI.
 
 ### `doctor` {#tool-doctor}
 

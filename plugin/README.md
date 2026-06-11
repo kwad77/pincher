@@ -8,6 +8,7 @@ Wraps the [pincherMCP](https://github.com/kwad77/pincher) codebase-intelligence 
 - A SessionStart hook that runs `pincher index --hook` after install, injecting a "pincher is ready" additionalContext envelope so agents are primed to use pincher tools instead of defaulting to Read/Grep ([#138](https://github.com/kwad77/pincher/issues/138)).
 - A `_meta` envelope on every tool response with real BPE token counts and latency.
 - Persistent per-project session stats and all-time savings totals in SQLite.
+- Five methodology skills (`skills/`): `pincher-loop` (evidence-gated delivery loop), `pincher-onboard` (first contact with a repo), `pincher-review` (blast-radius-first review), `pincher-debug` (evidence-ranked failure triage), `pincher-steward` (scheduled maintenance heartbeat). Non-plugin installs get the same files via `pincher init --target=claude-skills --write`.
 
 ## Install
 
@@ -47,6 +48,7 @@ Network access is required on the first run per version. Subsequent sessions wit
 | `scripts/install.js` | Cross-platform dispatcher (uses Node, which Claude Code already ships with) |
 | `scripts/install.sh` | POSIX installer (macOS, Linux) — downloads + verifies + extracts |
 | `scripts/install.ps1` | Windows installer — same flow, PowerShell idioms |
+| `skills/` | The pincher methodology skills (`pincher-loop`, `pincher-onboard`, `pincher-review`, `pincher-debug`, `pincher-steward`) — loaded natively by the plugin; also the canonical copies the binary embeds for `pincher init --target=claude-skills` |
 
 ## Uninstall
 

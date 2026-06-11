@@ -155,9 +155,13 @@ pincher init --target=windsurf            # ./.windsurf/rules/pincher.md
 pincher init --target=aider               # ./CONVENTIONS.md
 pincher init --target=continue            # ~/.continue/config.json (merges into systemMessage)
 pincher init --target=detect              # write only to editors whose marker file exists under cwd
-pincher init --target=all                 # write every project-scoped target
+pincher init --target=all                 # write every project-scoped target (+ previews claude-skills)
+pincher init --target=claude-skills       # preview the shipped methodology skills -> ~/.claude/skills/
+pincher init --target=claude-skills --write   # actually install/update them
 pincher init --dry-run                    # print what would be written; do not modify
 ```
+
+The `claude-skills` target installs the methodology skills that ship with pincher (`pincher-loop`, `pincher-onboard`, `pincher-review`, `pincher-debug`, `pincher-steward` — the canonical copies under `plugin/skills/`) into the per-user `~/.claude/skills/` directory, one directory per skill. Unlike the rules-file targets it **previews by default** — it writes a multi-file tree into your home directory, so mutation requires `--write`. Re-runs are idempotent; a skill whose installed `SKILL.md` declares a **newer** `version:` than the shipped copy is refused (never downgraded) — delete that skill's directory to force a downgrade. It also rides along with `--target=all` under the same preview/`--write` contract, and is CLI-only (the MCP `init` tool refuses it because the destination escapes the project root).
 
 The cursor target preserves any user-edited YAML frontmatter (`description`, `globs`, `alwaysApply`) on re-runs — only the marker block in the body is replaced. The continue target preserves all unknown JSON keys; only the `systemMessage` field is touched.
 

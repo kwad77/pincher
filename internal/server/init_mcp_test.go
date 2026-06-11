@@ -353,3 +353,28 @@ func TestHandleInit_MetaEnvelopePresent(t *testing.T) {
 		t.Error("_meta.latency_ms missing")
 	}
 }
+
+// TestHandleInit_TargetClaudeSkillsRejected — the shipped-skills
+// installer writes into the always-global ~/.claude/skills/, so the
+// MCP surface refuses it (same family as continue) and points at the
+// CLI, which keeps the preview-by-default / --write contract.
+func TestHandleInit_TargetClaudeSkillsRejected(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	tmp := t.TempDir()
+	setSessionRoot(t, srv, tmp)
+
+	res, err := srv.handleInit(context.Background(), makeReq(map[string]any{
+		"target": pinit.SkillsTargetName,
+	}))
+	if err != nil {
+		t.Fatalf("handleInit: %v", err)
+	}
+	if !res.IsError {
+		t.Errorf("expected IsError=true for target=claude-skills; got body:\n%s", textOf(t, res))
+	}
+	body := textOf(t, res)
+	if !strings.Contains(body, "claude-skills") || !strings.Contains(body, "--write") {
+		t.Errorf("refusal should name the target and the CLI escape hatch; got: %s", body)
+	}
+}

@@ -96,11 +96,11 @@ func FindTarget(name string) (Target, bool) {
 // text. Order matches AllTargets, with the detect/all aliases
 // appended.
 func TargetNames() []string {
-	out := make([]string, 0, len(AllTargets)+2)
+	out := make([]string, 0, len(AllTargets)+3)
 	for _, t := range AllTargets {
 		out = append(out, t.Name)
 	}
-	out = append(out, "detect", "all")
+	out = append(out, SkillsTargetName, "detect", "all")
 	return out
 }
 
@@ -141,6 +141,13 @@ func ResolveTargets(name, cwd string) ([]Target, error) {
 	switch name {
 	case "":
 		return nil, fmt.Errorf("--target is required (one of: %s)", strings.Join(TargetNames(), ", "))
+	case SkillsTargetName:
+		// claude-skills is the multi-file skills installer, not a
+		// rules-file Target — it has no Plan/WriteFn shape. Callers
+		// (CLI, MCP) special-case the name before resolving; reaching
+		// this branch means a caller forgot, so fail with directions
+		// instead of the misleading "unknown --target".
+		return nil, fmt.Errorf("--target=%s is the skills installer and is handled outside the rules-file machinery; run `pincher init --target=%s` from the CLI", SkillsTargetName, SkillsTargetName)
 	case "detect":
 		return DetectTargets(cwd), nil
 	case "all":
