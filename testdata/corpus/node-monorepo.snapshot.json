@@ -8,7 +8,7 @@
     "Variable": 1
   },
   "edge_count_by_kind": {
-    "CALLS": 1
+    "CALLS": 3
   },
   "extraction_failures_by_reason": {},
   "files_blocked": 3,

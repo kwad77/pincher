@@ -104,6 +104,42 @@ func sameKeys(m map[string]any, want []string) bool {
 	return true
 }
 
+func TestHandleSymbols_DefaultsToCompactProjection(t *testing.T) {
+	t.Parallel()
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "p1-compact"
+	store.UpsertProject(db.Project{ID: "p1-compact", Path: "/tmp/p1-compact", Name: "p1-compact", IndexedAt: time.Now()})
+	mustUpsertSymbols(t, store, []db.Symbol{{
+		ID: "p1-compact::pkg.Foo#Function", ProjectID: "p1-compact", FilePath: "main.go",
+		Name: "Foo", QualifiedName: "pkg.Foo", Kind: "Function", Language: "Go",
+		Signature: "func Foo()", Docstring: "large docs", ReturnType: "int", Complexity: 7,
+		StartLine: 10, EndLine: 12, ExtractionConfidence: 1.0,
+	}})
+
+	result, err := srv.handleSymbols(context.Background(), makeReq(map[string]any{
+		"ids": []string{"p1-compact::pkg.Foo#Function"},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := decode(t, result)
+	syms, _ := body["symbols"].([]any)
+	if len(syms) != 1 {
+		t.Fatalf("expected 1 symbol; got %d", len(syms))
+	}
+	entry, _ := syms[0].(map[string]any)
+	for _, dropped := range []string{"source", "docstring", "return_type", "complexity", "start_byte", "end_byte", "is_exported"} {
+		if _, ok := entry[dropped]; ok {
+			t.Fatalf("default compact symbols response should omit %q; entry=%v", dropped, entry)
+		}
+	}
+	for _, kept := range []string{"id", "name", "qualified_name", "kind", "language", "file_path", "start_line", "end_line", "signature", "extraction_confidence"} {
+		if _, ok := entry[kept]; !ok {
+			t.Fatalf("default compact symbols response should keep %q; entry=%v", kept, entry)
+		}
+	}
+}
+
 // handleSymbols with fields=id,name returns only those keys + _meta;
 // source field is omitted AND the per-symbol disk read is skipped.
 func TestHandleSymbols_FieldsProjection(t *testing.T) {

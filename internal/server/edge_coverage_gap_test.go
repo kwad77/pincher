@@ -4,12 +4,13 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/kwad77/pincher/internal/db"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // #858: trace and dead_code are silent no-ops on non-Go/non-Python
@@ -91,6 +92,42 @@ func TestEdgeCoverageGap_GoProject_SilentOnGenuineLeaf(t *testing.T) {
 	}
 	if diag := metaDiagnosis(t, trRes); strings.Contains(diag, "#858") {
 		t.Errorf("Go project has edge resolution — an empty trace is a real leaf, not a coverage gap; got diagnosis %q", diag)
+	}
+}
+
+func TestSparseGraphWarning_TypeScriptProject_WarnsTraceAndDeadCode(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	srv.sessionID = "tsproj"
+	store.UpsertProject(db.Project{ID: "tsproj", Path: "/tmp/tsproj", Name: "tsproj", IndexedAt: time.Now()})
+
+	syms := make([]db.Symbol, 0, 120)
+	for i := 0; i < 120; i++ {
+		name := fmt.Sprintf("fn%d", i)
+		if i == 0 {
+			name = "entry"
+		}
+		syms = append(syms, db.Symbol{ID: fmt.Sprintf("tsproj::%s#Function", name), ProjectID: "tsproj", FilePath: "src/app.ts",
+			Name: name, QualifiedName: name, Kind: "Function", Language: "TypeScript", ExtractionConfidence: 0.95})
+	}
+	mustUpsertSymbols(t, store, syms)
+	if err := store.BulkUpsertEdges([]db.Edge{{ProjectID: "tsproj", FromID: syms[0].ID, ToID: syms[1].ID, Kind: "CALLS", Confidence: 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	dcRes, err := srv.handleDeadCode(context.Background(), makeReq(map[string]any{"language": "TypeScript", "min_confidence": 0.9}))
+	if err != nil {
+		t.Fatalf("handleDeadCode: %v", err)
+	}
+	if got := strings.Join(metaWarnings(t, decode(t, dcRes)), "\n"); !strings.Contains(got, "GRAPH SPARSITY WARNING") || !strings.Contains(got, "TypeScript") || !strings.Contains(got, "results are unreliable") {
+		t.Fatalf("dead_code missing prominent TypeScript sparse-graph warning; got %q", got)
+	}
+
+	trRes, err := srv.handleTrace(context.Background(), makeReq(map[string]any{"name": "entry"}))
+	if err != nil {
+		t.Fatalf("handleTrace: %v", err)
+	}
+	if got := strings.Join(metaWarnings(t, decode(t, trRes)), "\n"); !strings.Contains(got, "GRAPH SPARSITY WARNING") || !strings.Contains(got, "TypeScript") || !strings.Contains(got, "trace/dead_code results are unreliable") {
+		t.Fatalf("trace missing prominent TypeScript sparse-graph warning; got %q", got)
 	}
 }
 

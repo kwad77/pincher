@@ -5339,6 +5339,9 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 	// #400: per-entry field projection. Caller-driven cut applied
 	// to each row in the `symbols` array. nil = all fields.
 	fieldSet := parseFieldsArg(str(args, "fields"))
+	if fieldSet == nil {
+		fieldSet = compactSymbolsFieldSet()
+	}
 	// #908: validate the requested fields against the known entry shape
 	// up-front. Pre-fix unknown fields were silently dropped by
 	// projectFields, so a typo'd field name (`fields=id,naem`) gave no
@@ -8539,6 +8542,11 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if traceMaxHopsClampMsg != "" {
 		traceWarnings = append(traceWarnings, traceMaxHopsClampMsg)
 	}
+	if len(starts) > 0 {
+		if sparseWarning := s.sparseGraphWarningForLanguage(projectID, starts[0].Language); sparseWarning != "" {
+			traceWarnings = append(traceWarnings, sparseWarning)
+		}
+	}
 	traceWarnings = append(traceWarnings, traceKindWarnings...)
 	if len(traceWarnings) > 0 {
 		meta["warnings"] = traceWarnings
@@ -9215,6 +9223,38 @@ func (s *Server) edgeGraphEmptyForLanguage(projectID string) (string, bool) {
 	return lang, true
 }
 
+func (s *Server) sparseGraphWarningForLanguage(projectID, language string) string {
+	if language == "" {
+		row := s.store.RO().QueryRow(
+			`SELECT language FROM symbols WHERE project_id=? AND language<>'' GROUP BY language ORDER BY COUNT(*) DESC LIMIT 1`,
+			projectID)
+		_ = row.Scan(&language)
+	}
+	if language == "" {
+		return ""
+	}
+	var symCount, edgeCount int
+	if err := s.store.RO().QueryRow(
+		`SELECT COUNT(*) FROM symbols WHERE project_id=? AND language=?`,
+		projectID, language).Scan(&symCount); err != nil || symCount < 10 {
+		return ""
+	}
+	if err := s.store.RO().QueryRow(
+		`SELECT COUNT(*)
+		   FROM edges e
+		   JOIN symbols sf ON sf.project_id=e.project_id AND sf.id=e.from_id
+		   JOIN symbols st ON st.project_id=e.project_id AND st.id=e.to_id
+		  WHERE e.project_id=? AND (sf.language=? OR st.language=?)`,
+		projectID, language, language).Scan(&edgeCount); err != nil {
+		return ""
+	}
+	density := float64(edgeCount) / float64(symCount)
+	if density >= 0.01 {
+		return ""
+	}
+	return fmt.Sprintf("GRAPH SPARSITY WARNING: graph is sparse for %s in this project (%d symbols, %d language-touching edges, density %.4f < 0.01); trace/dead_code results are unreliable and may contain false positives until the %s edge extractor/resolver is improved or the project is re-indexed with richer edges.", language, symCount, edgeCount, density, language)
+}
+
 func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
 	// #1579 v0.82: cancellation contract. dead_code is single SQL via
@@ -9359,6 +9399,9 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 		kindWarnings = append(kindWarnings, deadMinConfWarn)
 	}
 	limit := intArg(args, "limit", 100)
+	if sparseWarning := s.sparseGraphWarningForLanguage(projectID, language); sparseWarning != "" {
+		kindWarnings = append(kindWarnings, sparseWarning)
+	}
 	// #879: surface the limit clamp instead of silently dropping the
 	// caller-requested page size. search/neighborhood already warn on
 	// limit clamp; dead_code didn't. Also clamps negative / zero to 1
@@ -12372,12 +12415,43 @@ func (s *Server) handleGuide(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		}), nil
 	}
 	shape, hint, recommendations, guideProjectWarning := s.computeGuide(task, str(args, "project"))
+	// #1942: FTS fallback — when the caller scoped to a resolvable project,
+	// seed ranked symbol matches for the task so guide returns concrete
+	// code entry points alongside the shape-driven recommendations.
+	var guideSymbolMatches []map[string]any
+	if projectID, err := s.resolveProjectID(str(args, "project")); err == nil && projectID != "" {
+		results, searchErr := s.store.SearchSymbolsByCorpus(projectID, task, "", "", "code", 5)
+		if searchErr == nil && len(results) == 0 && !strings.Contains(task, `"`) {
+			tokens := strings.Fields(task)
+			if len(tokens) > 1 && !containsBareFTS5Operator(tokens) {
+				sanitised := make([]string, len(tokens))
+				for i, tok := range tokens {
+					sanitised[i] = wrapTokenIfNeeded(tok)
+				}
+				results, _ = s.store.SearchSymbolsByCorpus(projectID, strings.Join(sanitised, " OR "), "", "", "code", 5)
+			}
+		}
+		for _, r := range results {
+			guideSymbolMatches = append(guideSymbolMatches, map[string]any{
+				"id":             r.Symbol.ID,
+				"name":           r.Symbol.Name,
+				"qualified_name": r.Symbol.QualifiedName,
+				"kind":           r.Symbol.Kind,
+				"file_path":      r.Symbol.FilePath,
+				"score":          r.Score,
+			})
+		}
+	}
 
 	data := map[string]any{
 		"task":                   task,
 		"shape":                  string(shape),
 		"hint":                   hint,
 		"recommended_next_tools": recommendations,
+	}
+	if len(guideSymbolMatches) > 0 {
+		data["symbol_matches"] = guideSymbolMatches
+		attachWarning(data, "guide auto-ran FTS fallback search for this task; see symbol_matches for ranked code matches")
 	}
 	// #1028: attach project-resolve warning if a bogus project was
 	// passed. attachWarning merges into _meta.warnings so other paths
@@ -13357,20 +13431,28 @@ func strSlice(args map[string]any, key string) []string {
 // semantics. Caller-driven cut, no fidelity loss — agent picks
 // what they want, server strips the rest.
 func parseFieldsArg(s string) map[string]bool {
-	s = strings.TrimSpace(s)
-	if s == "" {
+	if strings.TrimSpace(s) == "" {
 		return nil
 	}
-	out := make(map[string]bool)
-	for _, f := range strings.Split(s, ",") {
-		if f = strings.TrimSpace(f); f != "" {
-			out[f] = true
+	out := map[string]bool{}
+	for _, part := range strings.Split(s, ",") {
+		k := strings.TrimSpace(part)
+		if k != "" {
+			out[k] = true
 		}
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+func compactSymbolsFieldSet() map[string]bool {
+	return map[string]bool{
+		"id": true, "name": true, "qualified_name": true, "kind": true,
+		"language": true, "file_path": true, "start_line": true, "end_line": true,
+		"signature": true, "extraction_confidence": true, "error": true,
+	}
 }
 
 // projectFields returns a shallow copy of m containing only keys in
