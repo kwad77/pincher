@@ -783,7 +783,7 @@
   },
   {
     "name": "search",
-    "description": "**Use before `Grep`/`Read`** when looking for code by name or content. Always start here when you don't know the exact symbol ID. Returns signature + a query-aware snippet per result (exact-identifier queries get no snippet by default since the agent knows the target name; phrase / wildcard / multi-word queries get a 5-line snippet for triage — override via `snippet_lines`). Often enough to answer without a follow-up call. Uses FTS5 BM25 ranking. Examples: 'processOrder' for a function, 'auth*' for prefix, '\"token validation\"' for a phrase. Filter by `kind=Function` / `language=Go` / `corpus=config|docs` to narrow. Pass `format=\"text\"` for a dense TSV rendering of the hits (`results_text`) instead of the JSON results array — same envelope, materially fewer tokens on list-shaped output. Use `context` on the result ID only if you need full source + dependencies.",
+    "description": "**Use before `Grep`/`Read`** when looking for code by name or content. Always start here when you don't know the exact symbol ID. Returns signature + a query-aware snippet per result (exact-identifier queries get no snippet by default since the agent knows the target name; phrase / wildcard / multi-word queries get a 5-line snippet for triage — override via `snippet_lines`). Often enough to answer without a follow-up call. Uses FTS5 BM25 ranking. Examples: 'processOrder' for a function, 'auth*' for prefix, '\"token validation\"' for a phrase. Filter by `kind=Function` / `language=Go` / `corpus=config|docs` to narrow. Pass `format=\"text\"` for a dense TSV rendering of the hits (`results_text`) or `format=\"toon\"` for a TOON tabular rendering (`results_toon`) instead of the JSON results array — same envelope, materially fewer tokens on list-shaped output. Use `context` on the result ID only if you need full source + dependencies.",
     "input_schema": {
       "properties": {
         "compact": {
@@ -809,10 +809,11 @@
           "type": "string"
         },
         "format": {
-          "description": "Response rendering for the hit list. 'json' (default) returns the results array. 'text' replaces it with results_text — a dense TSV block (header row, then one line per hit: id\u003cTAB\u003ekind\u003cTAB\u003efile:line\u003cTAB\u003esignature-or-name). Same information for driving follow-up symbol/context/trace calls at a fraction of the token cost; fixed column set (fields= and snippet options don't apply to the text rendering). _meta and the pagination envelope (count/total/has_more) are unchanged.",
+          "description": "Response rendering for the hit list. 'json' (default) returns the results array. 'text' replaces it with results_text — a dense TSV block (header row, then one line per hit: id\u003cTAB\u003ekind\u003cTAB\u003efile:line\u003cTAB\u003esignature-or-name). 'toon' replaces it with results_toon — a TOON (Token-Oriented Object Notation) tabular block: field list declared once (results[N]{file,id,kind,line,name,signature}:), then one bare comma-delimited row per hit; strings quoted only when needed. Both carry the information for driving follow-up symbol/context/trace calls at a fraction of the JSON token cost; fixed column set (fields= and snippet options don't apply to the text/toon renderings). _meta and the pagination envelope (count/total/has_more) are unchanged.",
           "enum": [
             "json",
-            "text"
+            "text",
+            "toon"
           ],
           "type": "string"
         },
@@ -957,7 +958,7 @@
   },
   {
     "name": "trace",
-    "description": "**Use before changing behaviour** that other code depends on, to find callers (inbound) or what it calls (outbound). Risk labels: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Pass `name` for the common case; when the name is ambiguous (multiple symbols share it) trace falls back to the first match and surfaces alternatives in `_meta.ambiguous_match`. To trace a specific alternative, pass `id=` with the exact symbol ID from search/symbols/query — that's the disambiguation escape hatch (#474). Default traversal follows CALLS-family edges; pass `kinds=READS,WRITES` to trace data-flow edges instead (or `kinds=CALLS,READS` to mix). Test files and testdata/ fixtures are filtered by default; pass `include_tests=true` to see test coverage of a symbol. When `depth` is omitted, the result is auto-trimmed to the smallest depth with ≥5 hops (so hotspots don't dump 100+ rows); `_meta.depth_used` reports the trim. Pass `depth=N` explicitly to skip the trim. Pass `format=\"text\"` for a dense TSV rendering of the hops (`results_text`) instead of the JSON hops array — same envelope, materially fewer tokens on hot traces.",
+    "description": "**Use before changing behaviour** that other code depends on, to find callers (inbound) or what it calls (outbound). Risk labels: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Pass `name` for the common case; when the name is ambiguous (multiple symbols share it) trace falls back to the first match and surfaces alternatives in `_meta.ambiguous_match`. To trace a specific alternative, pass `id=` with the exact symbol ID from search/symbols/query — that's the disambiguation escape hatch (#474). Default traversal follows CALLS-family edges; pass `kinds=READS,WRITES` to trace data-flow edges instead (or `kinds=CALLS,READS` to mix). Test files and testdata/ fixtures are filtered by default; pass `include_tests=true` to see test coverage of a symbol. When `depth` is omitted, the result is auto-trimmed to the smallest depth with ≥5 hops (so hotspots don't dump 100+ rows); `_meta.depth_used` reports the trim. Pass `depth=N` explicitly to skip the trim. Pass `format=\"text\"` for a dense TSV rendering of the hops (`results_text`) or `format=\"toon\"` for a TOON tabular rendering (`results_toon`) instead of the JSON hops array — same envelope, materially fewer tokens on hot traces.",
     "input_schema": {
       "properties": {
         "compact": {
@@ -986,10 +987,11 @@
           "type": "string"
         },
         "format": {
-          "description": "Response rendering for the hop list. 'json' (default) returns the hops array. 'text' replaces it with results_text — a dense TSV block (header row, then one line per hop: depth\u003cTAB\u003erisk\u003cTAB\u003eid; risk renders '-' when risk=false). The id embeds file path + qualified name, so each line carries enough to drive a follow-up context/symbol call. _meta and total are unchanged.",
+          "description": "Response rendering for the hop list. 'json' (default) returns the hops array. 'text' replaces it with results_text — a dense TSV block (header row, then one line per hop: depth\u003cTAB\u003erisk\u003cTAB\u003eid; risk renders '-' when risk=false). 'toon' replaces it with results_toon — a TOON (Token-Oriented Object Notation) tabular block: hops[N]{depth,id,risk}: with one bare comma-delimited row per hop. In both, the id embeds file path + qualified name, so each row carries enough to drive a follow-up context/symbol call. _meta and total are unchanged.",
           "enum": [
             "json",
-            "text"
+            "text",
+            "toon"
           ],
           "type": "string"
         },

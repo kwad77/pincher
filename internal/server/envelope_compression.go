@@ -47,19 +47,33 @@ func capsFingerprint(caps []string) string {
 	return strings.Join(caps, "\x1f")
 }
 
+// rowFormat is the validated value of the list-shape `format` arg:
+// how search/trace render their row payload (the envelope stays JSON
+// regardless — MCP structuredContent is JSON by spec; only the rows
+// are re-encoded).
+type rowFormat int
+
+const (
+	rowFormatJSON rowFormat = iota // default: results/hops array
+	rowFormatText                  // dense TSV block in results_text
+	rowFormatTOON                  // TOON tabular block in results_toon
+)
+
 // parseFormatArg validates the universal list-shape `format` arg
-// ("json" default | "text"). Returns (textMode, warning). Unknown
-// values fall back to json with a warning naming the accepted set —
-// never silently change the response shape on a typo.
-func parseFormatArg(args map[string]any) (bool, string) {
+// ("json" default | "text" | "toon"). Returns (format, warning).
+// Unknown values fall back to json with a warning naming the accepted
+// set — never silently change the response shape on a typo.
+func parseFormatArg(args map[string]any) (rowFormat, string) {
 	raw, _ := args["format"].(string)
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", "json":
-		return false, ""
+		return rowFormatJSON, ""
 	case "text":
-		return true, ""
+		return rowFormatText, ""
+	case "toon":
+		return rowFormatTOON, ""
 	default:
-		return false, fmt.Sprintf("format=%q is not a known format — valid: \"json\" (default), \"text\". Returning json.", raw)
+		return rowFormatJSON, fmt.Sprintf("format=%q is not a known format — valid: \"json\" (default), \"text\", \"toon\". Returning json.", raw)
 	}
 }
 
