@@ -39,6 +39,14 @@ The hook script receives Goose's raw `PreToolUse` payload, logs a local debug co
 
 ## What to verify
 
+Start with the non-mutating smoke helper, especially on machines where Pincher is already indexing in the background:
+
+```bash
+./scripts/goose-pincher-smoke.sh
+```
+
+A healthy run should show Goose calling a Pincher MCP tool such as `mcp__pincher__list` and reporting that Pincher is available. The helper uses a temporary SQLite snapshot, so it verifies Goose's MCP wiring without racing the live Pincher watcher/indexer.
+
 After setup, ask Goose:
 
 > Use Pincher to find the payment processing entry point, then trace its callers before editing anything.
