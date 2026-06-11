@@ -130,6 +130,19 @@ Per-symbol confidence (#34) carries the gradient for everything else (vendor/, R
 
 The skip count is reported in the indexer's structured log line as `blocked=N` and on `IndexResult.Blocked` for programmatic callers.
 
+### `.pincherignore` — user-controlled ignore file
+
+The built-in rules above are heuristics; `.pincherignore` is the user-controlled escape hatch for everything they can't know about. Place a `.pincherignore` file at the project root (or in any subdirectory — nested files apply to their subtree, like `.gitignore`) and the indexer excludes matching files from the walk entirely. Full **gitignore semantics**: blank lines and `#` comments are skipped, `dir/` matches directories, `*` globs work, a leading `/` anchors to the ignore file's directory, and `!` negation re-includes previously-excluded paths. `.gitignore` and `.ignore` files are still honored independently.
+
+Canonical use case: a project whose `data/*.json` model artifacts (2.5 MB each — under the 4 MB per-file cap, so the size gate never fired) indexed as 27,672 junk `Setting` symbols — 96% of the project. A one-line `data/` in `.pincherignore` removes them.
+
+Two behavioral notes:
+
+- **Garbage collection is automatic.** Files excluded by `.pincherignore` never reach the indexer's seen-files bookkeeping, so the stale-file GC pass deletes previously-indexed symbols of newly-ignored files on the next ordinary (non-force) index run — add the rule, re-index, done.
+- **Ignored files are not counted in `IndexResult.Blocked`.** Filtering happens inside the directory walker before files are yielded, so the indexer never sees what was dropped; counting would require a second unfiltered walk per run. The `pincher.index.gc.summary` log line (`files_reaped=N`) is the observable signal when a new ignore rule takes effect.
+
+`pincher init`'s language census applies the same ignore file, so its profile matches what indexing will actually extract. The `doctor` tool surfaces a `settings_flood` advisory (Setting symbols > 80% of a project's > 1000 total symbols) recommending `.pincherignore` when a project exhibits the data-artifact flood signature.
+
 ### Refusing obvious bloat traps
 
 `pincher index <path>` refuses two catastrophic targets in any mode — the filesystem root (`/` on Linux/macOS, `C:\` on Windows, detected as any path that is its own parent) and the user's home directory (`$HOME` / `%USERPROFILE%`, with symlinks resolved). Either mistake walks tens of GB of cache and package data and was the cause of the 70 GB WAL incident this guard addresses.

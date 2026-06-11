@@ -233,7 +233,7 @@ Every tool that can return an empty result stamps `_meta.empty_reason` (stable m
 | `no_results_in_corpus` | Query and filters are fine but the symbol genuinely isn't indexed | Re-spell or widen the corpus |
 | `cap_dropped_all` | Every candidate was dropped by `max_hops` / `limit` / `offset` cap (incl. #1033 offset-past-end) | Raise the cap or paginate |
 | `incremental_no_change` | Index ran but every file was unchanged (incremental fast path) | Expected; `force=true` if you suspect corruption |
-| `all_files_blocked` | Every discovered file was filtered by `ast.ShouldSkip` (lockfiles, minified bundles) | Index a parent directory if sources are nested elsewhere |
+| `all_files_blocked` | Every discovered file was filtered by `ast.ShouldSkip` (lockfiles, minified bundles) or an over-broad `.pincherignore` / `.gitignore` | Index a parent directory if sources are nested elsewhere; check ignore files |
 | `extractor_emitted_nothing` | Files processed and not blocked, but extractor returned zero symbols | Language-detection gap; check `health` per-language coverage |
 
 Stamped by: `search`, `query`, `trace`, `neighborhood`, `dead_code`, `architecture`, `schema`, `list`, `index`, `changes`. The enum lives in `internal/server/empty_reason.go`; add new codes there and the gate test fails if a stamp site uses a literal. ([#1252](https://github.com/kwad77/pincher/issues/1252))
