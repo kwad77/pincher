@@ -408,7 +408,14 @@ func init() {
 		// Functions / methods / macros + Linux-kernel macro rewrite
 		// stay unchanged.
 		confidence: 0.85,
-		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+		fn: func(s []byte, lang, p string, _ ExtractOptions) *FileResult {
+			// Only C++ files route through tree-sitter; C (.c/.h) stays on the
+			// regex tier (its grammar + heavy regex post-processors differ).
+			if lang == "C++" && cppASTEnabled() {
+				if r, ok := extractCppTreeSitter(s, p); ok {
+					return r
+				}
+			}
 			return extractC(s, p)
 		},
 	})
