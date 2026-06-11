@@ -10,6 +10,26 @@ Top recurring friction items from the dogfood log, with remediation. If your iss
 
 **Fix:** reconnect the MCP server in the client (e.g. `/mcp` in Claude Code) so the client re-issues `tools/list`. After v0.55+ the supervised binary auto-detects on-disk drift and respawns; older binaries need manual reconnect.
 
+## "Goose says Pincher is configured but no Pincher tools appear"
+
+**Symptom:** Goose starts, but `mcp__pincher__*` tools are missing, or Goose startup reports `database is locked` / `SQLITE_BUSY` from the Pincher extension.
+
+**Cause:** Goose launches Pincher as a stdio extension. If the live Pincher database is in the middle of an index/watch write, a fresh stdio extension can fail while opening or migrating SQLite even though the already-running Pincher server is healthy.
+
+**Fix:** First verify Pincher itself:
+
+```bash
+pincher health-check
+```
+
+Then run the snapshot-backed Goose smoke helper from the repository root:
+
+```bash
+./scripts/goose-pincher-smoke.sh
+```
+
+The helper copies `pincher.db` into a temporary `PINCHER_DATA_DIR` before launching Goose, so it proves Goose can see Pincher MCP tools without racing the live watcher. If the helper passes but the normal Goose session fails, wait for the live index pass to finish or restart the Goose session after the Pincher lock clears. Keep the persistent Goose config on `pincher supervised` for day-to-day use so transient Pincher restarts do not require manual reconnects.
+
 ## "Codex says `Transport closed` but `pincher health-check` passes"
 
 **Symptom:** Codex exposes `mcp__pincher__*` tools, but every call fails
