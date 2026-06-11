@@ -8,7 +8,7 @@ Generated: 2023-11-14T22:15:00Z
 - Path: `/corpus/node-monorepo`
 - Indexed: 2026-01-01T00:00:00Z
 - Binary version: `unknown`
-- Files: 5 · Symbols: 29 · Edges: 1
+- Files: 5 · Symbols: 29 · Edges: 3
 
 ## Languages
 
@@ -28,7 +28,7 @@ Generated: 2023-11-14T22:15:00Z
 
 ## Edge kinds
 
-- CALLS: 1 edges
+- CALLS: 3 edges
 
 ## Advanced graph export
 
@@ -43,6 +43,10 @@ Generated: 2023-11-14T22:15:00Z
 
 ## Hotspots
 
+- `Greeting` Class — `src/app.js` (incoming calls: 1)
+  - Risk score: 3 (inputs: incoming=1, outgoing=0, degree=1, test-adjacent=0, confidence=1.00)
+- `say` Method — `src/app.js` (incoming calls: 1)
+  - Risk score: 3 (inputs: incoming=1, outgoing=0, degree=1, test-adjacent=0, confidence=1.00)
 - `Greeter` Class — `src/index.ts` (incoming calls: 1)
   - Risk score: 3 (inputs: incoming=1, outgoing=0, degree=1, test-adjacent=0, confidence=1.00)
 
@@ -57,11 +61,11 @@ Generated: 2023-11-14T22:15:00Z
 ## Suggested next Pincher calls
 
 - Tool: `mcp_pincher_context`
-  - Args: `{"project":"/corpus/node-monorepo","id":"src/index.ts::src.index.Greeter#Class"}`
+  - Args: `{"project":"/corpus/node-monorepo","id":"src/app.js::src.app.Greeting#Class"}`
   - Why: inspect the top hotspot before editing it.
   - Expected value: reduces risky raw reads and grounds edits in symbol provenance.
 - Tool: `mcp_pincher_trace`
-  - Args: `{"project":"/corpus/node-monorepo","id":"src/index.ts::src.index.Greeter#Class","direction":"inbound"}`
+  - Args: `{"project":"/corpus/node-monorepo","id":"src/app.js::src.app.Greeting#Class","direction":"inbound"}`
   - Why: map callers for the highest-incoming hotspot before behavior changes.
   - Expected value: exposes blast-radius risk for planning and routing escalation.
 - Tool: `mcp_pincher_changes`
