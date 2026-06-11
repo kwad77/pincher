@@ -1,4 +1,4 @@
-# The 29 MCP tools
+# The 34 MCP tools
 
 [Back to reference index](README.md)
 
@@ -38,19 +38,21 @@ Tested latency: ~5 ms.
 
 ### `symbol` {#tool-symbol}
 
-Source for one symbol by stable ID. O(1): 1 SQL + 1 `os.Seek` + 1 `os.Read`. No re-parse. Supports `fields` projection.
+Source for one symbol by stable ID. O(1): 1 SQL + 1 `os.Seek` + 1 `os.Read`. No re-parse. Supports `fields` projection and `detail="skeleton"` ([Skeleton mode](#skeleton-mode)).
 
 Token savings: file size minus symbol size (real BPE).
 
 ### `symbols` {#tool-symbols}
 
-Batch retrieve up to **100** symbols in one call. Hard cap: requests >100 IDs are rejected. Always prefer this over calling `symbol` in a loop.
+Batch retrieve up to **100** symbols in one call. Hard cap: requests >100 IDs are rejected. Always prefer this over calling `symbol` in a loop. Supports `detail="skeleton"` ([Skeleton mode](#skeleton-mode)) — the cheap way to skim several bodies at once.
 
 Token savings: same per symbol.
 
 ### `context` {#tool-context}
 
-Symbol + all direct callees in one call. The preferred tool for understanding a function.
+Symbol + all direct callees in one call. The preferred tool for understanding a function. Supports `detail="skeleton"` ([Skeleton mode](#skeleton-mode)), applied to every source payload (symbol + imports + callees); skeleton mode bypasses the `PINCHER_DIFF_CONTEXT` diff cache so the two representations can't poison each other.
+
+Diff-encoded repeat reads (#655, default-on since v1.4): a repeat `context(id)` on an unchanged file short-circuits to `{unchanged:true}`; a changed file ships `symbol.diff` (a line diff against what was last served) + `since_hash` instead of `source`. The cache is per-connection and only engages on full-fidelity serves — `max_tokens`-budgeted, `fields`-projected, skeleton, HTTP-REST, and `batch quiet` calls never read or write it. Pass `diff=false` to bypass the cache and always receive the full body — the recovery path when the prior response is not in your context (fresh session against a long-lived server, subagent sharing a parent connection); the `{unchanged:true}` response names this escape hatch in `_meta.warnings`. `PINCHER_DIFF_CONTEXT=0` disables the feature process-wide.
 
 Token savings: ~90% vs reading files.
 
@@ -58,7 +60,7 @@ Token savings: ~90% vs reading files.
 
 ### `search` {#tool-search}
 
-FTS5 BM25 across names, signatures, docstrings. Wildcards (`auth*`), phrases (`"process order"`), AND/OR. `kind`/`language`/`corpus` filters. `corpus` defaults to `code`; pass `config` for YAML/JSON/HCL settings, `docs` for Markdown / Documents. The legacy `all` value was removed in v0.5; older callers passing it get soft-redirected to `code` with a deprecation log line. `fields` projects columns. `project=*` searches all repos.
+FTS5 BM25 across names, signatures, docstrings. Wildcards (`auth*`), phrases (`"process order"`), AND/OR. `kind`/`language`/`corpus` filters. `corpus` defaults to `code`; pass `config` for YAML/JSON/HCL settings, `docs` for Markdown / Documents. The legacy `all` value was removed in v0.5; older callers passing it get soft-redirected to `code` with a deprecation log line. `fields` projects columns. `project=*` searches all repos. `format="text"` replaces the `results` array with `results_text` — a TSV block (header row, then `id<TAB>kind<TAB>file:line<TAB>signature-or-name` per hit) at ~0.45× the JSON token cost on a representative 20-hit search; the rest of the envelope (`count`/`total`/`has_more`/`_meta`) is unchanged. `format="toon"` replaces it with `results_toon` — a TOON (Token-Oriented Object Notation) tabular block: the field list declared once (`results[N]{file,id,kind,line,name,signature}:`), then one bare comma-delimited row per hit, strings quoted only when needed; ~0.50× the JSON token cost on the same fixture. Opt-in only — ids/file paths/names appear verbatim, so follow-up calls can copy them exactly. `count_only=true` returns just `{query, total, by_kind}` — the conclusion-density shape for "how many matches?" questions; composes with every filter and skips the per-hit snippet disk read.
 
 Tested latency: 1 ms.
 
@@ -70,9 +72,15 @@ Tested latency: 2 ms (single-hop).
 
 ### `trace` {#tool-trace}
 
-BFS call-path trace — who calls this, or what does it call. Grouped by depth. Risk labels: CRITICAL (depth 1) → LOW (depth 4+).
+BFS call-path trace — who calls this, or what does it call. Grouped by depth. Risk labels: CRITICAL (depth 1) → LOW (depth 4+). `format="text"` replaces the `hops` array with `results_text` — a TSV block (header row, then `depth<TAB>risk<TAB>id` per hop). `format="toon"` replaces it with `results_toon` — a TOON tabular block (`hops[N]{depth,id,risk}:`, one bare comma-delimited row per hop). `compact=true` additionally ditto-compresses consecutive same-file nodes within a depth block: a node repeating the previous node's `file_path` omits the field — scan up to the nearest node carrying `file_path` to decode. `count_only=true` returns just `{root, direction, total, by_depth, by_risk}` — the conclusion-density shape for "how many callers?" questions; counts come from the exact same traversal + filters the row-shaped call runs.
 
 Tested latency: <5 ms (depth 3).
+
+### `assert_graph` {#tool-assert_graph}
+
+Server-side invariant evaluation over the edge graph — the conclusion-density sibling of `count_only`. Pass `kind` + `target` (+ `scope` / `limit` per kind) and get `{pass, checked}` back when the assertion holds, plus `violations` (up to 10 `{id, file_path}`) when it doesn't. Kinds (the set is closed at exactly four; unknown kinds rich-error with the full catalog): `no_callers_outside` (every caller of `target` lives under a `scope` path prefix), `max_callers` (at most `limit` direct callers), `no_calls_to` (nothing under `scope` calls `target` — layering rule), `exists` (`target` resolves to at least one indexed symbol; exact name first, FTS5 fallback). Caller-shaped kinds count direct CALLS/HTTP_CALLS/ASYNC_CALLS edges; test files are included — an assertion is about the whole graph.
+
+Tested latency: ~1-5 ms (one edge query + per-caller lookups).
 
 ### `context_for_task` {#tool-context_for_task}
 
@@ -92,6 +100,12 @@ Tested latency: ~40-150 ms (BM25 × N frames + trace × maxSuspects).
 
 Tested latency: ~20-100 ms (resolve + trace × affected symbols + ADR overlap).
 
+### `verify_change` {#tool-verify_change}
+
+**Loop-substrate PR-10.** The loop's post-edit gate in one call — "did my edit do what I planned, what do I run, what broke." Composes: (1) the `changes` blast-radius analysis over `scope` (`unstaged`/`staged`/`all`/`base:<branch>`); (2) `tests_to_run` ranked by overlap descending — run the top entries first; (3) when `target` matches a prior `plan_change` run, `plan_comparison.{predicted_callers, actual_impacted, unpredicted_impact}` — the plan cache stores each `plan_change` run's full depth-1 caller set (newest 32, in-memory), and verify compares it against the depth-1 callers the diff actually impacts, warning via `warnings_v2 code=unpredicted_impact` when the edit reached callers the plan never saw and `code=plan_stale` when the index generation moved between plan and verify (no bogus diff); (4) `possibly_orphaned` — the `dead_code` SQL path restricted to the changed files, reporting symbols with zero inbound edges now (`possibly_orphaned_by_change`, advisory; Functions only — Methods are interface-dispatch-blind). `max_tokens` bounds the envelope: bulk lists trim first (changed_symbols → possibly_orphaned → tests_to_run with a floor of 3 → plan-comparison id lists), summary counts always ship.
+
+Tested latency: ~20-100 ms (git diff + trace × changed symbols + one orphan SQL pass).
+
 ## Architecture & knowledge
 
 ### `architecture` {#tool-architecture}
@@ -106,6 +120,12 @@ Diffs two in-flight branches against their shared merge-base, maps changed files
 
 Tested latency: ~10 ms.
 
+### `coach` {#tool-coach}
+
+Retro-coaching mined from pincher's own recorded usage telemetry (per-call events, query-failure counters, hook invocations). `window=session` (default) or `window=7d`. Returns priced findings — `single_fact_burst`, `unbudgeted_heavy_context`, `zero_result_churn`, `hook_fall_through` — each with `occurrences`, `est_tokens_left_on_table`, a concrete `recommendation`, and a `basis` string documenting exactly how the number was computed from recorded data. Degrades honestly: counts-only when the schema lacks per-row token estimates, empty findings plus a note when fewer than 10 calls are recorded in the window.
+
+Tested latency: ~5 ms.
+
 ### `schema` {#tool-schema}
 
 Node kind counts, edge kind counts, totals. Use before `query` to see what's indexed.
@@ -117,6 +137,20 @@ Tested latency: 1 ms.
 Persistent key/value store per project. Survives context resets and binary upgrades. Actions: `get`, `set`, `list`, `delete`.
 
 Tested latency: <1 ms.
+
+### `loop` {#tool-loop}
+
+Durable work-state for multi-iteration agent loops (loop-substrate PR-8/9). Actions: `start` (open a named loop), `checkpoint` (append one iteration's claim/decision/confidence/reopen_trigger/evidence, stamped with the index watermark), `list`, and `resume` — one bounded brief (default ~800 tokens, `max_tokens` to adjust) with the checkpoint tail, open reopen-triggers, ADR keys, and whether the index changed since the last checkpoint. ADR holds conventions; the loop ledger holds in-flight work.
+
+Tested latency: <1 ms.
+
+### `batch` {#tool-batch}
+
+One envelope, N read-only answers (loop-substrate). Carries up to 12 `{tool, args}` sub-queries — any of `search`, `symbol`, `symbols`, `context`, `trace`, `query`, `neighborhood`, `changes` — answered in order under a shared `max_tokens` budget (default 4000; later sub-queries past the budget return `skipped:"budget_exhausted"` plus a `budget_truncated` warning). Each entry carries a slim per-entry `_meta` (`empty_reason`, `tokens_used`, `warnings_v2` only); the outer envelope carries the single full `_meta` — one watermark/capabilities/stats accumulation per N answers instead of per answer. Sub-errors are isolated per entry (`error` field + a `batch_sub_errors` warning naming the failed indexes); the rest of the batch completes. Top-level `project` is merged into every sub-query that doesn't set its own.
+
+**Chain mode** (server-side pipelining, additive — independent queries are unchanged). When sub-query N's input is sub-query M's output (M < N), declare `from: {query: M, select: "<named selector>", into: "<arg key>"?}` and the server splices the selection into N's args — the intermediate never crosses the token envelope. Named selectors only (v1, no path language): `top_id` (first result's stable symbol id — `search results[0].id`, `trace hops[0].nodes[0].id`, `context symbol.id`), `ids` (all result ids, deduped, capped at 20 with a `chain_selector_trimmed` warning), `files` (distinct `file_path` values, capped at 10). `into` defaults: `context`/`symbol`/`trace` → `"id"`, `symbols` → `"ids"`; plan-shaped tools (`search`, `query`, ...) require it named explicitly. Multi-value selects pair with `symbols`' `ids` arg only — fan-out is not implemented in v1. Execution is strictly declaration-order: `from.query` must reference a lower index (forward references rich-error at validation, before any execution); an errored/skipped/empty upstream yields `{index, tool, skipped:"upstream_empty", upstream: M}` — never a guessed call; chain segments respect the shared `max_tokens` budget exactly as independent queries do. Mark an upstream `quiet: true` to omit its body from the response entirely — its entry becomes `{index, tool, quiet:true, selected: <the value(s) passed on>}`, keeping the chain auditable. A quiet `search` → chained `context` ships one context envelope plus a one-line provenance pointer — measured ≥25% smaller than the two-call equivalent on the test fixture.
+
+Tested latency: sum of sub-query latencies (in-process dispatch; no per-sub-query transport cost).
 
 ### `health` {#tool-health}
 
@@ -174,7 +208,7 @@ Notes: useful for in-file refactor planning.
 
 Write CLAUDE.md / `.claude/config.json` / Cursor rules / Codex AGENTS.md / Goose Open Plugins hooks / etc. — preflight (diff_preview) or `apply=true`. Supports multiple targets via `target=<name>` or `target=all`, including `goose` for a project-scoped `.agents/plugins/pincher/` hook extension. Codex AGENTS.md always lives in `~/.codex/AGENTS.md` and emits a `skipped_always_global` entry when `target=all` is used in a project context.
 
-Notes: per-target `{target, path, action, diff_preview, bytes_in, bytes_out}`. Codex emits `{target, action: "skipped_always_global", reason}`.
+Notes: per-target `{target, path, action, diff_preview, bytes_in, bytes_out}`. Codex emits `{target, action: "skipped_always_global", reason}`. `target=claude-skills` (the shipped methodology-skills installer) is refused over MCP — it writes into the always-global `~/.claude/skills/`, outside `project_path`; use the `pincher init --target=claude-skills --write` CLI.
 
 ### `doctor` {#tool-doctor}
 
@@ -217,6 +251,18 @@ fields="id,name,source"               # name + full source, skip metadata
 
 Available fields: `id`, `name`, `qualified_name`, `kind`, `language`, `file_path`, `start_line`, `end_line`, `signature`, `docstring`, `source`, `is_exported`, `extraction_confidence`. Omitting `fields` returns all columns.
 
+### Skeleton mode {#skeleton-mode}
+
+[`symbol`](#tool-symbol), [`symbols`](#tool-symbols), and [`context`](#tool-context) accept `detail="full"` (default) or `detail="skeleton"`. Skeleton mode replaces each `source` payload with a deterministic structural outline: the signature line(s) and top-level control-flow lines (`if`/`for`/`switch`/`select`/`return`/…) are kept verbatim — nesting indicated by the original indentation — and every other run of lines is elided into a marker:
+
+```
+… 12 lines (calls: parseInput, validateOrder)
+```
+
+Call names are harvested from the symbol's outbound CALLS edges (already in the graph — free) intersected with textual occurrence ordering; edge-listed callees that text matching can't place are appended in one trailing `… calls (from graph): …` line, so **every CALLS-edge callee name is guaranteed to appear in the skeleton**. Affected responses carry one top-level `_meta.skeleton: true` marker.
+
+The economics: agents skimming code in the orientation/probe phase need shape, not bodies — a representative 120-line mixed-flow function compresses to under 25% of its full-source tokens. Honest accounting: `tokens_saved` keeps the same file-read baseline; the skeleton's win shows up as a smaller `tokens_used`, not an inflated saving. v1 is a line-classifier pass over the byte-offset-retrieved source — deterministic, language-agnostic, no re-parse; tree-sitter-precise skeletons (exact block boundaries, expression-level elision) are the documented v2 path. In `context`, skeleton mode bypasses the [#655](https://github.com/kwad77/pincher/issues/655) diff cache: the cache only operates on `detail=full` so full and skeleton representations can never poison each other. Documents (fetched URLs) are prose, not code, and always ship full.
+
 ### Empty-response taxonomy
 
 Every tool that can return an empty result stamps `_meta.empty_reason` (stable machine-readable code) alongside `_meta.diagnosis` (human-readable text). The enum is the routing-friendly signal — agents, aggregators, and fallback chains consume the code; humans read the diagnosis. `meta=lite` callers keep both fields; they're per-call actionable, not dogfood-only.
@@ -233,7 +279,7 @@ Every tool that can return an empty result stamps `_meta.empty_reason` (stable m
 | `no_results_in_corpus` | Query and filters are fine but the symbol genuinely isn't indexed | Re-spell or widen the corpus |
 | `cap_dropped_all` | Every candidate was dropped by `max_hops` / `limit` / `offset` cap (incl. #1033 offset-past-end) | Raise the cap or paginate |
 | `incremental_no_change` | Index ran but every file was unchanged (incremental fast path) | Expected; `force=true` if you suspect corruption |
-| `all_files_blocked` | Every discovered file was filtered by `ast.ShouldSkip` (lockfiles, minified bundles) | Index a parent directory if sources are nested elsewhere |
+| `all_files_blocked` | Every discovered file was filtered by `ast.ShouldSkip` (lockfiles, minified bundles) or an over-broad `.pincherignore` / `.gitignore` | Index a parent directory if sources are nested elsewhere; check ignore files |
 | `extractor_emitted_nothing` | Files processed and not blocked, but extractor returned zero symbols | Language-detection gap; check `health` per-language coverage |
 
 Stamped by: `search`, `query`, `trace`, `neighborhood`, `dead_code`, `architecture`, `schema`, `list`, `index`, `changes`. The enum lives in `internal/server/empty_reason.go`; add new codes there and the gate test fails if a stamp site uses a literal. ([#1252](https://github.com/kwad77/pincher/issues/1252))

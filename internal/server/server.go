@@ -223,6 +223,27 @@ type Server struct {
 	// or switch to GET /v1/capabilities. (#1087)
 	includeCapabilitiesPerCall bool
 
+	// metaDeltaEnabled gates session-delta _meta emission: the FIRST
+	// response of a session carries the full per-server-constant
+	// fields (capabilities — ~15 strings, ~50-150 tokens); subsequent
+	// responses omit them and stamp `_meta.meta_delta: true` instead.
+	// Per-tool fields (complexity_tier, baseline_method) are NOT
+	// delta'd — they legitimately vary call to call. Default true;
+	// PINCHER_META_DELTA=0|off|false|none|no at server start restores
+	// the legacy every-call emission (kill-switch). Read once at New()
+	// — like PINCHER_META_CAPABILITIES it cannot toggle mid-process.
+	metaDeltaEnabled bool
+
+	// lastEmittedCaps holds the fingerprint (capsFingerprint) of the
+	// capabilities slice as last stamped on a success response. When
+	// the current fingerprint matches, the slice is omitted (delta);
+	// when it differs (first call, or SetMCPHTTPPath recomputed the
+	// slice to add streamable_http), the full advertisement is
+	// re-emitted so consumers never act on a stale capability set.
+	// atomic.Value because tool calls run concurrently; a rare race
+	// double-emits the full slice, which is safe (never under-emits).
+	lastEmittedCaps atomic.Value // string
+
 	// Per-language call counts (#240). Sync.Map keyed by language name
 	// (e.g. "Go", "Markdown") with *int64 values. Incremented per tool
 	// call when the response carries a recognisable language signal;
@@ -385,9 +406,22 @@ type Server struct {
 	// "session" ends when the process respawns.
 	contextDiffCache sync.Map
 	// diffContext gates contextDiffCache. Read once from
-	// PINCHER_DIFF_CONTEXT at New(); default-off in v0.56 until perf
-	// validates, then default-on.
+	// PINCHER_DIFF_CONTEXT at New(). Default-ON since PR-4'
+	// (loop-substrate) — executing the v0.56 plan's "then default-on"
+	// step; the #1320 chars/4 ApproxTokens fast path removed the
+	// per-call cost concern that gated it. Set
+	// PINCHER_DIFF_CONTEXT=0/off/false to disable.
 	diffContext bool
+
+	// planCache backs verify_change's predicted-vs-actual blast-radius
+	// comparison (loop-substrate PR-10). plan_change stashes {target,
+	// full depth-1 caller ids, index generation} per run; verify_change
+	// with a `target` looks the newest matching entry up and reports
+	// unpredicted_impact (actual minus predicted). Bounded FIFO of the
+	// newest planCacheMax entries; in-memory only — a plan is a
+	// session-scale artifact, not durable state (the loop ledger is).
+	planMu    sync.Mutex
+	planCache []planCacheEntry
 
 	// events is the SSE fan-out bus for GET /v1/events (#654). The
 	// indexer publishes index_started / index_complete through it via
@@ -448,10 +482,10 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 		sessionStartedAt:    now,
 		exitFn:              os.Exit, // #352: substituted by tests
 		autoRestartDelay:    autoRestartExitDelay,
-		diffContext:         os.Getenv("PINCHER_DIFF_CONTEXT") == "1", // #655
-		events:              newEventBus(),                            // #654
-		metrics:             newMetricsRegistry(),                     // #1163
-		tracer:              newOTLPTracer(version),                   // #1163 traces half
+		diffContext:         diffContextDefault(),   // #655; PR-4': default ON, =0/off/false disables
+		events:              newEventBus(),          // #654
+		metrics:             newMetricsRegistry(),   // #1163
+		tracer:              newOTLPTracer(version), // #1163 traces half
 	}
 	// #654: wire the indexer's lifecycle hook to the SSE bus so
 	// index_started / index_complete reach /v1/events subscribers. The
@@ -504,6 +538,12 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 	// aggregators that don't need the per-call advertisement and
 	// query GET /v1/capabilities once instead.
 	s.includeCapabilitiesPerCall = parseCapabilitiesEnv(os.Getenv("PINCHER_META_CAPABILITIES"))
+	// Session-delta _meta: read PINCHER_META_DELTA at server start.
+	// Default-on — the first response of a session carries the full
+	// capabilities advertisement; subsequent responses omit it and
+	// stamp `_meta.meta_delta: true`. Set 0/off to restore the legacy
+	// every-call emission.
+	s.metaDeltaEnabled = metaDeltaEnabledFromEnv()
 	// #581: stamp the per-tool OpenAPI response schemas after
 	// registration. Done as a post-pass so registerTools stays
 	// readable (~24 addTool calls without an extra arg each) and the
@@ -2107,15 +2147,32 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if byTool == nil {
 			byTool = map[string]map[string]int{}
 		}
+		// hook-redirect-v2: honest savings vs realistic baseline.
+		// est_tokens_served = estimated cost of the suggested context
+		// lite calls; baseline_tokens = what the intercepted Reads
+		// would actually have returned (stat-ed size capped by the
+		// Read's own limit). Best-effort — a query failure zeroes the
+		// fields rather than failing the whole endpoint.
+		estServed, baselineTok, savErr := s.store.HookSavings7d()
+		if savErr != nil {
+			estServed, baselineTok = 0, 0
+		}
+		var savedPct float64
+		if baselineTok > 0 {
+			savedPct = float64(baselineTok-estServed) / float64(baselineTok) * 100
+		}
 		json.NewEncoder(w).Encode(map[string]any{
-			"window":         "7d",
-			"redirects":      redirects,
-			"taken":          taken,
-			"conversion_pct": pct,
-			"resolved":       resolved,
-			"overrides":      overrides,
-			"override_pct":   overridePct,
-			"by_tool":        byTool,
+			"window":               "7d",
+			"redirects":            redirects,
+			"taken":                taken,
+			"conversion_pct":       pct,
+			"resolved":             resolved,
+			"overrides":            overrides,
+			"override_pct":         overridePct,
+			"by_tool":              byTool,
+			"est_tokens_served":    estServed,
+			"baseline_tokens":      baselineTok,
+			"est_tokens_saved_pct": savedPct,
 		})
 		return
 	}
@@ -2648,7 +2705,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	result, err := handler(r.Context(), req)
+	// v1.4.0 release-review hardening: REST callers have no per-connection
+	// identity (any number of bearer-key clients share this process), so
+	// the #655 diff-context cache must not assert "you already have these
+	// bytes" across them. The marker disables cache read AND write for
+	// this call (and any batch sub-calls sharing the ctx).
+	result, err := handler(withNoDiffContext(r.Context()), req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -2750,6 +2812,7 @@ func openAPIComponentSchemas() map[string]any {
 					},
 				},
 				"warnings":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Non-fatal advisories — typo'd args, unknown property names, etc. (#473, #499, #501)."},
+				"skeleton":    map[string]any{"type": "boolean", "description": "Present (true) when the response was produced with detail=skeleton — every source payload is a deterministic structural outline, not verbatim bytes. One top-level marker; detail applies call-wide."},
 				"celebration": map[string]any{"type": "string", "description": "One-shot tier-milestone line, fired exactly once per installation per tier (#494). Opt-in: only present when PINCHER_CELEBRATIONS=1 is set (default off — #863)."},
 				"request_id":  map[string]any{"type": "string", "description": "Correlation ID for end-to-end request tracing (#657). Echoes the inbound X-Request-ID header, or a freshly minted UUID v7 when the request carries none. Also returned in the X-Request-ID response header."},
 			},
@@ -3686,19 +3749,21 @@ func (s *Server) invalidateProjectIDCache() {
 // otherwise.
 var toolComplexityTiers = map[string]string{
 	// lite — pure-data, small response
-	"search":      "lite",
-	"symbol":      "lite",
-	"symbols":     "lite",
-	"health":      "lite",
-	"stats":       "lite",
-	"schema":      "lite",
-	"list":        "lite",
-	"doctor":      "lite",
-	"adr":         "lite",
-	"index":       "lite",
-	"rebuild_fts": "lite",
-	"init":        "lite",
-	"self_test":   "lite",
+	"search":       "lite",
+	"symbol":       "lite",
+	"symbols":      "lite",
+	"health":       "lite",
+	"stats":        "lite",
+	"schema":       "lite",
+	"list":         "lite",
+	"doctor":       "lite",
+	"adr":          "lite",
+	"loop":         "lite", // PR-8/9 loop-substrate: ledger append/list are trivial; resume composes from rows already written
+	"index":        "lite",
+	"rebuild_fts":  "lite",
+	"init":         "lite",
+	"self_test":    "lite",
+	"assert_graph": "lite", // conclusion-density: server-side pass/fail; two-token answer when passing
 
 	// standard — pure-data, medium response (agent reasons over)
 	"context":        "standard",
@@ -3709,7 +3774,9 @@ var toolComplexityTiers = map[string]string{
 	"dead_code":      "standard",
 	"architecture":   "standard",
 	"branch_overlap": "standard",
+	"coach":          "standard", // pure-data findings mined from recorded telemetry
 	"fetch":          "standard",
+	"batch":          "standard", // loop-substrate: envelope of N read-only sub-queries — bounded by the shared max_tokens, medium response
 
 	// heavy — synthesis-style output requiring frontier parsing
 	"guide":               "heavy",
@@ -3718,6 +3785,7 @@ var toolComplexityTiers = map[string]string{
 	"plan_change":         "heavy", // #1391 v0.82: composite of resolve + trace × symbols + adr list
 	"audit_unused":        "heavy", // #1391 v0.83: composite of dead_code + trace × candidates with confidence classification
 	"onboard_module":      "heavy", // #1391 v0.84: composite of scope-scan + entry-point enumeration + boundary edges
+	"verify_change":       "heavy", // loop-substrate PR-10: composite of changes analysis + plan comparison + orphan check
 	"why_empty":           "lite",  // #1391 v0.85: stateless catalog lookup — no DB query
 }
 
@@ -3755,13 +3823,17 @@ var toolIdempotent = map[string]bool{
 	"audit_unused":        true, // #1391 v0.83 — read-only composite (dead_code + deep-trace confirmation)
 	"onboard_module":      true, // #1391 v0.84 — read-only composite (scope scan + boundary edges)
 	"why_empty":           true, // #1391 v0.85 — stateless catalog lookup
+	"batch":               true, // loop-substrate — envelope over read-only sub-tools only (whitelist enforced per-entry)
+	"verify_change":       true, // loop-substrate PR-10 — read-only composite (changes analysis + plan comparison + orphan check)
 	"trace":               true,
 	"query":               true,
 	"guide":               true,
+	"assert_graph":        true, // conclusion-density — read-only invariant evaluation over the edge graph
 	"changes":             true,
 	"fetch":               true,
 	"architecture":        true,
 	"branch_overlap":      true,
+	"coach":               true, // read-only telemetry introspection
 	"dead_code":           true,
 	"neighborhood":        true,
 	"list":                true,
@@ -3776,6 +3848,7 @@ var toolIdempotent = map[string]bool{
 	"rebuild_fts": false, // rebuilds storage
 	"init":        false, // writes editor config files (write=true path)
 	"adr":         false, // mixed: get/list idempotent, set/delete not — declare conservatively
+	"loop":        false, // mixed: list/resume idempotent, start/checkpoint append — same conservative stance as adr
 }
 
 // toolIsIdempotent returns the registered idempotency declaration for
@@ -4078,6 +4151,7 @@ var toolMetadata = map[string]toolMetadataEntry{
 	"changes":             {Annotations: annotationsReadOnly},
 	"architecture":        {Annotations: annotationsReadOnly},
 	"branch_overlap":      {Title: "Merge-order risk between two branches", Annotations: annotationsReadOnly},
+	"coach":               {Title: "Retro-coaching from usage telemetry", Annotations: annotationsReadOnly},
 	"schema":              {Annotations: annotationsReadOnly},
 	"list":                {Annotations: annotationsReadOnly},
 	"neighborhood":        {Title: "Same-file symbols", Annotations: annotationsReadOnly},
@@ -4089,6 +4163,9 @@ var toolMetadata = map[string]toolMetadataEntry{
 	"audit_unused":        {Title: "Dead-code composite with deep-trace confirmation", Annotations: annotationsReadOnly}, // #1391 v0.83
 	"onboard_module":      {Title: "New-contributor orientation composite", Annotations: annotationsReadOnly},            // #1391 v0.84
 	"why_empty":           {Title: "Empty-result recovery composite", Annotations: annotationsReadOnly},                  // #1391 v0.85
+	"batch":               {Title: "Multi-query batch envelope", Annotations: annotationsReadOnly},                       // loop-substrate
+	"verify_change":       {Title: "Post-edit verification composite", Annotations: annotationsReadOnly},                 // loop-substrate PR-10
+	"assert_graph":        {Title: "Server-side graph assertion", Annotations: annotationsReadOnly},                      // conclusion-density
 
 	// Diagnostics (read-only, idempotent).
 	"health": {Annotations: annotationsReadOnly},
@@ -4098,7 +4175,8 @@ var toolMetadata = map[string]toolMetadataEntry{
 	// ADR — action-dependent. Classified as write because the conservative
 	// case (set/delete) mutates; get/list paths still benefit from the
 	// idempotency hint.
-	"adr": {Title: "Project decision store", Annotations: annotationsWrite},
+	"adr":  {Title: "Project decision store", Annotations: annotationsWrite},
+	"loop": {Title: "Loop ledger + resume brief", Annotations: annotationsWrite}, // PR-8/9 loop-substrate
 
 	// External-world: fetches HTTP content, repeat calls may return
 	// different bytes.
@@ -4193,6 +4271,14 @@ func (s *Server) unknownArgs(tool string, args map[string]any) []unknownArgWarni
 		if k == "meta" {
 			continue
 		}
+		// batch (loop-substrate): `_nested` is the internal marker the
+		// `batch` envelope tool stamps on every sub-call's args so
+		// jsonResultWithMeta skips session-stats accumulation for it.
+		// Never caller-supplied via a tool's InputSchema; skip it
+		// universally so batched sub-calls don't warn on every entry.
+		if k == "_nested" {
+			continue
+		}
 		if !allowed[k] {
 			// Build a sorted hint of accepted keys so the warning is
 			// actionable (agent can self-correct on the next call).
@@ -4236,12 +4322,13 @@ func (s *Server) registerTools() {
 	// 2. symbol
 	s.addTool(&mcp.Tool{
 		Name:        "symbol",
-		Description: "**Use after `search`** to read one symbol's source by stable ID. O(1) byte-offset seeking — never re-parses the file. ID format: `{file_path}::{qualified_name}#{kind}`. **IDs survive file renames/moves** — when the caller's ID no longer resolves directly, the handler auto-redirects via the `symbol_moves` table populated at index time, so a cached ID from a prior session keeps working after `git mv`. **Prefer `context`** when you also need the symbol's dependencies, or **`symbols`** for batching multiple lookups (one round trip instead of N). Pass `fields` (comma-separated) to project specific keys and skip the source disk read when not needed.",
+		Description: "**Use after `search`** to read one symbol's source by stable ID. O(1) byte-offset seeking — never re-parses the file. ID format: `{file_path}::{qualified_name}#{kind}`. **IDs survive file renames/moves** — when the caller's ID no longer resolves directly, the handler auto-redirects via the `symbol_moves` table populated at index time, so a cached ID from a prior session keeps working after `git mv`. **Prefer `context`** when you also need the symbol's dependencies, or **`symbols`** for batching multiple lookups (one round trip instead of N). Pass `fields` (comma-separated) to project specific keys and skip the source disk read when not needed. Pass `detail=\"skeleton\"` for a deterministic structural outline instead of the full body (signature + control flow + '… N lines (calls: …)' markers) — the orientation-phase shape read.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["id"],"properties":{
 				"id":{"type":"string","description":"Stable symbol ID. Format: '{file_path}::{qualified_name}#{kind}'"},
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
 				"fields":{"type":"string","description":"Comma-separated allow-list of response keys (e.g. 'id,signature'). Omit for all fields. Skipping 'source' avoids the byte-offset disk read."},
+				"detail":{"type":"string","enum":["full","skeleton"],"description":"'full' (default) returns source verbatim. 'skeleton' replaces the source payload with a deterministic structural outline: signature + top-level control-flow lines kept verbatim (nesting shown by indentation), other runs elided as '… N lines (calls: A, B)' with call names harvested from the symbol's outbound CALLS edges. Use when you need a function's shape, not its body — large bodies compress to well under 30% of full-source tokens. Line-classifier based: language-agnostic and deterministic (tree-sitter-precise skeletons are the documented v2 path). Responses are marked with _meta.skeleton:true."},
 				"cross_project":{"type":"boolean","description":"#1232 opt-in: when the requested ID isn't in the session project but exists in another indexed project, default behavior is to error (rich-error with next_steps) instead of silently returning the other project's row. Pass cross_project=true to opt back into the legacy silent-fallback-with-warning behavior. Default false. Has no effect when project= is set explicitly."}
 			}
 		}`),
@@ -4250,13 +4337,15 @@ func (s *Server) registerTools() {
 	// 3. symbols (batch)
 	s.addTool(&mcp.Tool{
 		Name:        "symbols",
-		Description: "**Use instead of repeated `symbol` calls** when you have several IDs. Batch fetches up to 100 symbols in a single SQL round trip + per-symbol byte-offset reads. Returns `[{id, source, signature, file_path, start_line}, ...]` in the same order as the input `ids`. Missing IDs surface as `{id, error: \"not found\"}` rather than failing the whole batch. Pass `fields=id,name,signature` to drop unused fields and skip the disk-read for source.",
+		Description: "**Use instead of repeated `symbol` calls** when you have several IDs. Batch fetches up to 100 symbols in a single SQL round trip + per-symbol byte-offset reads. Returns `[{id, source, signature, file_path, start_line}, ...]` in the same order as the input `ids`. Missing IDs surface as `{id, error: \"not found\"}` rather than failing the whole batch. Pass `fields=id,name,signature` to drop unused fields and skip the disk-read for source. Pass `detail=\"skeleton\"` to compress every entry's source to a deterministic structural outline — the cheap way to skim several function bodies at once.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["ids"],"properties":{
 				"ids":{"type":"array","items":{"type":"string"},"description":"Array of stable symbol IDs."},
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project. Pass '*' to look every ID up unscoped (cross-repo)."},
 				"fields":{"type":"string","description":"Comma-separated fields to include per result, e.g. 'id,name,signature'. Omit for all fields. Skipping 'source' avoids the per-symbol disk read entirely — major win on 50+ ID batches where the agent only needs metadata."},
-				"cross_project":{"type":"boolean","description":"#1799 opt-in: the batch is session-scoped by default (an ID is path+QN+kind, so an unscoped lookup can resolve it from an indexed mirror of the session repo). An ID absent from the session project surfaces as not_found. Pass cross_project=true to fall back to an unscoped lookup for those missed IDs. Default false. Ignored when project= is set."}
+				"detail":{"type":"string","enum":["full","skeleton"],"description":"'full' (default) returns each source verbatim. 'skeleton' replaces every entry's source with a deterministic structural outline (signature + control-flow lines verbatim, other runs elided as '… N lines (calls: A, B)' using each symbol's CALLS edges). Shape-not-body skims of multi-symbol batches at a fraction of the token cost. One top-level _meta.skeleton:true marks the whole response (detail applies call-wide)."},
+				"cross_project":{"type":"boolean","description":"#1799 opt-in: the batch is session-scoped by default (an ID is path+QN+kind, so an unscoped lookup can resolve it from an indexed mirror of the session repo). An ID absent from the session project surfaces as not_found. Pass cross_project=true to fall back to an unscoped lookup for those missed IDs. Default false. Ignored when project= is set."},
+				"max_tokens":{"type":"integer","description":"Response budget in approximate tokens across the whole batch, applied in input order: entries past the budget keep metadata but set source_omitted:true and skip the disk read entirely (span-estimate gate). 0/omitted = unlimited. _meta.warnings_v2 code=budget_truncated reports how many entries were trimmed. Pair with fields= to drop unused keys per entry. Loop-substrate PR-5."}
 			}
 		}`),
 	}, s.handleSymbols)
@@ -4264,14 +4353,17 @@ func (s *Server) registerTools() {
 	// 4. context
 	s.addTool(&mcp.Tool{
 		Name:        "context",
-		Description: "**Use before editing a function** to read it together with everything it directly imports and calls — one shot, ~90% token reduction vs reading files. Returns `{symbol: {source, ...}, imports: [{source, ...}], callees: [{source, ...}]}` — `imports` is cross-package dependencies (IMPORTS edges), `callees` is the in-package helpers it directly calls (CALLS edges). De-duplicated so a symbol that's both imported and called only appears once. Prefer this over `symbol` whenever you need to understand how a function works in context, not just see its source. Pass `fields=symbol,callees` to drop sections you don't need. Pass `lite=true` for source-only retrieval — minimum-envelope shape used by the PreToolUse hook redirect when replacing a Read call.",
+		Description: "**Use before editing a function** to read it together with everything it directly imports and calls — one shot, ~90% token reduction vs reading files. Returns `{symbol: {source, ...}, imports: [{source, ...}], callees: [{source, ...}]}` — `imports` is cross-package dependencies (IMPORTS edges), `callees` is the in-package helpers it directly calls (CALLS edges). De-duplicated so a symbol that's both imported and called only appears once. Prefer this over `symbol` whenever you need to understand how a function works in context, not just see its source. Pass `fields=symbol,callees` to drop sections you don't need. Pass `lite=true` for source-only retrieval — minimum-envelope shape used by the PreToolUse hook redirect when replacing a Read call. Pass `detail=\"skeleton\"` to compress every source payload (symbol + imports + callees) to a deterministic structural outline.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["id"],"properties":{
 				"id":{"type":"string","description":"Symbol ID to fetch with its imports."},
 				"project":{"type":"string"},
 				"fields":{"type":"string","description":"Comma-separated top-level keys to include, e.g. 'symbol,callees' to drop imports. Omit for all. _meta is preserved unconditionally."},
+				"detail":{"type":"string","enum":["full","skeleton"],"description":"'full' (default) returns sources verbatim. 'skeleton' replaces EVERY source payload in the response — the primary symbol's and each import's/callee's — with a deterministic structural outline (signature + control-flow lines verbatim, other runs elided as '… N lines (calls: A, B)' using each symbol's CALLS edges). Marked _meta.skeleton:true. Note: skeleton mode bypasses the PINCHER_DIFF_CONTEXT diff cache — the cache only operates on detail=full so the two representations can't poison each other."},
 				"lite":{"type":"boolean","description":"When true, return only {id, source} — no imports, no callees, no next_steps. Used by PreToolUse hook to land on minimum-envelope shape when redirecting a Read call. Default false."},
-				"cross_project":{"type":"boolean","description":"#1232 opt-in: when the requested ID isn't in the session project but exists in another indexed project, default behavior is to error (rich-error with next_steps) instead of silently returning the other project's data — including its callees + imports, which would also belong to the wrong tree. Pass cross_project=true to opt back into the legacy silent-fallback-with-warning behavior. Default false. Has no effect when project= is set explicitly."}
+				"diff":{"type":"boolean","description":"Default true. Gates the #655 diff-encoded repeat-read cache: a repeat context(id) on an unchanged file short-circuits to {unchanged:true}; a changed file ships a line diff against what was last served on this connection. Pass diff=false to bypass the cache (no read, no write) and always receive the full body — the recovery path when you do NOT have the prior response in your context (fresh session against a long-lived server, subagent sharing a parent connection). The cache only engages on full-fidelity serves: max_tokens-budgeted, fields-projected, skeleton, and HTTP-REST calls never read or write it."},
+				"cross_project":{"type":"boolean","description":"#1232 opt-in: when the requested ID isn't in the session project but exists in another indexed project, default behavior is to error (rich-error with next_steps) instead of silently returning the other project's data — including its callees + imports, which would also belong to the wrong tree. Pass cross_project=true to opt back into the legacy silent-fallback-with-warning behavior. Default false. Has no effect when project= is set explicitly."},
+				"max_tokens":{"type":"integer","description":"Per-call response budget in approximate tokens (same chars/4 heuristic as _meta.tokens_used). 0/omitted = unlimited — exact legacy shape. Deterministic degradation order: the primary symbol source is cut at a line boundary first; then callees, then imports return metadata-only entries with source_omitted:true (span-estimate gate — omitted entries skip the disk read). When the cap fires, _meta.warnings_v2 carries code=budget_truncated with per-section counts so you can fetch the omitted bodies selectively via symbols. Composes with fields= and lite=true — the PreToolUse hook redirect (hook-redirect-v2) derives it from the intercepted Read call's own limit param so a redirected giant symbol can't cost more window than the Read it replaced. Loop-substrate PR-5: lets an agent hard-bound every probe so one giant function can never blow the context window."}
 			}
 		}`),
 	}, s.handleContext)
@@ -4279,7 +4371,7 @@ func (s *Server) registerTools() {
 	// 5. search
 	s.addTool(&mcp.Tool{
 		Name:        "search",
-		Description: "**Use before `Grep`/`Read`** when looking for code by name or content. Always start here when you don't know the exact symbol ID. Returns signature + a query-aware snippet per result (exact-identifier queries get no snippet by default since the agent knows the target name; phrase / wildcard / multi-word queries get a 5-line snippet for triage — override via `snippet_lines`). Often enough to answer without a follow-up call. Uses FTS5 BM25 ranking. Examples: 'processOrder' for a function, 'auth*' for prefix, '\"token validation\"' for a phrase. Filter by `kind=Function` / `language=Go` / `corpus=config|docs` to narrow. Use `context` on the result ID only if you need full source + dependencies.",
+		Description: "**Use before `Grep`/`Read`** when looking for code by name or content. Always start here when you don't know the exact symbol ID. Returns signature + a query-aware snippet per result (exact-identifier queries get no snippet by default since the agent knows the target name; phrase / wildcard / multi-word queries get a 5-line snippet for triage — override via `snippet_lines`). Often enough to answer without a follow-up call. Uses FTS5 BM25 ranking. Examples: 'processOrder' for a function, 'auth*' for prefix, '\"token validation\"' for a phrase. Filter by `kind=Function` / `language=Go` / `corpus=config|docs` to narrow. Pass `format=\"text\"` for a dense TSV rendering of the hits (`results_text`) or `format=\"toon\"` for a TOON tabular rendering (`results_toon`) instead of the JSON results array — same envelope, materially fewer tokens on list-shaped output. Use `context` on the result ID only if you need full source + dependencies.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["query"],"properties":{
 				"query":{"type":"string","description":"FTS5 search query. Supports: prefix (auth*), phrase (\"login flow\"), AND/OR."},
@@ -4292,6 +4384,8 @@ func (s *Server) registerTools() {
 				"fields":{"type":"string","description":"Comma-separated fields to include in each result, e.g. 'id,name,file_path'. Omit for all fields. Use to reduce token usage when you only need IDs or signatures."},
 				"min_confidence":{"type":"number","description":"Minimum extraction_confidence (0.0-1.0). Default is query-aware (#247 #5): exact-identifier queries (single token, no wildcards/spaces/quotes) default to 0.0; phrase / wildcard / multi-word queries default to 0.71. corpus='docs' also defaults to 0.0 regardless of query shape — Markdown section symbols are the intentional target on docs searches, not noise to filter out. Rationale for 0.71 on phrase/wildcard code queries: filters bottom-floor doc-section symbols that can BM25-match wide queries when they cross the corpus boundary; an exact-identifier query can't legitimately match doc-section noise so the floor isn't needed. Set explicitly to override either default. Inclusive: a symbol scored at or above the threshold IS returned."},
 				"compact":{"type":"boolean","description":"#1226: thin-client envelope. Drops per-hit extraction_confidence + language + snippet plus the top-level confidence_distribution. Default false preserves the current shape for dashboard / dogfood / quality-aware consumers. Compact also skips the per-hit snippet disk read entirely — the real perf win on bulk searches. The thin-client minimum shape is {id, name, qualified_name, kind, file_path, start_line, end_line, signature, score} per hit — enough to drive a follow-up symbol/context/trace call. Mirrors #1225's trace compact naming."},
+				"format":{"type":"string","enum":["json","text","toon"],"description":"Response rendering for the hit list. 'json' (default) returns the results array. 'text' replaces it with results_text — a dense TSV block (header row, then one line per hit: id<TAB>kind<TAB>file:line<TAB>signature-or-name). 'toon' replaces it with results_toon — a TOON (Token-Oriented Object Notation) tabular block: field list declared once (results[N]{file,id,kind,line,name,signature}:), then one bare comma-delimited row per hit; strings quoted only when needed. Both carry the information for driving follow-up symbol/context/trace calls at a fraction of the JSON token cost; fixed column set (fields= and snippet options don't apply to the text/toon renderings). _meta and the pagination envelope (count/total/has_more) are unchanged."},
+				"count_only":{"type":"boolean","description":"Conclusion-density mode: return {query, total, by_kind} — counts only, no result rows, no snippets (the per-hit disk read is skipped entirely). Use when the question is 'how many matches?' rather than 'which matches?'. Composes with kind/language/corpus/min_confidence filters; total is the same post-filter count the row-shaped call reports. Default false."},
 				"snippet_lines":{"type":"integer","description":"#1091: max source lines included in each result's snippet. Default is QUERY-AWARE: exact-identifier queries (single token, no wildcards/spaces/quotes) default to 0 (snippet is dead weight when the agent knows the target name); phrase / wildcard / multi-word queries default to 5 (triage needs context). Same heuristic as min_confidence's query-aware default (#247). Pass explicitly to override either default. Pass up to 20 for deep triage. Clamped to [0, 20] with a warning when out of range. The fields= projection's snippet-suppression still pays the read cost; snippet_lines=0 is the cleaner skip."}
 			}
 		}`),
@@ -4316,7 +4410,7 @@ func (s *Server) registerTools() {
 	// 7. trace
 	s.addTool(&mcp.Tool{
 		Name:        "trace",
-		Description: "**Use before changing behaviour** that other code depends on, to find callers (inbound) or what it calls (outbound). Risk labels: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Pass `name` for the common case; when the name is ambiguous (multiple symbols share it) trace falls back to the first match and surfaces alternatives in `_meta.ambiguous_match`. To trace a specific alternative, pass `id=` with the exact symbol ID from search/symbols/query — that's the disambiguation escape hatch (#474). Default traversal follows CALLS-family edges; pass `kinds=READS,WRITES` to trace data-flow edges instead (or `kinds=CALLS,READS` to mix). Test files and testdata/ fixtures are filtered by default; pass `include_tests=true` to see test coverage of a symbol. When `depth` is omitted, the result is auto-trimmed to the smallest depth with ≥5 hops (so hotspots don't dump 100+ rows); `_meta.depth_used` reports the trim. Pass `depth=N` explicitly to skip the trim.",
+		Description: "**Use before changing behaviour** that other code depends on, to find callers (inbound) or what it calls (outbound). Risk labels: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Pass `name` for the common case; when the name is ambiguous (multiple symbols share it) trace falls back to the first match and surfaces alternatives in `_meta.ambiguous_match`. To trace a specific alternative, pass `id=` with the exact symbol ID from search/symbols/query — that's the disambiguation escape hatch (#474). Default traversal follows CALLS-family edges; pass `kinds=READS,WRITES` to trace data-flow edges instead (or `kinds=CALLS,READS` to mix). Test files and testdata/ fixtures are filtered by default; pass `include_tests=true` to see test coverage of a symbol. When `depth` is omitted, the result is auto-trimmed to the smallest depth with ≥5 hops (so hotspots don't dump 100+ rows); `_meta.depth_used` reports the trim. Pass `depth=N` explicitly to skip the trim. Pass `format=\"text\"` for a dense TSV rendering of the hops (`results_text`) or `format=\"toon\"` for a TOON tabular rendering (`results_toon`) instead of the JSON hops array — same envelope, materially fewer tokens on hot traces.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"name":{"type":"string","description":"Function name to trace (short name, e.g. 'ProcessOrder'). When ambiguous, trace picks the first match and surfaces alternatives via _meta.ambiguous_match — pass id= instead to trace a specific alternative."},
@@ -4329,8 +4423,10 @@ func (s *Server) registerTools() {
 				"kinds":{"type":"string","description":"Comma-separated list of edge kinds to traverse (e.g. 'CALLS' or 'READS,WRITES'). Default: CALLS-family (CALLS,HTTP_CALLS,ASYNC_CALLS) — covers the typical 'who calls this' use case. Pass READS / WRITES (Go vars only, see #264/#265) to follow data-flow edges. Whitespace and case-insensitive."},
 				"include_tests":{"type":"boolean","description":"If true, surface hops in test files (*_test.go, *.spec.ts, etc.). Default false. As of #1225 this no longer also governs fixture paths — use include_fixtures for those. Set true when you genuinely want a symbol's test coverage."},
 				"include_fixtures":{"type":"boolean","description":"#1225: if true, surface hops in testdata/__fixtures__/ pinned-corpus paths. Default false. Pre-#1225 these were grouped under include_tests; split so callers can selectively unlock real tests without also unlocking pincher's snapshot inputs (mirrors #1212 pinchQL fixture filter)."},
-				"compact":{"type":"boolean","description":"#1225: thin-client envelope. Drops per-hop kind + via fields and the top-level risk_summary block. Default false. On hot traces these account for 30-50% of payload that thin-client consumers (Cursor / Continue / Claude Desktop) don't render. Risk-aware consumers (dashboards, dogfood) stick with the default."},
+				"compact":{"type":"boolean","description":"#1225: thin-client envelope. Drops per-hop kind + via fields and the top-level risk_summary block, and ditto-compresses consecutive same-file hops (within a depth block, a node repeating the previous node's file_path omits the field — scan up to the nearest node carrying file_path to decode). Default false. On hot traces these account for 30-50% of payload that thin-client consumers (Cursor / Continue / Claude Desktop) don't render. Risk-aware consumers (dashboards, dogfood) stick with the default."},
+				"format":{"type":"string","enum":["json","text","toon"],"description":"Response rendering for the hop list. 'json' (default) returns the hops array. 'text' replaces it with results_text — a dense TSV block (header row, then one line per hop: depth<TAB>risk<TAB>id; risk renders '-' when risk=false). 'toon' replaces it with results_toon — a TOON (Token-Oriented Object Notation) tabular block: hops[N]{depth,id,risk}: with one bare comma-delimited row per hop. In both, the id embeds file path + qualified name, so each row carries enough to drive a follow-up context/symbol call. _meta and total are unchanged."},
 				"max_hops":{"type":"integer","description":"#1228: upper-bound cap on the number of hops returned (default 50). A hub function (logging utility, error helper called from 200+ sites) returns 100+ hops at depth=1; the auto-deepen trim doesn't help because depth=1 already crosses the threshold. When cap fires, _meta.truncated=true + _meta.total_before_cap + _meta.max_hops surface so the caller knows the response was truncated and can re-issue with a wider max_hops. Default 50 matches architecture's hotspot cap."},
+				"count_only":{"type":"boolean","description":"Conclusion-density mode: return {root, direction, total, by_depth, by_risk} — counts only, nothing row-shaped. Use when the question is 'how many callers?' rather than 'which callers?'. Composes with every filter (kinds/min_confidence/include_tests/depth/direction); counts are computed from the exact same traversal the row-shaped call would return. Default false."},
 				"fields":{"type":"string","description":"Comma-separated top-level keys to include, e.g. 'hops,total' to drop risk_summary. Per-hop fields are NOT trimmed — pass shape via downstream symbol/symbols calls. _meta is preserved."}
 			}
 		}`),
@@ -4355,7 +4451,7 @@ func (s *Server) registerTools() {
 	// (zelos, bifrost, detour) made the v0.35 narrowing argument obsolete.
 	s.addTool(&mcp.Tool{
 		Name:        "dead_code",
-		Description: "**Find unreachable internal functions/methods** — symbols with zero inbound edges (CALLS/READS/WRITES/REFERENCES/IMPORTS) that aren't exported, aren't entry points, and aren't tests. The inverse of `architecture` hotspots. Defaults bias toward precision via `min_confidence=0.95`, which floors to AST-tier extractors (Go and Python at 1.0; JSON/YAML/HCL/TOML parser-backed at 1.0). `language` defaults to empty (all languages above the confidence floor). `kinds` defaults to `Function,Method`. Lower `min_confidence` to include regex-tier languages (TS/JS/Rust/Java/Ruby/PHP/C#/Kotlin/Swift/Lua/Zig/Elixir/Scala/Dart/R at 0.70-0.85) at known false-positive cost — they under-resolve cross-file CALLS. Test fixtures under `testdata/` and `__fixtures__/` are post-filtered out — they have no test runners but aren't real code either.",
+		Description: "**Find unreachable internal functions/methods** — symbols with zero inbound edges (CALLS/READS/WRITES/REFERENCES/IMPORTS) that aren't exported, aren't entry points, and aren't tests. The inverse of `architecture` hotspots. Defaults bias toward precision via `min_confidence=0.95`, which floors to AST-tier extractors (Go and Python at 1.0; JSON/YAML/HCL/TOML parser-backed at 1.0). `language` defaults to empty (all languages above the confidence floor). `kinds` defaults to `Function,Method`. Lower `min_confidence` to include regex-tier languages (TS/JS/Rust/Java/Ruby/PHP/C#/Kotlin/Swift/Lua/Zig/Elixir/Scala/Dart/R at 0.70-0.85) at known false-positive cost — they under-resolve cross-file CALLS. Test fixtures under `testdata/` and `__fixtures__/` are post-filtered out — they have no test runners but aren't real code either. Methods whose case-folded name matches a project interface method, and symbols extracted below AST-tier confidence, carry a per-row `evidence` entry plus a `_meta.warnings_v2` `dispatch_blind` advisory — interface dispatch and under-resolved regex-tier calls produce no CALLS edges, so zero inbound edges is not proof of death there.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
@@ -4394,6 +4490,42 @@ func (s *Server) registerTools() {
 			"required":["branch_a","branch_b"]
 		}`),
 	}, s.handleBranchOverlap)
+
+	// 10c. assert_graph — conclusion-density primitive. Compute below
+	// the envelope is token-free; only conclusions pay. Agents kept
+	// paying for N caller rows just to conclude "nothing violates the
+	// rule" — this evaluates the invariant server-side and returns the
+	// verdict (plus violations only when it fails).
+	s.addTool(&mcp.Tool{
+		Name:        "assert_graph",
+		Description: "**Check a structural invariant server-side** instead of pulling N rows to conclude pass/fail yourself. Evaluates entirely against the edge graph and returns `{pass, checked}` when passing, plus `violations` (up to 10 `{id, file_path}`) when failing. Kinds: `no_callers_outside` (every caller of `target` lives under a `scope` path prefix — the violations are the strays), `max_callers` (`target` has at most `limit` direct callers), `no_calls_to` (nothing under `scope` calls `target` — enforce a layering rule), `exists` (`target` resolves to at least one indexed symbol; presence check via exact name then FTS5 search). Caller-shaped kinds count direct CALLS/HTTP_CALLS/ASYNC_CALLS edges; test files are included — an assertion is about the whole graph.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","required":["kind","target"],"properties":{
+				"kind":{"type":"string","enum":["no_callers_outside","max_callers","no_calls_to","exists"],"description":"Which invariant to evaluate. Unknown kinds rich-error with the full catalog."},
+				"target":{"type":"string","description":"Symbol to assert about: a stable symbol ID ('{file_path}::{qualified_name}#{kind}') or a short name (resolved like trace's name= — callable kinds preferred). For kind=exists, any name or search phrase."},
+				"scope":{"type":"string","description":"Comma-separated path prefix(es), e.g. 'cmd/,internal/server/'. Required for no_callers_outside (the allowed homes for callers) and no_calls_to (the region that must not call target). Ignored by other kinds."},
+				"limit":{"type":"integer","description":"Required for max_callers: the maximum number of direct callers allowed (inclusive). Ignored by other kinds."},
+				"project":{"type":"string","description":"Project name or ID. Defaults to session project."}
+			}
+		}`),
+	}, s.handleAssertGraph)
+
+	// 10d. coach — retro-coaching mined from pincher's own recorded
+	// usage telemetry. Read-only introspection; every number in a
+	// finding is computed from recorded events and carries a `basis`
+	// string documenting the arithmetic. See internal/server/coach.go
+	// for the pattern catalogue (including the honestly-dropped one).
+	s.addTool(&mcp.Tool{
+		Name:        "coach",
+		Description: "**Retro-coaching from pincher's own usage telemetry.** Mines the recorded per-call events (session_tool_calls), the query-failure counters, and hook_invocations for the current session (default) or the trailing 7 days, and returns priced findings — \"you did X N times; pattern Y would have cost ~Z fewer tokens\" — every number computed from recorded telemetry, each finding carrying a `basis` string documenting the arithmetic. Patterns: `single_fact_burst` (≥3 sub-600-token search/symbol/trace calls → batch with `symbols`), `unbudgeted_heavy_context` (context/symbols responses >2000 tokens → cap with `fields`/`lite`), `zero_result_churn` (unexpected-empty queries → recover with `why_empty`), `hook_fall_through` (ignored PreToolUse redirects; counts-only when the schema lacks per-row token estimates). Returns empty findings plus a note when fewer than 10 calls are recorded in the window — never extrapolates from noise.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","properties":{
+				"window":{"type":"string","enum":["session","7d"],"description":"Telemetry window to analyze. \"session\" (default) = this process's recorded calls; \"7d\" = trailing 7 days across all sessions."},
+				"project":{"type":"string","description":"Accepted for interface consistency and validated, but telemetry is recorded per-session (not per-project), so it does not scope the analysis."},
+				"limit":{"type":"integer","description":"Max findings returned, biggest measured win first. Default 5, max 20."}
+			}
+		}`),
+	}, s.handleCoach)
 
 	// 11. schema — agent-callable introspection. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
@@ -4438,6 +4570,51 @@ func (s *Server) registerTools() {
 		}`),
 	}, s.handleADR)
 
+	// 13b. loop — the loop ledger + resume brief (loop-substrate
+	// PR-8/9). ADR holds conventions; the ledger holds in-flight work.
+	s.addTool(&mcp.Tool{
+		Name:        "loop",
+		Description: "**Durable work-state for multi-iteration agent loops.** Actions: `start` (open a named loop with its framing claim), `checkpoint` (append one iteration's {claim, decision, confidence, reopen_trigger, evidence} — the capture step of an evidence-gated loop), `list` (loops, or one loop's checkpoints), `resume` (ONE bounded brief — recent checkpoints + open reopen_triggers + ADR keys + whether the index changed since the last checkpoint — so a fresh session or a different model picks up mid-flight work in a single call instead of re-reading transcripts). Checkpoints stamp the index watermark at write time; `resume` warns via warnings_v2 code=index_moved_since_checkpoint when the graph moved. Pass max_tokens to bound the brief (default ~800).",
+		InputSchema: json.RawMessage(`{
+			"type":"object","required":["action"],"properties":{
+				"action":{"type":"string","enum":["start","checkpoint","list","resume"],"description":"start=open a named loop; checkpoint=append an iteration record; list=loops or one loop's checkpoints; resume=bounded brief to continue mid-flight work."},
+				"name":{"type":"string","description":"Loop name (e.g. 'rust-ast-rollout'). Required for start/checkpoint; optional for list (omit to enumerate loops) and resume (omit to resume the most recently touched loop)."},
+				"claim":{"type":"string","description":"The falsifiable claim this iteration works toward (start/checkpoint)."},
+				"decision":{"type":"string","description":"The iteration's terminating decision: Accept / Defer-with-trigger / Reject, plus a clause of why (checkpoint)."},
+				"confidence":{"type":"string","description":"Confidence label for the decision: measured | inferred | assumed (checkpoint)."},
+				"reopen_trigger":{"type":"string","description":"For deferred decisions: the explicit condition that reopens this item. Surfaced by every future resume until addressed (checkpoint)."},
+				"evidence":{"type":"string","description":"Pointers to evidence — symbol IDs, test names, benchmark numbers. Keep it pointer-shaped; the ledger is a map, not the territory (checkpoint)."},
+				"limit":{"type":"integer","description":"Max rows for list (default: 20 loops / 10 checkpoints)."},
+				"max_tokens":{"type":"integer","description":"Budget for the resume brief in approximate tokens (default 800). Older checkpoints drop first; omitted_checkpoints reports the cut."},
+				"project":{"type":"string","description":"Project name or ID. Defaults to session project."}
+			}
+		}`),
+	}, s.handleLoop)
+
+	// 13c. batch — one envelope, N read-only answers (loop-substrate).
+	// The cost removed is per-call ceremony: one watermark + capabilities
+	// + transport per N answers instead of per answer.
+	s.addTool(&mcp.Tool{
+		Name:        "batch",
+		Description: "**Ask up to 12 read-only questions in ONE call.** Carries an array of {tool, args} sub-queries — any of `search`, `symbol`, `symbols`, `context`, `trace`, `query`, `neighborhood`, `changes` — and answers them in order inside a single envelope under a shared `max_tokens` budget (default 4000; once exhausted, later sub-queries return skipped:\"budget_exhausted\" + a budget_truncated warning instead of blowing the context window). Each entry ships a slim per-entry `_meta` ({empty_reason, tokens_used, warnings_v2} only); the outer envelope carries the one full `_meta` (watermark/capabilities/stats) for the whole batch — that deduplicated ceremony is the point. Sub-errors are isolated: a bad symbol ID or typo'd pinchQL yields a per-entry `error` field (plus a batch_sub_errors warning naming the failed indexes) and the rest of the batch completes normally. Top-level `project` is merged into every sub-query that doesn't set its own. Use when a loop iteration needs several probes at once — three greps' worth of answers for one call's ceremony. **Chain mode:** when sub-query N's input is an earlier result's output, add `from:{query:<lower index>,select:\"top_id\"|\"ids\"|\"files\",into:\"<arg key>\"?}` and the server splices the selection in — the intermediate never crosses your context. Mark the upstream `quiet:true` to omit its body entirely (its entry keeps {index, tool, quiet, selected} for provenance): a quiet search → chained context returns ONE context envelope plus a one-line pointer. If the upstream errored or the selector finds nothing, the dependent entry returns skipped:\"upstream_empty\" — never a guessed call. Forward references rich-error before any execution.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","required":["queries"],"properties":{
+				"queries":{"type":"array","description":"Sub-queries answered in order (max 12). Each is {tool, args} where args matches the sub-tool's own schema, plus optional chain-mode keys: from (splice an earlier result's selection into args) and quiet (omit this entry's body from the response).","items":{"type":"object","required":["tool"],"properties":{
+					"tool":{"type":"string","enum":["search","symbol","symbols","context","trace","query","neighborhood","changes"],"description":"Read-only sub-tool to dispatch. Writers and batch-in-batch are rejected per-entry."},
+					"args":{"type":"object","description":"Arguments for the sub-tool — identical schema to calling it directly."},
+					"from":{"type":"object","required":["query","select"],"description":"Chain mode: splice value(s) selected from an EARLIER sub-query's result into this sub-query's args, server-side. If the upstream errored, was skipped, or the selector finds nothing, this entry returns skipped:\"upstream_empty\".","properties":{
+						"query":{"type":"integer","description":"Index of an earlier sub-query (must be LOWER than this one — forward references fail validation before any execution)."},
+						"select":{"type":"string","enum":["top_id","ids","files"],"description":"Named selector over the upstream result (v1 — no path language): top_id=first result's stable symbol id (search results[0].id / trace hops[0].nodes[0].id / context symbol.id); ids=all result ids, deduped, capped at 20 with a chain_selector_trimmed warning; files=distinct file_path values, capped at 10. Multi-value selects pair with the symbols sub-tool's ids arg only (no fan-out in v1)."},
+						"into":{"type":"string","description":"Arg key the selection splices into. Defaults: context/symbol/trace→\"id\", symbols→\"ids\"; other sub-tools require an explicit key."}
+					}},
+					"quiet":{"type":"boolean","description":"Run this sub-query for chaining but OMIT its body from the response — the entry becomes {index, tool, quiet:true, selected:<value(s) passed on>} so the chain stays auditable. This is where the token win lands: intermediates never cross the envelope."}
+				}}},
+				"project":{"type":"string","description":"Default project merged into each sub-query that doesn't set its own. Defaults to session project."},
+				"max_tokens":{"type":"integer","description":"Shared response budget in approximate tokens across ALL sub-queries (default 4000), spent in input order. Budget-aware sub-tools (context, symbols) inherit the remaining budget as their own max_tokens when unset. _meta.warnings_v2 code=budget_truncated reports skipped sub-queries."}
+			}
+		}`),
+	}, s.handleBatch)
+
 	// 13. health — drift signals + extraction coverage. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
 		Name:        "health",
@@ -4476,7 +4653,7 @@ func (s *Server) registerTools() {
 	// 16. guide
 	s.addTool(&mcp.Tool{
 		Name:        "guide",
-		Description: "**Call first when you don't know which tool to use.** Takes a free-form task description (\"fix login retry bug\", \"refactor the auth middleware\", \"understand how indexing works\") and returns 2-3 recommended pincher tool calls with reasoning. A starter tool — eliminates the decision friction of choosing between search/context/trace/changes from scratch.",
+		Description: "**Call first when you don't know which tool to use.** Takes a free-form task description (\"fix login retry bug\", \"refactor the auth middleware\", \"understand how indexing works\") and returns 2-3 recommended pincher tool calls with reasoning. Phase-aware: a pasted stack trace routes to `investigate_failure`, a directory-shaped task (\"onboard internal/server/\") to `onboard_module`, pre-edit intent (\"what breaks if I change X\") to `plan_change`, caller questions (\"who calls X\") to `trace`, resumption (\"continue where I left off\") to the loop ledger or `adr` list, and multi-question tasks to `batch` when registered. Recommendations are ordered by this process's measured next_steps followed-rate once a tool has ≥10 emissions (not persisted across restarts). A starter tool — eliminates the decision friction of choosing between search/context/trace/changes from scratch.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["task"],"properties":{
 				"task":{"type":"string","description":"Free-form description of what you're trying to do (e.g. 'fix the login timeout bug', 'add caching to the API gateway', 'understand how the indexer handles symlinks')."},
@@ -4493,7 +4670,7 @@ func (s *Server) registerTools() {
 	// right cluster of code + recent changes.
 	s.addTool(&mcp.Tool{
 		Name:        "context_for_task",
-		Description: "**Call when you're investigating a feature/bug and need the cluster, not one symbol.** Takes either a free-form task (\"fix the login retry bug\") OR a `seed_id` from a prior `search`. Composes one envelope: top-N matching seeds via `search`, each seed's source + direct deps via `context`, callers + callees up to depth=2 via `trace direction=both`, and any `changes` overlap with the resolved seeds. Replaces the typical 5-10 atomic calls an agent loop fires when picking up an investigation. Returns `{seeds, neighbors, callers, callees, recent_changes}` plus `_meta.empty_reason` if no seeds resolve.",
+		Description: "**Call when you're investigating a feature/bug and need the cluster, not one symbol.** Takes either a free-form task (\"fix the login retry bug\") OR a `seed_id` from a prior `search`. Composes one envelope: top-N matching seeds via `search`, each seed's source + direct deps via `context`, callers + callees up to depth=2 via `trace direction=both`, and any `changes` overlap with the resolved seeds. Replaces the typical 5-10 atomic calls an agent loop fires when picking up an investigation. Returns `{seeds, neighbors, callers, callees, recent_changes}` plus `_meta.empty_reason` if no seeds resolve. Task-mode responses carry `_meta.seed_quality` (high/medium/low); when no seed NAME overlaps the task's tokens the response degrades to `mode:suggestions_only` (seed metadata, ~300 tokens) instead of a likely wrong-cluster envelope — pick a `seed_id` from the suggestions or pass `expand=true` to override.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"task":{"type":"string","description":"Free-form description of what you're investigating (e.g. 'fix the login timeout bug', 'understand how indexing handles symlinks'). Mutually exclusive with seed_id — pass one or the other."},
@@ -4501,7 +4678,8 @@ func (s *Server) registerTools() {
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
 				"max_seeds":{"type":"integer","description":"Cap on number of search-result seeds expanded (default 3, max 10). Each seed runs a context + trace call, so the response cost is roughly linear in this number."},
 				"trace_depth":{"type":"integer","description":"Max BFS depth for caller/callee traversal per seed (default 2, max 4). Deeper traversals are correct but expand quickly."},
-				"include_changes":{"type":"boolean","description":"If true, include git-changes overlap with resolved seeds in the envelope. Default true."}
+				"include_changes":{"type":"boolean","description":"If true, include git-changes overlap with resolved seeds in the envelope. Default true."},
+				"expand":{"type":"boolean","description":"PR-6 override: force full envelope expansion even when the seed-quality gate scores the task/seed name-overlap as low. Default false — low-overlap tasks return mode:suggestions_only with _meta.warnings_v2 code=seed_quality_low so a wrong-cluster expansion never costs 5k tokens."}
 			}
 		}`),
 	}, s.handleContextForTask)
@@ -4556,7 +4734,7 @@ func (s *Server) registerTools() {
 	// low (depth-1 caller — resolver bug, file rather than delete).
 	s.addTool(&mcp.Tool{
 		Name:        "audit_unused",
-		Description: "**Use to find safe-to-delete dead code with per-candidate confirmation.** Runs the existing `dead_code` SQL path then, per candidate, fires a scoped inbound CALLS trace at `confirm_depth` (default 2). Classifies each candidate by what the deep trace surfaced: `high` (zero callers — safe to delete), `medium` (deeper callers — likely a dynamic path the static call graph missed, read before deleting), `low` (depth-1 caller — almost always a resolver bug, file an issue rather than delete). Returns `{candidates, summary}` where summary counts the three classification buckets. Replaces the N+1 round trips of `dead_code` + per-candidate `trace direction=in depth=2/4` confirmations. Read-only; safe to call repeatedly.",
+		Description: "**Use to find safe-to-delete dead code with per-candidate confirmation.** Runs the existing `dead_code` SQL path then, per candidate, fires a scoped inbound CALLS trace at `confirm_depth` (default 2). Classifies each candidate by what the deep trace surfaced: `high` (zero callers — safe to delete), `medium` (deeper callers — likely a dynamic path the static call graph missed, read before deleting), `low` (depth-1 caller — almost always a resolver bug, file an issue rather than delete). Returns `{candidates, summary}` where summary counts the three classification buckets. Verdicts where the static graph is dispatch-blind — Methods whose case-folded name matches a project interface method (interface dispatch produces no CALLS edges) or candidates extracted below AST-tier confidence (<0.95, under-resolved cross-file calls) — are capped at `medium` with evidence `interface_dispatch_possible` and a `_meta.warnings_v2` code `dispatch_blind`. Replaces the N+1 round trips of `dead_code` + per-candidate `trace direction=in depth=2/4` confirmations. Read-only; safe to call repeatedly.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
@@ -4602,6 +4780,26 @@ func (s *Server) registerTools() {
 			}
 		}`),
 	}, s.handleWhyEmpty)
+
+	// 16h. verify_change — the loop's post-edit gate in ONE call
+	// (loop-substrate PR-10). Composes the changes analysis (shared
+	// core with `changes` via analyzeChanges), the ranked tests_to_run
+	// it produces, a predicted-vs-actual blast-radius comparison
+	// against the plan plan_change stashed pre-edit, and a dead_code
+	// pass restricted to the changed files (possibly_orphaned_by_change,
+	// advisory, Functions only — Methods are dispatch-blind).
+	s.addTool(&mcp.Tool{
+		Name:        "verify_change",
+		Description: "**Use after an edit, before declaring done — \"did my edit do what I planned, what do I run, what broke\" in ONE call.** Composes: (1) the `changes` blast-radius analysis over `scope` (unstaged/staged/all/base:<branch>); (2) `tests_to_run` ranked by overlap — run the top entries first; (3) when `target` matches a prior `plan_change` run, a predicted-vs-actual comparison: `plan_comparison.{predicted_callers, actual_impacted, unpredicted_impact}` with `warnings_v2 code=unpredicted_impact` when the edit reached callers the plan never saw, and `code=plan_stale` when the index moved between plan and verify (no bogus diff); (4) `possibly_orphaned` — symbols in the changed files with zero inbound edges NOW (advisory `possibly_orphaned_by_change`; Functions only, Methods are interface-dispatch-blind). Pass `max_tokens` to bound the envelope (bulk lists trim first; summary counts always ship). Read-only; the post-edit half of the plan_change → edit → verify_change loop.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","properties":{
+				"scope":{"type":"string","description":"Which diff to verify: 'unstaged' (default), 'staged', 'all' (includes untracked), or 'base:<branch>' (committed diff vs merge-base of <branch>)"},
+				"target":{"type":"string","description":"Optional — the same target you passed to plan_change (symbol id, file path, or name). When given, the response includes plan_comparison: the plan's predicted depth-1 callers vs the depth-1 callers this diff actually impacts. Omit to skip the comparison."},
+				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
+				"max_tokens":{"type":"integer","description":"Response budget in approximate tokens (same chars/4 heuristic as _meta.tokens_used). Degradation order: changed_symbols, possibly_orphaned, tests_to_run (floor 3), plan_comparison id lists (counts survive). 0/omitted = unlimited. warnings_v2 code=budget_truncated names the trimmed sections."}
+			}
+		}`),
+	}, s.handleVerifyChange)
 
 	// 17. neighborhood — graph view around a symbol. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
@@ -4906,6 +5104,10 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 	projectArg := str(args, "project")
 	fieldsArg := str(args, "fields")
+	// Skeleton mode: detail="skeleton" replaces the source payload with a
+	// deterministic structural outline (see skeleton.go). Unknown values
+	// degrade to full with a warning.
+	detailSkeleton, detailWarning := parseDetailArg(args)
 	// #1232: opt-in to the legacy silent-cross-project-fallback
 	// behaviour. Pre-#1232, when projectArg was omitted AND the ID
 	// happened to resolve in some indexed project other than the
@@ -5101,6 +5303,15 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 		if source == "" && sym.Kind == "Document" {
 			source = sym.Docstring
 		}
+		// Skeleton mode: compress the body to its structural outline.
+		// Documents are prose, not code — the line classifier would
+		// mangle them, so they always ship full. Honest accounting:
+		// tokensSaved below keeps the same file-read baseline; the
+		// response is simply smaller (skeleton savings show up as a
+		// smaller tokens_used, not an inflated tokens_saved).
+		if detailSkeleton && source != "" && sym.Kind != "Document" {
+			source = skeletonize(source, s.calleeShortNames(sym.ProjectID, sym.ID))
+		}
 	}
 
 	// #766: for a Document the content is returned in `source`; its
@@ -5155,6 +5366,14 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// lied about the field's existence. #914 hoisted the check pattern
 	// out of this handler so trace / changes match the same shape.
 	data := projectAndCheckFields(allFields, fieldSet)
+	// Skeleton mode: one top-level marker (see attachSkeletonMeta for
+	// why top-level beats per-entry) + soft warning on unknown values.
+	if detailSkeleton {
+		attachSkeletonMeta(data)
+	}
+	if detailWarning != "" {
+		attachWarning(data, detailWarning)
+	}
 	// #1026: surface the project-resolve failure when project was
 	// explicitly passed but didn't match. attachWarning merges into
 	// existing _meta — safe to call before attachStalenessWarning.
@@ -5363,6 +5582,15 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 		sort.Strings(symbolsUnknownFields)
 	}
 	includeSource := fieldSet == nil || fieldSet["source"]
+	// max_tokens budget (loop-substrate PR-5): batch-wide cap applied
+	// in input order; entries past the budget keep metadata but set
+	// source_omitted:true and skip the disk read entirely.
+	maxTokens := maxTokensArg(args)
+	budgetRemaining := maxTokens
+	budgetSourceOmitted := 0
+	// Skeleton mode: detail="skeleton" applies the structural-outline
+	// compression to every entry's source (see skeleton.go).
+	detailSkeleton, detailWarning := parseDetailArg(args)
 	root := s.sessionRoot
 	// #1048: skip resolution when projectArg=="*" — documented
 	// cross-project sentinel. Batch lookups with "*" map to "look
@@ -5482,17 +5710,36 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 			crossProjectSources[sym.ProjectID]++
 		}
 		source := ""
+		sourceOmitted := false
 		symRoot := rootForProject(sym.ProjectID)
 		if includeSource {
-			if symRoot != "" {
-				source, _ = index.ReadSymbolSource(symRoot, *sym)
+			// PR-5 budget gate: span-based estimate, no disk read for
+			// entries that can't fit.
+			if maxTokens > 0 && (sym.EndByte-sym.StartByte+3)/4 > budgetRemaining {
+				sourceOmitted = true
+				budgetSourceOmitted++
 			}
-			// Document symbols (fetched URLs) store their content in Docstring —
-			// no local file to seek. Mirrors the fallback in handleSymbol so a
-			// batch lookup of mixed source-file + Document symbols returns the
-			// same shape as N single-symbol calls.
-			if source == "" && sym.Kind == "Document" {
-				source = sym.Docstring
+			if !sourceOmitted {
+				if symRoot != "" {
+					source, _ = index.ReadSymbolSource(symRoot, *sym)
+				}
+				// Document symbols (fetched URLs) store their content in Docstring —
+				// no local file to seek. Mirrors the fallback in handleSymbol so a
+				// batch lookup of mixed source-file + Document symbols returns the
+				// same shape as N single-symbol calls.
+				if source == "" && sym.Kind == "Document" {
+					source = sym.Docstring
+				}
+				if maxTokens > 0 {
+					budgetRemaining -= db.ApproxTokens(source)
+				}
+			}
+			// Skeleton mode: per-entry structural compression. Call
+			// names come from each symbol's own CALLS edges (one
+			// indexed query per entry, only paid when skeleton was
+			// requested). Documents are prose — always full.
+			if detailSkeleton && source != "" && sym.Kind != "Document" {
+				source = skeletonize(source, s.calleeShortNames(sym.ProjectID, sym.ID))
 			}
 		}
 		// #766: blank a Document's docstring — its text is already in
@@ -5534,10 +5781,17 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 		// Apply per-entry projection. _meta (the staleness warning
 		// attached just above) is preserved by projectFields.
 		entry = projectFields(entry, fieldSet)
+		// PR-5: attached post-projection so the flag survives the
+		// default compact field set.
+		if sourceOmitted {
+			entry["source_omitted"] = true
+		}
 		results = append(results, entry)
 		// Document symbols have no on-disk file; skip them in the
 		// savings baseline so we don't os.Stat a non-existent path.
-		if sym.Kind != "Document" && sym.FilePath != "" {
+		// Budget-omitted entries delivered no content — keep them out
+		// of the savings baseline too.
+		if !sourceOmitted && sym.Kind != "Document" && sym.FilePath != "" {
 			filePathsByProject[sym.ProjectID] = append(filePathsByProject[sym.ProjectID], sym.FilePath)
 		}
 	}
@@ -5568,6 +5822,23 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 	data := map[string]any{
 		"symbols": results,
 		"count":   len(results),
+	}
+	// PR-5: batch-level budget summary, structured for selective
+	// follow-up fetches.
+	if budgetSourceOmitted > 0 {
+		attachWarningStructured(data, "budget_truncated", WarningSeverityWarning,
+			fmt.Sprintf("%d of %d entries returned metadata-only (source_omitted:true) under max_tokens=%d — raise the budget or fetch those ids in a follow-up batch",
+				budgetSourceOmitted, len(ids), maxTokens),
+			map[string]any{"max_tokens": maxTokens, "entries_source_omitted": budgetSourceOmitted})
+	}
+	// Skeleton mode: ONE top-level _meta.skeleton marker for the whole
+	// batch, not a per-entry boolean — detail applies call-wide, so N
+	// markers would add payload weight without information.
+	if detailSkeleton {
+		attachSkeletonMeta(data)
+	}
+	if detailWarning != "" {
+		attachWarning(data, detailWarning)
 	}
 	// #1066: surface batch-level not-found summary so a partial-hit
 	// response is obviously partial. `count` historically lumps
@@ -5645,6 +5916,16 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	}
 	// #400: response-level field projection. Caller-driven cut.
 	fieldSet := parseFieldsArg(str(args, "fields"))
+	// max_tokens budget (loop-substrate PR-5): per-call response cap
+	// in approximate tokens. 0 / omitted = unlimited (legacy shape).
+	// Applied to the primary body after the #655 diff shaping so the
+	// budget trims exactly the bytes that would ship; callee/import
+	// bodies degrade to metadata-only once the remainder is spent.
+	maxTokens := maxTokensArg(args)
+	// Skeleton mode: detail="skeleton" replaces each source payload —
+	// the primary symbol's AND its imports'/callees' — with the
+	// structural outline (see skeleton.go).
+	detailSkeleton, detailWarning := parseDetailArg(args)
 
 	// #1039: context's schema declares a `project` arg ("Project name
 	// or ID. Defaults to session project.") but the handler used to
@@ -5753,6 +6034,15 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 
 	root, _ := s.resolveProjectRoot(sym.ProjectID)
 	source, _ := index.ReadSymbolSource(root, *sym)
+	// Skeleton mode: compress the primary symbol's body before any
+	// downstream path (lite / diff / full) sees it. Placed ABOVE the
+	// #655 diff block, which is additionally gated on !detailSkeleton —
+	// the diff cache must only ever hold full-source representations
+	// (see comment on the diff block). Documents are prose — never
+	// skeletonized.
+	if detailSkeleton && source != "" && sym.Kind != "Document" {
+		source = skeletonize(source, s.calleeShortNames(sym.ProjectID, sym.ID))
+	}
 
 	// #623: lite=true short-circuit. Returns just {id, source} —
 	// no imports, no callees, no staleness warning, no next_steps.
@@ -5763,9 +6053,32 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// byte-offset precision. Skips the IMPORTS/CALLS edge walks that
 	// account for most of context's per-call latency on big symbols.
 	if lite, _ := args["lite"].(bool); lite {
+		// max_tokens budget on the lite path. hook-redirect-v2's
+		// PreToolUse hook derives it from the intercepted Read call's
+		// own limit param so a redirected giant symbol can't blow the
+		// agent's window any harder than the Read it replaced.
+		// Integrated with loop-substrate PR-5: truncation goes through
+		// the shared line-boundary truncateSourceToTokens and is always
+		// announced (truncated flag + budget_truncated warning) — a
+		// silent cut would be the confidently-wrong shape this codebase
+		// keeps stamping out.
+		liteSource := source
+		liteDropped := 0
+		liteTruncated := false
+		if maxTokens > 0 {
+			liteSource, liteDropped, liteTruncated = truncateSourceToTokens(source, maxTokens)
+		}
 		liteData := map[string]any{
 			"id":     sym.ID,
-			"source": source,
+			"source": liteSource,
+		}
+		if liteTruncated {
+			attachWarningStructured(liteData, "budget_truncated", WarningSeverityWarning,
+				fmt.Sprintf("source cut at a line boundary to fit max_tokens=%d (-%d lines) — raise max_tokens for the full body", maxTokens, liteDropped),
+				map[string]any{"max_tokens": maxTokens, "source_lines_dropped": liteDropped})
+		}
+		if liteTruncated {
+			liteData["truncated"] = true
 		}
 		// Apply field projection if requested — keeps the contract
 		// consistent (callers already use `fields=` patterns elsewhere).
@@ -5796,6 +6109,15 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		if contextCrossProjectWarning != "" {
 			attachWarning(liteData, contextCrossProjectWarning)
 		}
+		// Skeleton mode marker + soft warning on the lite path too —
+		// minimum envelope means "skip imports/callees", not "hide
+		// which representation the source is in".
+		if detailSkeleton {
+			attachSkeletonMeta(liteData)
+		}
+		if detailWarning != "" {
+			attachWarning(liteData, detailWarning)
+		}
 		liteResponseJSON, _ := json.Marshal(liteData)
 		return s.jsonResultWithMeta(liteData, start, tool, args,
 			s.savedVsFileSizesSession(sym.ProjectID, root, []string{sym.FilePath}, liteResponseJSON)), nil
@@ -5808,9 +6130,55 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// it). Changed → fall through, but ship the primary symbol's source
 	// as a line diff against what we last served instead of the full
 	// body. diffMode is "" (normal), "changed" by the end of this block.
+	//
+	// Skeleton mode BYPASSES the diff cache entirely (!detailSkeleton):
+	// the cache stores the last-served representation, and skeleton and
+	// full are different representations of the same bytes — letting a
+	// skeleton call populate (or diff against) the cache would poison
+	// it: a later detail=full call could receive a diff computed against
+	// a skeleton (or an "unchanged" short-circuit that withholds the
+	// full body the agent never saw). Simplest correct rule: the diff
+	// cache only operates on detail=full.
 	var diffMode, sinceHash string
-	if s.diffContext && root != "" {
-		diffKey := sym.ProjectID + "|" + sym.ID
+	// v1.4.0 release-review hardening (adversarial findings #1/#2): the
+	// diff cache only operates on FULL-FIDELITY serves to an
+	// identifiable consumer. The cache's contract is "this caller's
+	// context window already holds these bytes" — these gates keep that
+	// assertion honest:
+	//
+	//  - `diff=false` (per-call escape hatch, additive arg): the
+	//    documented recovery path for a consumer that never saw the
+	//    prior serve — a fresh session against a long-lived server, or
+	//    a subagent sharing its parent's MCP connection. Bypasses the
+	//    cache entirely (no read, no write).
+	//  - max_tokens-budgeted and fields-projected calls never read or
+	//    write the cache: a truncated or bodiless serve must not
+	//    record "the caller has the body", or the natural follow-up
+	//    full fetch short-circuits to {unchanged:true} and the full
+	//    body becomes unobtainable without an env var MCP callers
+	//    can't set.
+	//  - Consumers without a stable connection identity bypass the
+	//    cache: the HTTP REST path (multiple bearer-key clients share
+	//    one process; see noDiffFromContext) and `batch` quiet
+	//    sub-queries (the body never reaches the caller at all; batch
+	//    injects diff=false). MCP sessions key by Session.ID() when
+	//    the transport provides one (streamable HTTP), else by the
+	//    process-singleton stdio connection.
+	diffConnKey := "local" // direct handler invocation (tests, internal callers)
+	if req.Session != nil {
+		if sid := req.Session.ID(); sid != "" {
+			diffConnKey = "mcp:" + sid
+		} else {
+			diffConnKey = "stdio" // stdio transport: one connection per process lifetime
+		}
+	}
+	diffEligible := s.diffContext && root != "" && !detailSkeleton &&
+		boolArgDefault(args, "diff", true) &&
+		maxTokens == 0 &&
+		(fieldSet == nil || fieldSet["symbol"]) &&
+		!noDiffFromContext(ctx)
+	if diffEligible {
+		diffKey := diffConnKey + "|" + sym.ProjectID + "|" + sym.ID
 		curHash, hashOK := fileHashOnDisk(filepath.Join(root, filepath.FromSlash(sym.FilePath)))
 		if hashOK {
 			if prevRaw, ok := s.contextDiffCache.Load(diffKey); ok {
@@ -5823,6 +6191,12 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 						"unchanged":  true,
 						"since_hash": prev.fileHash,
 					}
+					// Self-describing recovery: if this consumer does
+					// NOT hold the prior serve (fresh window on the
+					// same connection), the escape hatch is one call
+					// away — never silently unobtainable.
+					attachWarning(unchanged,
+						"unchanged since the last context(id) serve on this connection — re-call with diff=false if you do not have the prior response in your context")
 					return s.jsonResultWithMeta(unchanged, start, tool, args, db.ApproxTokens(prev.source)), nil
 				}
 				// File changed — ship the symbol body as a line diff
@@ -5838,6 +6212,20 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 				s.contextDiffCache.Store(diffKey, &contextDiffEntry{fileHash: curHash, source: source})
 			}
 		}
+	}
+
+	// max_tokens budget (loop-substrate PR-5): trim the primary body
+	// first — whatever the #655 diff shaping decided ships is what
+	// gets cut — then hand the remainder to the callee/import loops
+	// below. Deterministic for a given index state + budget.
+	budgetRemaining := 0
+	srcBudgetDropped := 0
+	srcBudgetTruncated := false
+	importsSourceOmitted := 0
+	calleesSourceOmitted := 0
+	if maxTokens > 0 {
+		source, srcBudgetDropped, srcBudgetTruncated = truncateSourceToTokens(source, maxTokens)
+		budgetRemaining = maxTokens - db.ApproxTokens(source)
 	}
 
 	// Find IMPORTS edges from this symbol — cross-package dependencies.
@@ -5887,7 +6275,31 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		if imp == nil {
 			continue
 		}
+		// Budget gate (PR-5): span-based estimate avoids the disk read
+		// when the entry can't fit anyway. Metadata survives so the
+		// agent can fetch the bodies it needs via symbol/symbols.
+		if maxTokens > 0 && (imp.EndByte-imp.StartByte+3)/4 > budgetRemaining {
+			imports = append(imports, map[string]any{
+				"id":             imp.ID,
+				"name":           imp.Name,
+				"kind":           imp.Kind,
+				"file_path":      imp.FilePath,
+				"source_omitted": true,
+			})
+			importsSourceOmitted++
+			continue
+		}
 		impSource, _ := index.ReadSymbolSource(root, *imp)
+		// Skeleton mode applies to every source payload in the
+		// response, each with its own CALLS-edge call names.
+		// Skeletonize BEFORE budget accounting so the budget charges
+		// exactly the bytes that ship.
+		if detailSkeleton && impSource != "" && imp.Kind != "Document" {
+			impSource = skeletonize(impSource, s.calleeShortNames(imp.ProjectID, imp.ID))
+		}
+		if maxTokens > 0 {
+			budgetRemaining -= db.ApproxTokens(impSource)
+		}
 		imports = append(imports, map[string]any{
 			"id":        imp.ID,
 			"name":      imp.Name,
@@ -5902,7 +6314,27 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		if callee == nil {
 			continue
 		}
+		// Budget gate (PR-5) — same shape as the imports loop above.
+		if maxTokens > 0 && (callee.EndByte-callee.StartByte+3)/4 > budgetRemaining {
+			callees = append(callees, map[string]any{
+				"id":             callee.ID,
+				"name":           callee.Name,
+				"kind":           callee.Kind,
+				"file_path":      callee.FilePath,
+				"source_omitted": true,
+			})
+			calleesSourceOmitted++
+			continue
+		}
 		calleeSource, _ := index.ReadSymbolSource(root, *callee)
+		// Skeletonize BEFORE budget accounting — same order as the
+		// imports loop above.
+		if detailSkeleton && calleeSource != "" && callee.Kind != "Document" {
+			calleeSource = skeletonize(calleeSource, s.calleeShortNames(callee.ProjectID, callee.ID))
+		}
+		if maxTokens > 0 {
+			budgetRemaining -= db.ApproxTokens(calleeSource)
+		}
 		callees = append(callees, map[string]any{
 			"id":        callee.ID,
 			"name":      callee.Name,
@@ -5939,6 +6371,22 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// suggestion is offered: there's nothing further to chase.
 	if next := suggestContextNextSteps(*sym); len(next) > 0 {
 		data["_meta"] = map[string]any{"next_steps": next}
+	}
+	// PR-5: surface what the budget dropped, structured so a client
+	// can fetch the omitted bodies selectively instead of re-issuing
+	// the whole call with a bigger cap. Attached AFTER the next_steps
+	// block above — that block replaces data["_meta"] wholesale and
+	// would clobber anything attached earlier.
+	if srcBudgetTruncated || importsSourceOmitted > 0 || calleesSourceOmitted > 0 {
+		attachWarningStructured(data, "budget_truncated", WarningSeverityWarning,
+			fmt.Sprintf("response trimmed to max_tokens=%d: primary source -%d lines; %d callee(s) + %d import(s) are metadata-only (source_omitted:true) — fetch the ones you need via symbols",
+				maxTokens, srcBudgetDropped, calleesSourceOmitted, importsSourceOmitted),
+			map[string]any{
+				"max_tokens":             maxTokens,
+				"source_lines_dropped":   srcBudgetDropped,
+				"callees_source_omitted": calleesSourceOmitted,
+				"imports_source_omitted": importsSourceOmitted,
+			})
 	}
 	// #317: warn if the seed file changed since indexing.
 	// #980: same check for imports/callees — they're read via the
@@ -5978,6 +6426,15 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		} else {
 			data = projected
 		}
+	}
+	// Skeleton mode: one top-level marker (cheapest honest signal —
+	// detail applies to the whole response) + soft warning on unknown
+	// values. Attached after projection: _meta survives projection.
+	if detailSkeleton {
+		attachSkeletonMeta(data)
+	}
+	if detailWarning != "" {
+		attachWarning(data, detailWarning)
 	}
 	// #1039: surface the project-resolve failure on success too — the
 	// caller's scope hint was ignored but the symbol resolved via the
@@ -6150,12 +6607,27 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// disk read entirely when compact, which is the real perf win
 	// on bulk searches.
 	compact := boolArg(args, "compact")
+	// Conclusion-density: count_only=true returns {query, total, by_kind}
+	// and nothing row-shaped. Counts are computed from the exact same
+	// post-filter result set the row-shaped call would consider, so
+	// count_only's total always equals the default call's total on the
+	// same query+filters (correctness over cleverness — no separate
+	// COUNT path that could drift from the row path).
+	countOnly := boolArg(args, "count_only")
 	corpus := str(args, "corpus")
 	limit := intArg(args, "limit", 20)
 	// #712: collect clamp warnings so the caller learns its input was
 	// adjusted instead of silently getting a different page size than
 	// it asked for. Surfaced in _meta.warnings below.
 	var searchClampWarnings []string
+	// format=text/toon: render the hit list as a dense TSV block
+	// (results_text) or TOON tabular block (results_toon) instead of
+	// the JSON results array. Unknown values fall back to json with a
+	// warning.
+	searchRowFmt, formatWarn := parseFormatArg(args)
+	if formatWarn != "" {
+		searchClampWarnings = append(searchClampWarnings, formatWarn)
+	}
 	// #1091 v0.67: snippet_lines knob. Lets callers skip the per-result
 	// disk read entirely (snippet_lines=0) when the agent already knows
 	// what it's looking for, or extend the snippet up to 20 lines for
@@ -6483,6 +6955,42 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		results = filtered
 	}
 
+	// Conclusion-density early return: the caller asked for the counts,
+	// not the rows. Computed AFTER every filter + fallthrough so the
+	// total matches what the row-shaped call would report, and BEFORE
+	// pagination/snippet work so no per-hit disk read is paid. The
+	// envelope deliberately omits next_steps / confidence_distribution —
+	// a count answer should land in tens of tokens, not hundreds.
+	if countOnly {
+		byKind := map[string]int{}
+		for _, r := range results {
+			byKind[r.Symbol.Kind]++
+		}
+		countMeta := map[string]any{}
+		if len(searchClampWarnings) > 0 {
+			countMeta["warnings"] = searchClampWarnings
+		}
+		if fellthroughTo != "" {
+			countMeta["fellthrough_to"] = fellthroughTo
+		}
+		if andFellThroughToOr {
+			countMeta["and_fallback_to_or"] = true
+			countMeta["effective_query"] = orQuery
+		}
+		if fellthroughToWildcard {
+			countMeta["fellthrough_to_wildcard"] = true
+			countMeta["effective_query"] = wildcardQuery
+		}
+		data := map[string]any{
+			"query":   query,
+			"total":   len(results),
+			"by_kind": byKind,
+			"_meta":   countMeta,
+		}
+		s.attachDriftWarning(data, projectID)
+		return s.jsonResultWithMeta(data, start, tool, args, 0), nil
+	}
+
 	// #532: pagination envelope. `searchTotal` = post-filter row count we
 	// considered; `searchHasMore` = there's at least one row past the
 	// current window. The window is [offset:offset+limit] of the BM25-
@@ -6660,7 +7168,9 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		// dropping it is the real perf win, not just byte savings.
 		// #1091: snippet_lines=0 is the explicit-skip knob — same effect
 		// as compact + fields-projection but without the side effects.
-		includeSnippet := !compact && snippetLines > 0 && (fieldSet == nil || fieldSet["snippet"])
+		// format=text/toon doesn't render snippets — skip the per-hit
+		// disk read entirely, same as compact.
+		includeSnippet := !compact && searchRowFmt == rowFormatJSON && snippetLines > 0 && (fieldSet == nil || fieldSet["snippet"])
 		snippet := ""
 		if includeSnippet && r.Symbol.Kind != "Variable" && r.Symbol.Kind != "Type" {
 			var src string
@@ -6707,7 +7217,19 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 
 	// Token savings: each result came from a file the agent would have read in full.
+	// format=text/toon: measure against the rendered block actually
+	// returned, so tokens_saved/tokens_used stay honest for the smaller
+	// rendering.
+	renderedRows := ""
 	responseJSON, _ := json.Marshal(rows)
+	switch searchRowFmt {
+	case rowFormatText:
+		renderedRows = renderSearchResultsText(results)
+		responseJSON = []byte(renderedRows)
+	case rowFormatTOON:
+		renderedRows = renderSearchResultsTOON(results)
+		responseJSON = []byte(renderedRows)
+	}
 	var filePaths []string
 	for _, r := range results {
 		filePaths = append(filePaths, r.Symbol.FilePath)
@@ -6893,7 +7415,6 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		meta["warnings"] = append(existing, searchFieldsWarning)
 	}
 	data := map[string]any{
-		"results":  rows,
 		"count":    len(rows),
 		"query":    query,
 		"total":    searchTotal,
@@ -6901,6 +7422,21 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		"offset":   offset,
 		"limit":    limit,
 		"_meta":    meta,
+	}
+	switch searchRowFmt {
+	case rowFormatText:
+		// format=text: the TSV block replaces the results array.
+		// Fixed column set (id/kind/file:line/signature-or-name) —
+		// the per-row JSON key repetition and brace/quote chrome is
+		// where the token cost lives on list-shaped payloads.
+		data["results_text"] = renderedRows
+	case rowFormatTOON:
+		// format=toon: the TOON tabular block replaces the results
+		// array — field list declared once, one bare row per hit.
+		// Same fixed column rationale as format=text.
+		data["results_toon"] = renderedRows
+	default:
+		data["results"] = rows
 	}
 	// F1: surface binary-version drift on read-class tools so the agent
 	// knows results may reflect older parsing logic than what indexed
@@ -8173,7 +8709,22 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// never use — the agent reads name + file_path + line and acts.
 	// Default false preserves current shape for callers that DO
 	// consume those fields (dashboards, dogfood, risk-aware reviews).
+	// compact=true additionally ditto-compresses consecutive
+	// same-file hops within a depth block (repeated file_path omitted;
+	// decode by scanning up to the nearest node carrying file_path).
 	compact := boolArg(args, "compact")
+	// format=text/toon: render the hop list as a dense TSV block
+	// (results_text) or TOON tabular block (results_toon) instead of
+	// the JSON hops array. Unknown values fall back to json with a
+	// warning (appended below).
+	traceRowFmt, traceFormatWarn := parseFormatArg(args)
+	// Conclusion-density: count_only=true returns {root, direction,
+	// total, by_depth, by_risk} and nothing row-shaped. The counts come
+	// from the exact same BFS + filter + trim + cap pipeline the
+	// row-shaped call runs, so count_only's total always equals the
+	// default call's total on the same args (no separate COUNT query
+	// that could drift from the row path).
+	countOnly := boolArg(args, "count_only")
 
 	// kinds: comma-separated list of edge kinds to traverse (e.g.
 	// "CALLS" or "READS,WRITES"). Empty/missing = default (CALLS
@@ -8465,9 +9016,66 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		traceTruncated = true
 	}
 
+	// Conclusion-density early return: counts only, nothing row-shaped.
+	// Sits AFTER every filter/trim/cap so the totals are exactly what
+	// the row-shaped call would report, and BEFORE per-hop entry
+	// building so no row payload is assembled just to be discarded.
+	// The envelope deliberately omits confidence_distribution /
+	// next_steps / ambiguity details — a count answer should land in
+	// tens of tokens. Warnings that change how the counts must be read
+	// (clamps, cross-project scope, truncation) are kept.
+	if countOnly {
+		byDepthCount := map[string]int{}
+		byRisk := map[string]int{}
+		for _, h := range hops {
+			byDepthCount[strconv.Itoa(h.Depth)]++
+			if addRisk {
+				byRisk[h.Risk]++
+			}
+		}
+		countMeta := map[string]any{}
+		var countWarnings []string
+		for _, w := range []string{
+			traceDepthClampMsg, traceDirWarning, traceMinConfWarn,
+			traceIDNameWarning, traceCrossProjectWarning, traceMaxHopsClampMsg,
+		} {
+			if w != "" {
+				countWarnings = append(countWarnings, w)
+			}
+		}
+		countWarnings = append(countWarnings, traceKindWarnings...)
+		if len(countWarnings) > 0 {
+			countMeta["warnings"] = countWarnings
+		}
+		if traceTruncated {
+			countMeta["truncated"] = true
+			countMeta["total_before_cap"] = traceTotalBeforeCap
+			countMeta["max_hops"] = maxHops
+		}
+		data := map[string]any{
+			"root":      name,
+			"direction": direction,
+			"total":     len(hops),
+			"by_depth":  byDepthCount,
+			"_meta":     countMeta,
+		}
+		if addRisk {
+			data["by_risk"] = byRisk
+		}
+		return s.jsonResultWithMeta(data, start, tool, args, 0), nil
+	}
+
 	// Group by depth
 	byDepth := make(map[int][]map[string]any)
 	riskCounts := map[string]int{"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+	// Ditto compression (compact only): consecutive nodes within the
+	// same depth block that share a file_path omit the repeated field
+	// — the first occurrence carries it. Deterministic and locally
+	// decodable: a consumer scans up the nodes array to the nearest
+	// entry carrying file_path. Gated behind compact so the default
+	// shape is untouched (zero compat risk). Tracks last-seen path
+	// per depth because the rendered nodes arrays are per depth block.
+	lastFileByDepth := map[int]string{}
 	for _, h := range hops {
 		// #1225: compact=true drops kind + via from each hop. The
 		// thin-client target shape is {id, name, file_path, start_line}
@@ -8476,8 +9084,14 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		entry := map[string]any{
 			"id":         h.Symbol.ID,
 			"name":       h.Symbol.Name,
-			"file_path":  h.Symbol.FilePath,
 			"start_line": h.Symbol.StartLine,
+		}
+		if prev, seen := lastFileByDepth[h.Depth]; compact && seen && prev == h.Symbol.FilePath {
+			// ditto: the previous node in this depth block carries the
+			// identical file_path — omit the repeat.
+		} else {
+			entry["file_path"] = h.Symbol.FilePath
+			lastFileByDepth[h.Depth] = h.Symbol.FilePath
 		}
 		if !compact {
 			entry["kind"] = h.Symbol.Kind
@@ -8509,6 +9123,14 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	}
 
 	responseJSON, _ := json.Marshal(hopsList)
+	switch traceRowFmt {
+	case rowFormatText:
+		// format=text/toon: measure savings against the block actually
+		// returned so tokens_saved/tokens_used stay honest.
+		responseJSON = []byte(renderTraceHopsText(hops))
+	case rowFormatTOON:
+		responseJSON = []byte(renderTraceHopsTOON(hops))
+	}
 	var tracedPaths []string
 	for _, h := range hops {
 		tracedPaths = append(tracedPaths, h.Symbol.FilePath)
@@ -8541,6 +9163,9 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	}
 	if traceMaxHopsClampMsg != "" {
 		traceWarnings = append(traceWarnings, traceMaxHopsClampMsg)
+	}
+	if traceFormatWarn != "" {
+		traceWarnings = append(traceWarnings, traceFormatWarn)
 	}
 	if len(starts) > 0 {
 		if sparseWarning := s.sparseGraphWarningForLanguage(projectID, starts[0].Language); sparseWarning != "" {
@@ -8673,9 +9298,23 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	data := map[string]any{
 		"root":      name,
 		"direction": direction,
-		"hops":      hopsList,
 		"total":     len(hops),
 		"_meta":     meta,
+	}
+	switch traceRowFmt {
+	case rowFormatText:
+		// format=text: the TSV block replaces the hops array. One
+		// line per hop (depth<TAB>risk<TAB>id) — the id embeds file
+		// path + qualified name, so each line still carries enough to
+		// drive a follow-up context/symbol call.
+		data["results_text"] = renderTraceHopsText(hops)
+	case rowFormatTOON:
+		// format=toon: the TOON tabular block replaces the hops array
+		// — one bare row per hop (depth,id,risk), field list declared
+		// once. Same follow-up-call sufficiency as format=text.
+		data["results_toon"] = renderTraceHopsTOON(hops)
+	default:
+		data["hops"] = hopsList
 	}
 	if addRisk && !compact {
 		// #1225: drop the top-level risk_summary on compact=true.
@@ -8741,15 +9380,24 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 		return errResult(err.Error()), nil
 	}
 
-	// Run git diff
-	diffOutput, diffErr := runGitDiff(root, scope)
-	if diffErr != nil {
+	// Diff → changed symbols → blast radius → impacted tests. The
+	// pipeline lives in AnalyzeChanges (changes_analysis.go — the moved
+	// code keeps its #502/#247/#330 commentary there), shared three
+	// ways: this handler, verify_change (loop-substrate PR-10, which
+	// also consumes the depth-1 DirectCallers for its plan comparison),
+	// and the `pincher test-impacted` CLI — all run the exact same
+	// analysis instead of forking the logic. The only error it returns
+	// is a git-diff failure; everything downstream is best-effort. The
+	// handler keeps everything response-shaped: caps, summary, warnings,
+	// empty-state diagnosis.
+	analysis, analysisErr := AnalyzeChanges(ctx, s.store, s.indexer, projectID, root, scope, depth)
+	if analysisErr != nil {
 		// Rich envelope so the agent learns the valid scopes instead of
 		// staring at a bare "git diff failed". Most common cause is a
 		// base-branch typo (`base:mian`) or a non-existent branch — the
 		// next_steps lead them at the supported shapes.
 		return s.errResultRich(
-			fmt.Sprintf("git diff failed: %v", diffErr),
+			fmt.Sprintf("git diff failed: %v", analysisErr),
 			[]map[string]string{
 				{"tool": "changes", "args": `{"scope":"unstaged"}`,
 					"why": "default: working-tree changes not yet staged"},
@@ -8761,120 +9409,25 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 					"why": "committed-only diff vs master's merge-base — preview a PR's blast radius. Use the actual base branch name (master/main/develop/…)"},
 			}), nil
 	}
+	changedFiles := analysis.ChangedFiles
+	changedSymbols := analysis.ChangedSymbols
+	testsToRun := analysis.TestsToRun
 
-	// Parse changed files from diff
-	changedFiles := parseGitDiffFiles(diffOutput)
-
-	// #502: also fetch the unified diff so per-file hunk ranges can
-	// intersect each symbol's [StartLine, EndLine]. Pre-fix, every
-	// symbol in any changed file was treated as "changed" — adding
-	// one function to a 6000-line file expanded the blast radius BFS
-	// to half the codebase. The hunk fetch is best-effort: on error
-	// we fall back to the pre-#502 behaviour (all symbols in changed
-	// files) so the tool stays usable when git options change shape.
-	hunkDiff, hunkErr := runGitDiffHunks(root, scope)
-	var hunksByFile map[string][][2]int
-	if hunkErr == nil {
-		hunksByFile = parseGitDiffHunks(hunkDiff)
-	}
-
-	// Find symbols in changed files. When we have hunks for a file,
-	// keep only symbols whose line range overlaps an actual edit.
-	// When hunks aren't available for a file (untracked content,
-	// rename without content change, parse miss), fall back to
-	// "all symbols in file" — better to over-report than under-report
-	// for the safety-check use case.
-	var changedSymbols []db.Symbol
-	for _, f := range changedFiles {
-		syms, err := s.store.GetSymbolsForFile(projectID, f)
-		if err != nil {
-			continue
-		}
-		hunks, hasHunks := hunksByFile[f]
-		if !hasHunks || len(hunks) == 0 {
-			changedSymbols = append(changedSymbols, syms...)
-			continue
-		}
-		for _, sym := range syms {
-			if symbolOverlapsHunks(sym.StartLine, sym.EndLine, hunks) {
-				changedSymbols = append(changedSymbols, sym)
-			}
-		}
-	}
-
-	// BFS trace for blast radius. Use TraceByID so a changed `Run` /
-	// `Handler` / `Open` resolves to the *exact* symbol that changed,
-	// not whichever same-named symbol the name-based lookup picks first
-	// (#5). The previous Trace(name, ...) path computed blast radius
-	// from a sibling symbol when one name had multiple definitions.
-	//
-	// #247 #4: alongside the impacted-symbol collection, track which
-	// test symbols reach each changed symbol — separately from the
-	// `seen` dedupe so a test reached via multiple changed symbols gets
-	// its overlap counted, not collapsed into the first path. Used to
-	// produce the tests_to_run array sorted by overlap descending.
-	// #330: pre-allocate as zero-len so the JSON field is always [], never
+	// Project the impacted set into the response map shape. #330:
+	// pre-allocate as zero-len so the JSON field is always [], never
 	// null. A nil slice marshals to null, forcing every consumer to
 	// null-check; same fix shape as #328 on health.extraction_coverage.
-	impacted := []map[string]any{}
-	seen := make(map[string]bool)
-	testHits := make(map[string]map[string]bool) // test sym ID → set of changed sym IDs that reach it
-	testSyms := make(map[string]db.Symbol)       // test sym ID → the symbol (for output projection)
-	for _, sym := range changedSymbols {
-		hops, err := s.indexer.TraceByID(ctx, projectID, sym.ID, "inbound", depth, true)
-		if err != nil {
-			continue
-		}
-		for _, h := range hops {
-			if h.Symbol.IsTest {
-				if _, ok := testHits[h.Symbol.ID]; !ok {
-					testHits[h.Symbol.ID] = make(map[string]bool)
-					testSyms[h.Symbol.ID] = h.Symbol
-				}
-				testHits[h.Symbol.ID][sym.ID] = true
-			}
-			if seen[h.Symbol.ID] {
-				continue
-			}
-			seen[h.Symbol.ID] = true
-			impacted = append(impacted, map[string]any{
-				"id":         h.Symbol.ID,
-				"name":       h.Symbol.Name,
-				"kind":       h.Symbol.Kind,
-				"file_path":  h.Symbol.FilePath,
-				"risk":       h.Risk,
-				"changed_by": sym.Name,
-			})
-		}
-	}
-
-	// Build tests_to_run sorted by overlap descending (then test ID
-	// ascending for stable output). Overlap = how many distinct
-	// changed symbols this test reaches; higher overlap = more bang
-	// per re-run. Deterministic ordering keeps any future snapshot
-	// test on this surface stable.
-	type testRow struct {
-		ID       string `json:"id"`
-		Name     string `json:"name"`
-		FilePath string `json:"file_path"`
-		Overlap  int    `json:"overlap"`
-	}
-	testsToRun := make([]testRow, 0, len(testHits))
-	for testID, hits := range testHits {
-		sym := testSyms[testID]
-		testsToRun = append(testsToRun, testRow{
-			ID:       testID,
-			Name:     sym.Name,
-			FilePath: sym.FilePath,
-			Overlap:  len(hits),
+	impacted := make([]map[string]any, 0, len(analysis.Impacted))
+	for _, item := range analysis.Impacted {
+		impacted = append(impacted, map[string]any{
+			"id":         item.ID,
+			"name":       item.Name,
+			"kind":       item.Kind,
+			"file_path":  item.FilePath,
+			"risk":       item.Risk,
+			"changed_by": item.ChangedBy,
 		})
 	}
-	sort.Slice(testsToRun, func(i, j int) bool {
-		if testsToRun[i].Overlap != testsToRun[j].Overlap {
-			return testsToRun[i].Overlap > testsToRun[j].Overlap
-		}
-		return testsToRun[i].ID < testsToRun[j].ID
-	})
 
 	// Build risk summary — count the FULL impacted set before any trim.
 	riskCounts := map[string]int{"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
@@ -9432,6 +9985,23 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 	// real code) or known-dead noise the developer doesn't need
 	// told. SQL can't filter these without a path-pattern column;
 	// LIMIT*2 from SQL + trim in Go is cheaper than a new column.
+	//
+	// Dispatch-blindness flags (feat/dispatch-blind-verdicts; heuristic
+	// documented on interfaceMethodNamesFolded in audit_unused.go): a
+	// Method whose case-folded name matches a project interface method,
+	// or any symbol extracted below AST-tier confidence, may have
+	// callers the static graph cannot see (interface dispatch /
+	// under-resolved regex-tier cross-file calls). Such rows carry an
+	// `evidence` entry and the response a warnings_v2 dispatch_blind
+	// advisory — zero inbound edges there is not proof of death.
+	var deadIfaceMethodNames map[string]bool
+	for _, sym := range rawDead {
+		if sym.Kind == "Method" {
+			deadIfaceMethodNames = s.interfaceMethodNamesFolded(projectID)
+			break
+		}
+	}
+	deadIfaceFlagged, deadRegexFlagged := 0, 0
 	dead := []map[string]any{}
 	for _, sym := range rawDead {
 		if isDeveloperScratchPath(sym.FilePath) || isTestFixturePath(sym.FilePath) {
@@ -9440,7 +10010,7 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 		if isRuntimeInvokedGoSymbol(sym.Language, sym.Name) {
 			continue
 		}
-		dead = append(dead, map[string]any{
+		row := map[string]any{
 			"id":         sym.ID,
 			"name":       sym.Name,
 			"kind":       sym.Kind,
@@ -9448,7 +10018,21 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 			"file_path":  sym.FilePath,
 			"start_line": sym.StartLine,
 			"complexity": sym.Complexity,
-		})
+		}
+		ifaceHit, regexTier := dispatchBlindFlags(sym.Kind, sym.Name, sym.ExtractionConfidence, deadIfaceMethodNames)
+		if ifaceHit || regexTier {
+			ev := []string{}
+			if ifaceHit {
+				ev = append(ev, evidenceInterfaceDispatchPossible)
+				deadIfaceFlagged++
+			}
+			if regexTier {
+				ev = append(ev, evidenceRegexTierUnderResolved)
+				deadRegexFlagged++
+			}
+			row["evidence"] = ev
+		}
+		dead = append(dead, row)
 		if len(dead) >= limit {
 			break
 		}
@@ -9635,6 +10219,17 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 		if m, ok := data["_meta"].(map[string]any); ok {
 			m["warnings"] = kindWarnings
 		}
+	}
+
+	// Dispatch-blindness advisory — attached after the branches above
+	// settle data["_meta"] so it can't be clobbered by a fresh map.
+	if deadIfaceFlagged > 0 || deadRegexFlagged > 0 {
+		attachWarningStructured(data, "dispatch_blind", WarningSeverityWarning,
+			dispatchBlindWarningMessage(deadIfaceFlagged, deadRegexFlagged),
+			map[string]any{
+				"interface_dispatch_candidates": deadIfaceFlagged,
+				"regex_tier_candidates":         deadRegexFlagged,
+			})
 	}
 
 	responseJSON, _ := json.Marshal(dead)
@@ -10984,6 +11579,15 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	b.WriteString(line("With pincher:", commify(tokensUsed)+" tokens"))
 	b.WriteString(line("Saved:", "~"+commify(tokensSaved)+" tokens"+pct))
 	b.WriteString(line("Avg latency:", fmt.Sprintf("%d ms", avgLatency)))
+	// Guide-coaching PR-15/17: surface next_steps adherence — the
+	// counter was stamped on every envelope (#1631) but consumed by
+	// nothing, so a 0%-followed session went unnoticed. Process-
+	// lifetime scope, same as the other SESSION counters; suppressed
+	// when nothing has been emitted yet.
+	if emitted, followed := s.nextStepsAdherence.Stats(); emitted > 0 {
+		b.WriteString(line("next_steps followed:",
+			fmt.Sprintf("%d%% (%d emitted)", followed*100/emitted, emitted)))
+	}
 
 	// ALL-TIME section — only render when the DB has data (otherwise it's
 	// just a row of zeros, noisy for first-use).
@@ -11488,7 +12092,26 @@ const (
 	shapeToolAudit  guideShape = "tool_audit" // empirical audit of a tool's OUTPUT quality (#497) — "find FPs in dead_code", "audit search results"
 	shapeDeadCode   guideShape = "dead_code"  // unreachable / zero-caller / unused-function surveys — routes to the dead_code tool
 	shapeUnknown    guideShape = "unknown"    // fallback
+	// Composite-backed shapes (guide-coaching PR-15/17): the front door
+	// leads with the composite tool that answers the whole task in one
+	// call, instead of the generic search/architecture starter.
+	shapeFailure guideShape = "failure" // stack-trace / panic / file:line triage → investigate_failure
+	shapeOnboard guideShape = "onboard" // directory-shaped orientation → onboard_module
+	shapeResume  guideShape = "resume"  // session resumption — loop ledger when non-empty, else adr list
+	shapeBatch   guideShape = "batch"   // several distinct questions in one task → batch (when registered)
 )
+
+// compositeShapeTool maps a composite-backed shape to the tool its
+// recommendations lead with. computeGuide gates each shape on the
+// tool actually being registered in this process (s.tools) rather
+// than hardcoding availability, so the routing works both before and
+// after the PRs that add new composites (e.g. `batch`) merge. An
+// unregistered composite falls back to the legacy keyword path.
+var compositeShapeTool = map[guideShape]string{
+	shapeFailure: "investigate_failure",
+	shapeOnboard: "onboard_module",
+	shapeBatch:   "batch",
+}
 
 // pincherToolNames is the set of registered tool names a tool-output
 // audit task might reference (#497). Used by classifyTaskShape and
@@ -11608,6 +12231,15 @@ var auditBareThresholdPattern = regexp.MustCompile(
 // distinctive enough to stay plain substring checks.
 var refactorExtractWord = regexp.MustCompile(`\bextract\b`)
 
+// preEditWord (guide-coaching PR-15/17) matches pre-edit verbs in
+// LEADING position only ("change the retry policy", "modify
+// flushSession"). Leading-anchored rather than word-bounded because
+// "change" is too common as a noun mid-sentence ("fix the change
+// detection bug" is a fix task, "review my changes" is a review
+// task); as the task's first verb it unambiguously signals edit
+// intent, which wants plan_change's blast-radius preview first.
+var preEditWord = regexp.MustCompile(`^\s*(change|changing|modify|modifying|edit|editing)\b`)
+
 // reviewDiffWord (#937) word-bounds the "diff" review keyword so it
 // doesn't substring-match "difference" / "different" / "differentiate".
 // Same pattern as refactorExtractWord — bare `contains("diff")`
@@ -11616,13 +12248,135 @@ var refactorExtractWord = regexp.MustCompile(`\bextract\b`)
 // question about pincher's own tool surface.
 var reviewDiffWord = regexp.MustCompile(`\bdiff\b`)
 
+// fileLinePattern matches stack-frame-style `path/file.ext:123`
+// locations — the strongest single signal that a task is a pasted
+// failure (panic dump, traceback, compiler error) rather than a
+// described one. Extension capped at 5 word-chars so prose like
+// "ratio 1.5:1" doesn't trigger (no extension-shaped token).
+var fileLinePattern = regexp.MustCompile(`[\w./\\-]+\.\w{1,5}:\d+`)
+
+// enumItemPattern matches enumeration markers ("1. do X", "2) then Y")
+// at a line start or after whitespace. Two or more markers (or two or
+// more question marks) flag a multi-question task for batch routing.
+var enumItemPattern = regexp.MustCompile(`(^|\n|\s)\d{1,2}[.)]\s`)
+
+// resumeLeadPattern matches resumption phrasing where continue/resume
+// is the leading verb of the task ("continue the migration", "resume
+// where we stopped"). Leading-position anchoring keeps incidental uses
+// ("the loop should continue after errors") routed to their real shape.
+var resumeLeadPattern = regexp.MustCompile(`^\s*(continue|continuing|resume|resuming)\b`)
+
+// classifyCompositeTaskShape detects the task shapes that route to a
+// composite tool or to session-resumption (guide-coaching PR-15/17).
+// Runs BEFORE the keyword classifier: a pasted stack trace contains
+// "error"/"fix"-family tokens that would otherwise win, and a
+// directory-shaped task has no verb for the keyword path to grab.
+// Returns "" when no composite shape matches — the caller falls
+// through to classifyKeywordTaskShape.
+//
+// Pure function. Runtime gating (is the composite actually registered
+// in this process? is the loop ledger non-empty?) happens in
+// computeGuide, not here, so the classifier stays unit-testable.
+func classifyCompositeTaskShape(task string) guideShape {
+	t := strings.ToLower(task)
+	contains := func(needles ...string) bool {
+		for _, n := range needles {
+			if strings.Contains(t, n) {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	// Stack-trace-looking task → investigate_failure. file:line frames
+	// fire on their own; bare failure words ("panic", "error:") only
+	// fire on multi-line tasks, so a described bug ("fix panic in the
+	// indexer") still routes to the shapeFix search flow while a pasted
+	// dump routes to the composite that parses it.
+	case fileLinePattern.MatchString(task),
+		contains("stack trace", "stacktrace", "traceback", "goroutine ", "segfault", "core dump"),
+		strings.Contains(task, "\n") && contains("panic", "error:", "exception", "fatal error", "assertion failed"):
+		return shapeFailure
+	// Directory-shaped / orientation task → onboard_module. Strong
+	// signals only: an explicit onboard/orient verb, or a token with a
+	// trailing slash ("internal/server/"). The weaker "contains / but
+	// no extension" form is handled in classifyKeywordTaskShape's
+	// default branch so verb-ful tasks ("find pkg/sub") keep their
+	// keyword routing.
+	case contains("onboard", "orient", "get up to speed", "ramp up", "familiarize", "familiarise", "new to this"),
+		hasTrailingSlashToken(task):
+		return shapeOnboard
+	// Resumption → loop resume (ledger-gated in computeGuide) or adr
+	// list. Leading continue/resume verb, or the idiomatic phrases.
+	case resumeLeadPattern.MatchString(t),
+		contains("where was i", "where did i leave", "left off", "pick up where", "pick up from"):
+		return shapeResume
+	// Several distinct questions in one task → batch (registration-
+	// gated in computeGuide). ≥2 question marks or ≥2 enumeration
+	// markers.
+	case strings.Count(task, "?") >= 2,
+		len(enumItemPattern.FindAllString(task, 3)) >= 2:
+		return shapeBatch
+	}
+	return ""
+}
+
+// hasTrailingSlashToken reports whether any whitespace-separated token
+// of the task ends in "/" after trimming surrounding punctuation —
+// the unambiguous "this is a directory" spelling ("internal/server/").
+func hasTrailingSlashToken(task string) bool {
+	for _, tok := range strings.Fields(task) {
+		tok = strings.Trim(tok, `"'`+"`()[]{},;:")
+		if len(tok) > 1 && strings.HasSuffix(tok, "/") {
+			return true
+		}
+	}
+	return false
+}
+
+// directoryHintFromTask extracts the most directory-looking token from
+// a task ("onboard me on internal/ast" → "internal/ast"). Prefers a
+// trailing-slash token, then any token containing "/" whose last
+// segment has no extension. Returns "" when the task names no path —
+// the caller falls back to a placeholder.
+func directoryHintFromTask(task string) string {
+	var fallback string
+	for _, tok := range strings.Fields(task) {
+		tok = strings.Trim(tok, `"'`+"`()[]{},;:")
+		if len(tok) <= 1 || !strings.Contains(tok, "/") {
+			continue
+		}
+		if strings.HasSuffix(tok, "/") {
+			return tok
+		}
+		last := tok[strings.LastIndex(tok, "/")+1:]
+		if fallback == "" && !strings.Contains(last, ".") {
+			fallback = tok
+		}
+	}
+	return fallback
+}
+
 // classifyTaskShape inspects a task description and returns the most
-// likely intent. Keyword-based heuristic — no parsing or NLP. Order
+// likely intent. Composite shapes (stack-trace triage, directory
+// onboarding, resumption, multi-question batch) are detected first;
+// everything else falls through to the keyword heuristic.
+//
+// Pure function; pinned by tests so future tweaks don't drift.
+func classifyTaskShape(task string) guideShape {
+	if shape := classifyCompositeTaskShape(task); shape != "" {
+		return shape
+	}
+	return classifyKeywordTaskShape(task)
+}
+
+// classifyKeywordTaskShape is the legacy keyword path (pre-composite
+// fallback). Keyword-based heuristic — no parsing or NLP. Order
 // matters: the first matching shape wins because some keywords
 // overlap ("fix tests" → tests, not fix).
 //
 // Pure function; pinned by tests so future keyword tweaks don't drift.
-func classifyTaskShape(task string) guideShape {
+func classifyKeywordTaskShape(task string) guideShape {
 	t := strings.ToLower(task)
 	contains := func(needles ...string) bool {
 		for _, n := range needles {
@@ -11708,6 +12462,12 @@ func classifyTaskShape(task string) guideShape {
 		return shapeAudit
 	case contains("test", "spec ", "coverage"):
 		return shapeTest
+	// Guide-coaching PR-15/17: "blast radius of <symbol>" is a caller
+	// question — trace answers it. Only when the task doesn't mention a
+	// change/diff/commit; "blast radius of this change" stays a review
+	// task (the `changes` tool maps the diff to impacted callers).
+	case contains("blast radius") && !contains("change", "diff", "commit", "review"):
+		return shapeTraceIn
 	// #937: "diff" word-bounded so it doesn't substring-match
 	// "difference" / "different" / "differentiate" — meta questions
 	// about pincher's own tool surface ("what's the difference between
@@ -11723,7 +12483,13 @@ func classifyTaskShape(task string) guideShape {
 	// "extract the error-wrapping helper"). Pre-fix those routed to
 	// shapeFix and guide recommended a bug-hunt search flow.
 	case contains("refactor", "rename", "restructure", "clean up") ||
-		refactorExtractWord.MatchString(t):
+		refactorExtractWord.MatchString(t) ||
+		// Guide-coaching PR-15/17: pre-edit intent. "what breaks if I
+		// change X" / "modify the retry loop" is the plan_change use
+		// case — the agent is about to edit and wants the blast radius
+		// first. Word-bounded so "changes"/"changelog" don't match.
+		contains("what breaks", "what would break", "will break") ||
+		preEditWord.MatchString(t):
 		// Note: "split", "move" intentionally NOT in this list — both are
 		// also nouns ("FTS5 split", "the move detector") and would over-
 		// match. Lose those signal words rather than false-positive.
@@ -11771,11 +12537,21 @@ func classifyTaskShape(task string) guideShape {
 	case contains("find ", "where is", "where are", "locate", "look up", "lookup"):
 		return shapeFind
 	default:
+		// Guide-coaching PR-15/17: a verb-less task that's basically a
+		// directory path ("internal/server", "pkg/sub") is an
+		// orientation request — onboard_module answers it in one call.
+		// Only fires here in the default branch so verb-ful tasks
+		// ("find pkg/sub", "who calls os.Stat") keep their keyword
+		// routing; an extension-bearing path ("cmd/pinch/stats.go") is
+		// a file, not a directory, and falls through to shapeFind.
+		if directoryHintFromTask(task) != "" {
+			return shapeOnboard
+		}
 		// #290: fall back to `find` when the task carries a qualified
-		// identifier (`os.Stat`, `pkg/sub`, `Class::method`). A user
-		// typing those almost always wants to *find* it, even without
-		// a verb keyword. Better than `unknown` which routes to a
-		// generic architecture+search recommendation.
+		// identifier (`os.Stat`, `Class::method`). A user typing those
+		// almost always wants to *find* it, even without a verb
+		// keyword. Better than `unknown` which routes to a generic
+		// architecture+search recommendation.
 		if qualifiedIdentifierHint(task) != "" {
 			return shapeFind
 		}
@@ -11819,7 +12595,12 @@ var domainConcepts = []struct {
 		why:      "extractors self-register in init() — see internal/ast/registry.go for the Extractor interface; existing extractors are the template",
 	},
 	{
-		patterns: []string{"git diff", "blast radius", "changed_files", "scope=base", "compare branches"},
+		// Guide-coaching PR-15/17: "blast radius" removed from this
+		// pattern list (#616-style tighten) — it's a caller/impact
+		// question owned by the shape router now (shapeTraceIn for a
+		// named symbol, shapeReview for a diff), not a pointer at
+		// pincher's git-diff internals.
+		patterns: []string{"git diff", "changed_files", "scope=base", "compare branches"},
 		tool:     "search",
 		args:     `{"query":"runGitDiff"}`,
 		why:      "git diff handling lives in runGitDiff / parseGitDiffFiles (internal/server/server.go) — that's where scope=base:<branch> dispatches",
@@ -12022,11 +12803,18 @@ func guideRecommendations(shape guideShape, taskHint, auditedTool, fullTask stri
 				"why": "find similar existing code; copy its shape rather than reinvent"},
 		}
 	case shapeRefactor:
+		// Guide-coaching PR-15/17: pre-edit tasks lead with the
+		// plan_change composite — one call returns depth-1/2 callers,
+		// package-boundary crossings, intersecting tests, and related
+		// ADRs, replacing the search → trace → changes → adr sequence.
+		planArgs := nextStepArgs(map[string]any{"target": taskHint})
 		return []map[string]string{
+			{"tool": "plan_change", "args": planArgs,
+				"why": "pre-edit composite: depth-1 (CRITICAL) + depth-2 (HIGH) callers, boundary crossings, intersecting tests, and related ADRs in one call — see the blast radius before touching anything"},
 			{"tool": "search", "args": queryArgs,
-				"why": "locate the symbol you want to refactor"},
+				"why": "if plan_change's name resolution picked the wrong target, confirm the exact symbol and re-run with its id"},
 			{"tool": "trace", "args": `{"name":"<symbol-name>","direction":"inbound"}`,
-				"why": "find callers — refactors that miss callers cause regressions"},
+				"why": "deeper caller traversal when the depth-2 blast radius isn't enough"},
 		}
 	case shapeUnderstand:
 		return []map[string]string{
@@ -12113,18 +12901,70 @@ func guideRecommendations(shape guideShape, taskHint, auditedTool, fullTask stri
 				"why": "for each FP cluster, read the symbol's source to identify the missed-edge mechanism (interface dispatch, runtime invocation, build-tag gate, etc.)"},
 		}
 	case shapeTraceIn:
+		// Guide-coaching PR-15/17: caller questions lead with trace —
+		// it IS the answer. search demoted to the recovery step for
+		// when the extracted name doesn't resolve.
 		return []map[string]string{
-			{"tool": "search", "args": queryArgs,
-				"why": "first confirm the exact symbol name; ambiguous names trace the wrong target"},
 			{"tool": "trace", "args": traceInArgs,
 				"why": "find every caller (CRITICAL=direct, HIGH=2 hops, MEDIUM=3 hops)"},
+			{"tool": "search", "args": queryArgs,
+				"why": "if trace can't resolve the name (ambiguous or misspelled), confirm the exact symbol and re-trace"},
 		}
 	case shapeTraceOut:
 		return []map[string]string{
-			{"tool": "search", "args": queryArgs,
-				"why": "first confirm the exact symbol name"},
 			{"tool": "trace", "args": traceOutArgs,
 				"why": "find what this symbol calls (downstream dependency map)"},
+			{"tool": "search", "args": queryArgs,
+				"why": "if trace can't resolve the name, confirm the exact symbol and re-trace"},
+		}
+	case shapeFailure:
+		// Guide-coaching PR-15/17: a pasted stack trace / panic dump
+		// routes to the investigate_failure composite, which parses
+		// the frames itself — pass the raw task as error_text.
+		failArgs := nextStepArgs(map[string]any{"error_text": fullTask})
+		return []map[string]string{
+			{"tool": "investigate_failure", "args": failArgs,
+				"why": "composite bug-hunt: parses the stack-trace frames, ranks suspects by frame-match + recent-change + caller fan-in — replaces the manual search × trace × changes loop"},
+			{"tool": "context", "args": `{"id":"<top-suspect-from-investigate_failure>"}`,
+				"why": "read the top suspect with its dependencies before editing"},
+			{"tool": "trace", "args": `{"name":"<suspect-name>","direction":"inbound"}`,
+				"why": "check upstream callers if the fix changes behaviour"},
+		}
+	case shapeOnboard:
+		dir := directoryHintFromTask(fullTask)
+		if dir == "" {
+			dir = "<directory>"
+		}
+		onboardArgs := nextStepArgs(map[string]any{"directory": dir})
+		return []map[string]string{
+			{"tool": "onboard_module", "args": onboardArgs,
+				"why": "composite orientation: entry points, exported surface, language breakdown, and inbound/outbound boundary edges for the directory in one call"},
+			{"tool": "context", "args": `{"id":"<entry-point-from-onboard_module>"}`,
+				"why": "read the main entry point with its imports once the module map is in hand"},
+			{"tool": "architecture", "args": `{}`,
+				"why": "zoom out to whole-project hotspots if the module's boundaries point elsewhere"},
+		}
+	case shapeResume:
+		// Default resumption recipe when there is no loop checkpoint to
+		// restore (computeGuide prepends the loop-resume call when the
+		// ledger is non-empty AND the loop tool is registered).
+		return []map[string]string{
+			{"tool": "adr", "args": `{"action":"list"}`,
+				"why": "recover persisted decisions, conventions, and gotchas from prior sessions — project memory survives restarts"},
+			{"tool": "changes", "args": `{}`,
+				"why": "map uncommitted work to symbols + blast radius — the fastest way to see where the last session stopped"},
+		}
+	case shapeBatch:
+		// Several distinct questions in one task. Only reachable when
+		// the batch tool is registered (computeGuide gates on s.tools);
+		// the args example carries one sub-call per detected question.
+		calls := batchCallsFromTask(fullTask, taskHint)
+		batchArgs := nextStepArgs(map[string]any{"calls": calls})
+		return []map[string]string{
+			{"tool": "batch", "args": batchArgs,
+				"why": "the task carries several distinct questions — batch runs one sub-call per question in a single round-trip instead of N sequential calls"},
+			{"tool": "context", "args": `{"id":"<from-batch-results>"}`,
+				"why": "deep-read whichever sub-answer needs follow-up"},
 		}
 	default:
 		// Unknown shape — orient first, then ask a refined question.
@@ -12135,6 +12975,47 @@ func guideRecommendations(shape guideShape, taskHint, auditedTool, fullTask stri
 				"why": "best-effort search using your task keywords; refine the query after seeing results"},
 		}
 	}
+}
+
+// batchCallsFromTask splits a multi-question task into per-question
+// search sub-calls for the batch args example (guide-coaching
+// PR-15/17). Question-mark tasks split on "?"; enumerated lists
+// ("1. … 2. …") split on the markers. Each part contributes a search
+// call keyed on its own extracted hint; capped at 3 so the example
+// stays readable. Never returns empty — falls back to one call on the
+// overall hint.
+func batchCallsFromTask(task, overallHint string) []map[string]any {
+	var parts []string
+	if strings.Count(task, "?") >= 2 {
+		parts = strings.Split(task, "?")
+	} else {
+		parts = enumItemPattern.Split(task, -1)
+	}
+	var calls []map[string]any
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		hint := taskHintFromString(p)
+		if hint == "" {
+			continue
+		}
+		calls = append(calls, map[string]any{
+			"tool": "search",
+			"args": map[string]any{"query": hint},
+		})
+		if len(calls) == 3 {
+			break
+		}
+	}
+	if len(calls) == 0 {
+		calls = append(calls, map[string]any{
+			"tool": "search",
+			"args": map[string]any{"query": overallHint},
+		})
+	}
+	return calls
 }
 
 // taskHintFromString extracts the most discriminating phrase from a
@@ -12492,6 +13373,19 @@ func (s *Server) handleGuide(ctx context.Context, req *mcp.CallToolRequest) (*mc
 // are not re-scoped).
 func (s *Server) computeGuide(task, projectArg string) (shape guideShape, hint string, recommendations []map[string]string, projectWarning string) {
 	shape = classifyTaskShape(task)
+	// Guide-coaching PR-15/17: composite-backed shapes only survive
+	// when their tool is actually registered in this process. Checked
+	// at runtime (s.tools) rather than hardcoded so the routing works
+	// before and after the PRs adding new composites (e.g. `batch`)
+	// merge. Unregistered → legacy keyword path, exactly the pre-PR
+	// behavior.
+	if required, gated := compositeShapeTool[shape]; gated && !s.toolRegistered(required) {
+		fallback := classifyKeywordTaskShape(task)
+		if t, g := compositeShapeTool[fallback]; fallback == shape || (g && !s.toolRegistered(t)) {
+			fallback = shapeUnknown
+		}
+		shape = fallback
+	}
 	hint = taskHintFromString(task)
 	if hint == "" {
 		// Fall back to the first non-trivial token so search args isn't
@@ -12519,6 +13413,20 @@ func (s *Server) computeGuide(task, projectArg string) (shape guideShape, hint s
 	// the hint string usually drops it.
 	auditedTool := extractAuditedTool(strings.ToLower(task))
 	recommendations = guideRecommendations(shape, hint, auditedTool, task)
+	// Guide-coaching PR-15/17: resumption only earns the loop-resume
+	// recommendation when (a) the loop ledger (loop_checkpoints,
+	// schema v40) exists and is non-empty for this project, and (b) a
+	// `loop` tool is registered to act on it. Otherwise the adr-list
+	// recipe from guideRecommendations stands — there's nothing to
+	// resume.
+	if shape == shapeResume && s.toolRegistered("loop") {
+		if pid, err := s.resolveProjectID(projectArg); err == nil && s.store.LoopLedgerNonEmpty(pid) {
+			recommendations = append([]map[string]string{{
+				"tool": "loop", "args": `{"action":"resume"}`,
+				"why": "the loop ledger has checkpoints for this project — resume restores the last checkpoint's stage and evidence instead of re-acquiring context from scratch",
+			}}, recommendations...)
+		}
+	}
 	// #397: if the task mentions a pincher-domain concept, prepend a
 	// concept-aware starter that points at the actual file/symbol where
 	// the concept lives. The shape-default recommendations follow as
@@ -12526,7 +13434,61 @@ func (s *Server) computeGuide(task, projectArg string) (shape guideShape, hint s
 	if cc := domainConceptHint(task); cc != nil {
 		recommendations = append([]map[string]string{*cc}, recommendations...)
 	}
+	// Adherence flywheel (guide-coaching PR-15/17): order the final
+	// list by historical followed-rate where the signal is strong
+	// enough. Process-lifetime counters only — see
+	// nextStepsAdherenceTracker; tools below adherenceRankMinEmitted
+	// emissions keep their shape-driven positions.
+	recommendations = s.rankRecommendationsByAdherence(recommendations)
 	return shape, hint, recommendations, projectWarning
+}
+
+// toolRegistered reports whether a tool name is registered on this
+// server instance. s.tools is written only during registerTools (start-
+// up) and read-only afterwards, so the lookup is safe without a lock.
+func (s *Server) toolRegistered(name string) bool {
+	_, ok := s.tools[name]
+	return ok
+}
+
+// rankRecommendationsByAdherence reorders guide's recommendations by
+// each tool's process-lifetime followed-rate (followed / emitted from
+// the next_steps adherence tracker, #1631), but only among entries
+// whose tool has ≥ adherenceRankMinEmitted emissions this process —
+// below that the rate is noise. Entries without enough signal keep
+// their exact shape-driven positions; the qualifying entries are
+// stable-sorted by rate descending and re-inserted into the same
+// slots. NOT persisted: counters reset on server restart (documented
+// scope — no schema change this iteration).
+func (s *Server) rankRecommendationsByAdherence(recs []map[string]string) []map[string]string {
+	if len(recs) < 2 {
+		return recs
+	}
+	type scored struct {
+		idx  int
+		rate float64
+	}
+	var eligible []scored
+	for i, r := range recs {
+		emitted, followed := s.nextStepsAdherence.ToolStats(r["tool"])
+		if emitted >= adherenceRankMinEmitted {
+			eligible = append(eligible, scored{idx: i, rate: float64(followed) / float64(emitted)})
+		}
+	}
+	if len(eligible) < 2 {
+		return recs
+	}
+	slots := make([]int, len(eligible))
+	for i, e := range eligible {
+		slots[i] = e.idx
+	}
+	sort.SliceStable(eligible, func(a, b int) bool { return eligible[a].rate > eligible[b].rate })
+	out := make([]map[string]string, len(recs))
+	copy(out, recs)
+	for i, e := range eligible {
+		out[slots[i]] = recs[e.idx]
+	}
+	return out
 }
 
 // extractTextFromHTML strips HTML markup and returns (title, bodyText).
@@ -12865,8 +13827,33 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 	// the opt-out, query the slice once via GET /v1/capabilities
 	// instead. Default-on preserves back-compat for every consumer
 	// reading _meta.capabilities today.
+	//
+	// Session-delta: capabilities is a per-server constant (computed
+	// at New(), only ever replaced wholesale by SetMCPHTTPPath), so
+	// stamping it on every response re-sends ~50-150 tokens of
+	// information the consumer already has. With metaDeltaEnabled
+	// (default), only the FIRST response of a session — or the first
+	// after the slice actually changes — carries the full array;
+	// subsequent responses omit it and stamp `meta_delta: true` so
+	// consumers/tests can tell intentional omission from accident.
+	// The fingerprint swap is atomic: a concurrent race can at worst
+	// double-emit the full slice, never under-emit. The per-tool
+	// fields below (complexity_tier, baseline_method) vary per call
+	// and are NOT delta'd. PINCHER_META_DELTA=0 restores legacy
+	// every-call emission. Error responses (errResultRich) are
+	// unaffected — failures keep the full self-describing envelope.
 	if s.includeCapabilitiesPerCall {
-		meta["capabilities"] = s.capabilities
+		emitCaps := true
+		if s.metaDeltaEnabled {
+			fp := capsFingerprint(s.capabilities)
+			if prev, _ := s.lastEmittedCaps.Swap(fp).(string); prev == fp {
+				emitCaps = false
+				meta["meta_delta"] = true
+			}
+		}
+		if emitCaps {
+			meta["capabilities"] = s.capabilities
+		}
 	}
 
 	// #650: per-response complexity_tier — confirms the static
@@ -12931,60 +13918,86 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 	// #477: skip the tokens_saved increment for "none" tools — adding 0
 	// would be a no-op anyway, but being explicit guards against future
 	// callers passing a non-zero tokensSaved by mistake.
-	newCalls := atomic.AddInt64(&s.statsCalls, 1)
-	atomic.AddInt64(&s.statsTokensUsed, int64(tokensUsed))
-	if baselineMethod != baselineMethodNone {
-		atomic.AddInt64(&s.statsTokensSaved, int64(tokensSaved))
+	//
+	// batch (loop-substrate): `_nested` marks an in-process sub-call
+	// dispatched by the `batch` envelope tool. Nested calls do NOT
+	// accumulate session stats, latency, language attribution, query
+	// metrics, call events, or celebrations — the outer batch call is
+	// the single source of stats truth for batched traffic; counting
+	// both would double every batched answer. The full _meta is still
+	// stamped (the batch handler slims it afterwards).
+	nested := boolArg(args, "_nested")
+	var newCalls int64
+	if nested {
+		// Read-only peek: the watermark's call-seq component reflects
+		// the current outer-call count without consuming a slot.
+		newCalls = atomic.LoadInt64(&s.statsCalls)
+	} else {
+		newCalls = atomic.AddInt64(&s.statsCalls, 1)
 	}
-	atomic.AddInt64(&s.statsLatencyMS, latency)
-
-	// #1630 v0.85: per-tool latency aggregation. Records this call's
-	// latency into the per-tool atomic counters so `pincher stats` can
-	// surface "BY TOOL (top-5 by total time)" — the cost × frequency
-	// view that flat avg_latency alone couldn't answer.
-	s.recordToolLatency(tool, latency)
-
-	// Per-language call attribution (#240). Scans the marshalled
-	// payload for the first `"language":"X"` occurrence; records the
-	// call against that language. Tools that don't yield a language
-	// field (architecture, list, schema, health, stats, guide) are
-	// not attributed and stay invisible to bypass detection — that's
-	// fine because the use case is "agent did X file-type work but
-	// pincher saw 0 X calls" and only the symbol-/search-bearing
-	// tools matter for that signal.
-	if m := languageRE.FindSubmatch(b); len(m) > 1 {
-		s.recordCallLanguage(string(m[1]))
+	// PR-4' (loop-substrate): watermark = index generation + call seq.
+	// Equal gN between two responses ⇒ the symbol graph did not change
+	// in between — loop agents key caches and resume-checkpoints on it.
+	// Stamped after the lite-meta prune deliberately: thin clients need
+	// the loop contract too.
+	if s.indexer != nil {
+		meta["watermark"] = fmt.Sprintf("g%d.c%d", s.indexer.Generation(), newCalls)
 	}
+	if !nested {
+		atomic.AddInt64(&s.statsTokensUsed, int64(tokensUsed))
+		if baselineMethod != baselineMethodNone {
+			atomic.AddInt64(&s.statsTokensSaved, int64(tokensSaved))
+		}
+		atomic.AddInt64(&s.statsLatencyMS, latency)
 
-	// Query-failure / retry-rate counters (#241). Only the four
-	// query-shaped tools contribute; everything else is a no-op.
-	s.recordQueryMetrics(tool, args, data, tokensUsed)
+		// #1630 v0.85: per-tool latency aggregation. Records this call's
+		// latency into the per-tool atomic counters so `pincher stats` can
+		// surface "BY TOOL (top-5 by total time)" — the cost × frequency
+		// view that flat avg_latency alone couldn't answer.
+		s.recordToolLatency(tool, latency)
 
-	// #635 v0.64: append per-call event for dashboard triangulating
-	// panels. Buffer is drained by flushSession every 10s; cap is the
-	// only producer-side gate so a delayed flush (DB busy, paused
-	// session) can't unbounded-grow memory. Overflow is dropped with
-	// a one-shot warning log — the dashboard panels degrade
-	// gracefully (rows < 50 hide the panel), so a partial buffer
-	// drop doesn't corrupt the displayed signal.
-	s.recordToolCallEvent(tool, baselineMethod, tokensUsed, tokensSaved, len(b), meta)
+		// Per-language call attribution (#240). Scans the marshalled
+		// payload for the first `"language":"X"` occurrence; records the
+		// call against that language. Tools that don't yield a language
+		// field (architecture, list, schema, health, stats, guide) are
+		// not attributed and stay invisible to bypass detection — that's
+		// fine because the use case is "agent did X file-type work but
+		// pincher saw 0 X calls" and only the symbol-/search-bearing
+		// tools matter for that signal.
+		if m := languageRE.FindSubmatch(b); len(m) > 1 {
+			s.recordCallLanguage(string(m[1]))
+		}
 
-	// First call of a new session: flush immediately so the dashboard sees
-	// the session within milliseconds rather than waiting for the 10s ticker.
-	if newCalls == 1 {
-		go s.flushSession()
-	}
+		// Query-failure / retry-rate counters (#241). Only the four
+		// query-shaped tools contribute; everything else is a no-op.
+		s.recordQueryMetrics(tool, args, data, tokensUsed)
 
-	// #494: occasional dopamine. Cumulative all-time tokens_saved =
-	// previously-flushed sessions + this in-flight session's running
-	// total (statsTokensSaved). Without the in-flight component, the
-	// celebration would lag by 10s (next flushSession tick), which is
-	// long enough to land on a different unrelated tool call. Adding
-	// it surfaces the milestone on the response that actually crossed
-	// it. MaybeFireCelebration's PRIMARY KEY guarantees one-shot per
-	// installation.
-	if cel := s.maybeFormatCelebration(); cel != "" {
-		meta["celebration"] = cel
+		// #635 v0.64: append per-call event for dashboard triangulating
+		// panels. Buffer is drained by flushSession every 10s; cap is the
+		// only producer-side gate so a delayed flush (DB busy, paused
+		// session) can't unbounded-grow memory. Overflow is dropped with
+		// a one-shot warning log — the dashboard panels degrade
+		// gracefully (rows < 50 hide the panel), so a partial buffer
+		// drop doesn't corrupt the displayed signal.
+		s.recordToolCallEvent(tool, baselineMethod, tokensUsed, tokensSaved, len(b), meta)
+
+		// First call of a new session: flush immediately so the dashboard sees
+		// the session within milliseconds rather than waiting for the 10s ticker.
+		if newCalls == 1 {
+			go s.flushSession()
+		}
+
+		// #494: occasional dopamine. Cumulative all-time tokens_saved =
+		// previously-flushed sessions + this in-flight session's running
+		// total (statsTokensSaved). Without the in-flight component, the
+		// celebration would lag by 10s (next flushSession tick), which is
+		// long enough to land on a different unrelated tool call. Adding
+		// it surfaces the milestone on the response that actually crossed
+		// it. MaybeFireCelebration's PRIMARY KEY guarantees one-shot per
+		// installation.
+		if cel := s.maybeFormatCelebration(); cel != "" {
+			meta["celebration"] = cel
+		}
 	}
 
 	// #622: drop pedagogy-shape next_steps on the success path. Most
@@ -13209,13 +14222,18 @@ var baselineMethodForTool = map[string]string{
 	"changes":             baselineMethodFullFileRead,
 	"dead_code":           baselineMethodFullFileRead,
 	"neighborhood":        baselineMethodFullFileRead,
+	"batch":               baselineMethodFullFileRead, // loop-substrate: envelope over read-replacing sub-tools; tokens_saved = sum of sub-call savings
+	"verify_change":       baselineMethodFullFileRead, // loop-substrate PR-10: composite replaces re-reading every changed + impacted file post-edit
+	"assert_graph":        baselineMethodFullFileRead, // conclusion-density: replaces reading N caller rows to conclude pass/fail
 	// Admin / orientation / write-side tools — no Read/Grep alternative.
 	"index":          baselineMethodNone,
 	"architecture":   baselineMethodNone,
 	"branch_overlap": baselineMethodNone,
+	"coach":          baselineMethodNone, // introspection over recorded telemetry — no Read/Grep alternative
 	"schema":         baselineMethodNone,
 	"list":           baselineMethodNone,
 	"adr":            baselineMethodNone,
+	"loop":           baselineMethodNone, // PR-8/9: ledger/state tool — no Read/Grep alternative exists to measure against
 	"health":         baselineMethodNone,
 	"stats":          baselineMethodNone,
 	"fetch":          baselineMethodNone, // ingests external URL — not a Read replacement

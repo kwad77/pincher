@@ -103,11 +103,18 @@ var outputSchemas = map[string]string{
 
 	// 5. search — BM25-ranked. v0.25 #532: pagination via limit/offset
 	// with total/has_more in the response envelope.
+	// `results` is required unless format=text/toon was passed, in
+	// which case `results_text`/`results_toon` replaces it — so none
+	// of the three is in `required`.
+	// count_only=true (conclusion-density) returns only
+	// {query, total, by_kind, _meta}, so the row/pagination fields are
+	// present on the default shape but not required by the schema.
 	"search": `{
 		"type":"object",
-		"required":["query","count","results","total","has_more","offset","limit","_meta"],
+		"required":["query","total","_meta"],
 		"properties":{
 			"query":{"type":"string"},
+			"by_kind":{"type":"object","additionalProperties":{"type":"integer"},"description":"count_only=true only: post-filter match count per symbol kind."},
 			"count":{"type":"integer","description":"Number of results in this page (len(results))."},
 			"total":{"type":"integer","description":"Total post-filter result count considered. Lower bound when has_more is true and the FTS5 fetch hit the cap (5000)."},
 			"has_more":{"type":"boolean","description":"True when there's at least one row past offset+limit. Drives the dashboard's Load more button."},
@@ -132,6 +139,8 @@ var outputSchemas = map[string]string{
 					"extraction_confidence":{"type":"number"}
 				}
 			}},
+			"results_text":{"type":"string","description":"format=text rendering: TSV block replacing the results array — header row, then one line per hit (id<TAB>kind<TAB>file:line<TAB>signature-or-name)."},
+			"results_toon":{"type":"string","description":"format=toon rendering: TOON (Token-Oriented Object Notation) tabular block replacing the results array — results[N]{file,id,kind,line,name,signature}: header, then one bare comma-delimited row per hit (strings quoted only when needed)."},
 			"_meta":` + metaRef + `
 		}
 	}`,
@@ -150,14 +159,24 @@ var outputSchemas = map[string]string{
 	}`,
 
 	// 7. trace — graph BFS.
+	// `hops` is required unless format=text/toon was passed, in which
+	// case `results_text`/`results_toon` replaces it — so none of the
+	// three is in `required`.
+	// count_only=true (conclusion-density) returns only
+	// {root, direction, total, by_depth, by_risk, _meta}, so hops is
+	// present on the default shape but not required by the schema.
 	"trace": `{
 		"type":"object",
-		"required":["root","direction","hops","total","_meta"],
+		"required":["root","direction","total","_meta"],
 		"properties":{
 			"root":{"type":"string"},
 			"direction":{"type":"string","enum":["inbound","outbound","both"]},
 			"hops":{"type":"array","items":{"type":"object"}},
+			"results_text":{"type":"string","description":"format=text rendering: TSV block replacing the hops array — header row, then one line per hop (depth<TAB>risk<TAB>id)."},
+			"results_toon":{"type":"string","description":"format=toon rendering: TOON (Token-Oriented Object Notation) tabular block replacing the hops array — hops[N]{depth,id,risk}: header, then one bare comma-delimited row per hop."},
 			"total":{"type":"integer"},
+			"by_depth":{"type":"object","additionalProperties":{"type":"integer"},"description":"count_only=true only: hop count per BFS depth."},
+			"by_risk":{"type":"object","additionalProperties":{"type":"integer"},"description":"count_only=true only (risk=true): hop count per risk label."},
 			"risk_summary":{"type":"object","properties":{
 				"CRITICAL":{"type":"integer"},
 				"HIGH":{"type":"integer"},
@@ -246,6 +265,44 @@ var outputSchemas = map[string]string{
 		}
 	}`,
 
+	// 10c. assert_graph — conclusion-density: server-side invariant
+	// evaluation over the edge graph. violations only present on fail.
+	"assert_graph": `{
+		"type":"object",
+		"required":["kind","target","pass","checked","_meta"],
+		"properties":{
+			"kind":{"type":"string","enum":["no_callers_outside","max_callers","no_calls_to","exists"]},
+			"target":{"type":"string","description":"The resolved symbol id (caller-shaped kinds) or the input target (exists)."},
+			"pass":{"type":"boolean"},
+			"checked":{"type":"integer","description":"Direct callers examined (caller-shaped kinds) or matches found (exists)."},
+			"violations":{"type":"array","items":{"type":"object","properties":{
+				"id":{"type":"string"},
+				"file_path":{"type":"string"}
+			}},"description":"Only present when pass=false; capped at 10."},
+			"violations_total":{"type":"integer","description":"Only present when pass=false; the uncapped violation count."},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
+	// 10d. coach — priced findings mined from recorded usage telemetry.
+	"coach": `{
+		"type":"object",
+		"required":["window","calls_analyzed","findings","_meta"],
+		"properties":{
+			"window":{"type":"string"},
+			"calls_analyzed":{"type":"integer"},
+			"findings":{"type":"array","items":{"type":"object","properties":{
+				"pattern":{"type":"string"},
+				"occurrences":{"type":"integer"},
+				"est_tokens_left_on_table":{"type":"integer"},
+				"recommendation":{"type":"string"},
+				"basis":{"type":"string"}
+			}}},
+			"note":{"type":"string"},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
 	// 11. schema — schema diagram.
 	"schema": `{
 		"type":"object",
@@ -286,6 +343,45 @@ var outputSchemas = map[string]string{
 			"value":{"type":"string"},
 			"entries":{"type":"object","additionalProperties":{"type":"string"}},
 			"deleted":{"type":"boolean"},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
+	// 13b. loop — ledger ops return {loop, seq, watermark}; list returns
+	// {loops} or {loop, checkpoints}; resume returns the bounded brief.
+	"loop": `{
+		"type":"object",
+		"properties":{
+			"loop":{"type":"string"},
+			"seq":{"type":"integer"},
+			"watermark":{"type":"string"},
+			"loops":{"type":"array","items":{"type":"object"}},
+			"checkpoints":{"type":"array","items":{"type":"object"}},
+			"brief":{"type":"array","items":{"type":"object"}},
+			"open_triggers":{"type":"array","items":{"type":"object"}},
+			"adr_keys":{"type":"array","items":{"type":"string"}},
+			"watermark_now":{"type":"string"},
+			"index_changed_since_last_checkpoint":{"type":"boolean"},
+			"omitted_checkpoints":{"type":"integer"},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
+	// 13c. batch — one envelope, N read-only sub-query answers
+	// (loop-substrate). results entries are {index, tool, result, _meta}
+	// on success, {index, tool, error} on isolated sub-error, or
+	// {index, tool, skipped} once the shared budget is exhausted.
+	"batch": `{
+		"type":"object",
+		"required":["results","count","budget"],
+		"properties":{
+			"results":{"type":"array","items":{"type":"object"}},
+			"count":{"type":"integer"},
+			"budget":{"type":"object","properties":{
+				"max_tokens":{"type":"integer"},
+				"spent_approx":{"type":"integer"},
+				"skipped_queries":{"type":"integer"}
+			}},
 			"_meta":` + metaRef + `
 		}
 	}`,
@@ -479,6 +575,62 @@ var outputSchemas = map[string]string{
 					"key":{"type":"string"},
 					"value":{"type":"string"},
 					"why":{"type":"string"}
+				}
+			}},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
+	// 16h. verify_change — loop-substrate PR-10. The post-edit gate:
+	// changes analysis + ranked tests + predicted-vs-actual plan
+	// comparison + possibly-orphaned check, one envelope.
+	// plan_comparison is OPTIONAL — present only when `target` was
+	// passed AND a plan_change run is cached for it.
+	"verify_change": `{
+		"type":"object",
+		"required":["summary","changed_symbols","tests_to_run","possibly_orphaned","_meta"],
+		"properties":{
+			"summary":{
+				"type":"object",
+				"properties":{
+					"changed_files":{"type":"integer"},
+					"changed_symbols":{"type":"integer"},
+					"total_impacted":{"type":"integer"},
+					"tests_to_run":{"type":"integer"},
+					"critical":{"type":"integer"},
+					"high":{"type":"integer"},
+					"possibly_orphaned":{"type":"integer"}
+				}
+			},
+			"changed_symbols":{"type":"array","items":{"type":"object"}},
+			"tests_to_run":{"type":"array","items":{
+				"type":"object",
+				"properties":{
+					"id":{"type":"string"},
+					"name":{"type":"string"},
+					"file_path":{"type":"string"},
+					"overlap":{"type":"integer"}
+				}
+			}},
+			"plan_comparison":{
+				"type":"object",
+				"properties":{
+					"target":{"type":"string"},
+					"predicted_callers":{"type":"array","items":{"type":"string"}},
+					"actual_impacted":{"type":"array","items":{"type":"string"}},
+					"unpredicted_impact":{"type":"array","items":{"type":"string"}},
+					"stale":{"type":"boolean"},
+					"target_file_in_diff":{"type":"boolean"}
+				}
+			},
+			"possibly_orphaned":{"type":"array","items":{
+				"type":"object",
+				"properties":{
+					"id":{"type":"string"},
+					"name":{"type":"string"},
+					"kind":{"type":"string"},
+					"file_path":{"type":"string"},
+					"label":{"type":"string"}
 				}
 			}},
 			"_meta":` + metaRef + `

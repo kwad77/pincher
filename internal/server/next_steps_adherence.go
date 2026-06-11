@@ -58,6 +58,16 @@ type nextStepsAdherenceTracker struct {
 	perSession    map[string][]nextStepRecommendation
 	statsEmitted  int64
 	statsFollowed int64
+	// Per-tool emitted/followed counters (guide-coaching PR-15/17).
+	// Same process-lifetime scope as the totals above: NOT persisted,
+	// resets on server restart — no schema change this iteration.
+	// Guide consumes these to order its recommendations by historical
+	// followed-rate once a tool has ≥ adherenceRankMinEmitted
+	// emissions this process — closing the flywheel that #1631 opened
+	// (the counters were stamped on every envelope but consumed by
+	// nothing).
+	perToolEmitted  map[string]int64
+	perToolFollowed map[string]int64
 }
 
 // adherenceRingCap caps the per-session backlog of stashed
@@ -66,6 +76,13 @@ type nextStepsAdherenceTracker struct {
 // suggestion — generous, but bounded so an over-eager handler can't
 // grow the map without bound.
 const adherenceRingCap = 20
+
+// adherenceRankMinEmitted is the minimum process-lifetime emission
+// count a tool needs before guide trusts its followed-rate enough to
+// reorder recommendations by it. Below the floor the rate is noise
+// (1 emitted / 1 followed = 100%); above it the signal is real enough
+// to act on.
+const adherenceRankMinEmitted = 10
 
 // RecordEmitted is called by jsonResultWithMeta after the verbose-prune
 // (#622) has decided which next_steps actually ship to the agent. Each
@@ -94,6 +111,10 @@ func (n *nextStepsAdherenceTracker) RecordEmitted(sessionID string, steps []map[
 			args:    argsMap,
 		})
 		atomic.AddInt64(&n.statsEmitted, 1)
+		if n.perToolEmitted == nil {
+			n.perToolEmitted = map[string]int64{}
+		}
+		n.perToolEmitted[tool]++
 	}
 	if len(bucket) > adherenceRingCap {
 		bucket = bucket[len(bucket)-adherenceRingCap:]
@@ -127,6 +148,10 @@ func (n *nextStepsAdherenceTracker) CheckAndConsume(sessionID, tool string, args
 		if rec.tool == tool && recommendationArgsMatch(rec, args, key) {
 			n.perSession[sessionID] = append(bucket[:i], bucket[i+1:]...)
 			atomic.AddInt64(&n.statsFollowed, 1)
+			if n.perToolFollowed == nil {
+				n.perToolFollowed = map[string]int64{}
+			}
+			n.perToolFollowed[tool]++
 			return true
 		}
 	}
@@ -138,6 +163,16 @@ func (n *nextStepsAdherenceTracker) CheckAndConsume(sessionID, tool string, args
 // * 100, with the zero-emitted case rendered as N/A).
 func (n *nextStepsAdherenceTracker) Stats() (emitted, followed int64) {
 	return atomic.LoadInt64(&n.statsEmitted), atomic.LoadInt64(&n.statsFollowed)
+}
+
+// ToolStats returns the process-lifetime emitted + followed counters
+// for one tool. Zero/zero when the tool has never been recommended
+// this process. Guide uses (followed/emitted) as the followed-rate
+// ranking key once emitted ≥ adherenceRankMinEmitted.
+func (n *nextStepsAdherenceTracker) ToolStats(tool string) (emitted, followed int64) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.perToolEmitted[tool], n.perToolFollowed[tool]
 }
 
 func recommendationArgsMatch(rec nextStepRecommendation, actual map[string]any, actualKey string) bool {

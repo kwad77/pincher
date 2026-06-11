@@ -236,3 +236,158 @@ func TestLineDiff(t *testing.T) {
 		t.Errorf("lineDiff of identical input should have no +/- lines:\n%s", same)
 	}
 }
+
+// v1.4.0 release-review hardening regressions (adversarial findings #1/#2):
+// the diff cache must only operate on full-fidelity serves to an
+// identifiable consumer, and diff=false must always recover the full body.
+
+// TestHandleContext_DiffFalse_BypassesCache: diff=false on a repeat call
+// returns the full source (no {unchanged:true} short-circuit) and does not
+// write the cache.
+func TestHandleContext_DiffFalse_BypassesCache(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	srv.diffContext = true
+	sym, _ := seedDiffSymbol(t, srv, diffSrcV1)
+
+	// Warm the cache with a normal full-fidelity call.
+	if _, err := srv.handleContext(context.Background(), makeReq(map[string]any{"id": sym.ID})); err != nil {
+		t.Fatalf("warm call: %v", err)
+	}
+	// Repeat WITHOUT diff=false would short-circuit; with diff=false the
+	// full body must ship — this is the documented recovery path for a
+	// consumer that never saw the prior serve.
+	res, err := srv.handleContext(context.Background(), makeReq(map[string]any{"id": sym.ID, "diff": false}))
+	if err != nil {
+		t.Fatalf("diff=false call: %v", err)
+	}
+	body := decode(t, res)
+	sm := contextSymbolMap(t, body)
+	if _, unchanged := body["unchanged"]; unchanged {
+		t.Fatalf("diff=false must never short-circuit to unchanged: %v", body)
+	}
+	src, _ := sm["source"].(string)
+	if !strings.Contains(src, "println(a + b)") {
+		t.Fatalf("diff=false must ship the full source, got: %v", sm)
+	}
+}
+
+// TestHandleContext_MaxTokens_DoesNotPoisonDiffCache: a budgeted
+// (truncated) serve must not record "the caller has the body" — the
+// follow-up unbudgeted call must return the full source, not
+// {unchanged:true}.
+func TestHandleContext_MaxTokens_DoesNotPoisonDiffCache(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	srv.diffContext = true
+	// Big enough body that a small budget truncates it.
+	big := "package foo\n\nfunc Foo() {\n"
+	for i := 0; i < 200; i++ {
+		big += "\tprintln(\"line line line line line line line\")\n"
+	}
+	big += "}\n"
+	sym, _ := seedDiffSymbol(t, srv, big)
+
+	// Budgeted first fetch: truncated body, must NOT populate the cache.
+	if _, err := srv.handleContext(context.Background(), makeReq(map[string]any{"id": sym.ID, "max_tokens": 50})); err != nil {
+		t.Fatalf("budgeted call: %v", err)
+	}
+	// The natural follow-up "now give me the whole thing" call.
+	res, err := srv.handleContext(context.Background(), makeReq(map[string]any{"id": sym.ID}))
+	if err != nil {
+		t.Fatalf("full call: %v", err)
+	}
+	body := decode(t, res)
+	if _, unchanged := body["unchanged"]; unchanged {
+		t.Fatalf("budgeted serve poisoned the diff cache — full body unobtainable: %v", body)
+	}
+	sm := contextSymbolMap(t, body)
+	if src, _ := sm["source"].(string); !strings.HasSuffix(strings.TrimSpace(src), "}") {
+		t.Fatalf("follow-up call must ship the full untruncated source")
+	}
+}
+
+// TestHandleContext_FieldsProjection_DoesNotPoisonDiffCache: a
+// fields=callees call never ships the body, so it must not mark the
+// symbol as served.
+func TestHandleContext_FieldsProjection_DoesNotPoisonDiffCache(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	srv.diffContext = true
+	sym, _ := seedDiffSymbol(t, srv, diffSrcV1)
+
+	if _, err := srv.handleContext(context.Background(), makeReq(map[string]any{"id": sym.ID, "fields": "callees"})); err != nil {
+		t.Fatalf("projected call: %v", err)
+	}
+	res, err := srv.handleContext(context.Background(), makeReq(map[string]any{"id": sym.ID}))
+	if err != nil {
+		t.Fatalf("full call: %v", err)
+	}
+	body := decode(t, res)
+	if _, unchanged := body["unchanged"]; unchanged {
+		t.Fatalf("bodiless projected serve poisoned the diff cache: %v", body)
+	}
+	sm := contextSymbolMap(t, body)
+	if src, _ := sm["source"].(string); !strings.Contains(src, "println(a + b)") {
+		t.Fatalf("full body must ship after a projected serve, got: %v", sm)
+	}
+}
+
+// TestHandleContext_NoDiffCtx_BypassesCache: the HTTP REST dispatch marks
+// its ctx (no per-connection identity); marked calls must neither read
+// nor write the cache.
+func TestHandleContext_NoDiffCtx_BypassesCache(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	srv.diffContext = true
+	sym, _ := seedDiffSymbol(t, srv, diffSrcV1)
+
+	restCtx := withNoDiffContext(context.Background())
+	// Two REST-shaped calls: the second must still ship the full body.
+	for i := 0; i < 2; i++ {
+		res, err := srv.handleContext(restCtx, makeReq(map[string]any{"id": sym.ID}))
+		if err != nil {
+			t.Fatalf("rest call %d: %v", i, err)
+		}
+		body := decode(t, res)
+		if _, unchanged := body["unchanged"]; unchanged {
+			t.Fatalf("REST call %d short-circuited to unchanged — cross-client poisoning", i)
+		}
+	}
+	// And a REST call must not have warmed the cache for MCP consumers
+	// either: a following non-REST call is a cache miss (full source).
+	res, err := srv.handleContext(context.Background(), makeReq(map[string]any{"id": sym.ID}))
+	if err != nil {
+		t.Fatalf("mcp call: %v", err)
+	}
+	body := decode(t, res)
+	if _, unchanged := body["unchanged"]; unchanged {
+		t.Fatalf("REST serve leaked into the MCP connection's cache keyspace")
+	}
+}
+
+// TestHandleContext_Unchanged_CarriesRecoveryHint: the {unchanged:true}
+// short-circuit must be self-describing — it names diff=false as the
+// recovery path for consumers that don't hold the prior serve.
+func TestHandleContext_Unchanged_CarriesRecoveryHint(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+	srv.diffContext = true
+	sym, _ := seedDiffSymbol(t, srv, diffSrcV1)
+
+	if _, err := srv.handleContext(context.Background(), makeReq(map[string]any{"id": sym.ID})); err != nil {
+		t.Fatalf("warm call: %v", err)
+	}
+	res, err := srv.handleContext(context.Background(), makeReq(map[string]any{"id": sym.ID}))
+	if err != nil {
+		t.Fatalf("repeat call: %v", err)
+	}
+	raw := textOf(t, res)
+	body := decode(t, res)
+	if u, _ := body["unchanged"].(bool); !u {
+		t.Fatalf("expected unchanged short-circuit, got: %v", body)
+	}
+	if !strings.Contains(raw, "diff=false") {
+		t.Fatalf("unchanged response must carry the diff=false recovery hint, got: %s", raw)
+	}
+}

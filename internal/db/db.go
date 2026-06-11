@@ -760,6 +760,43 @@ func (s *Store) ConfigureFTSMergePolicy() error {
 	return nil
 }
 
+// LoopLedgerNonEmpty reports whether the loop-checkpoint ledger
+// (`loop_checkpoints`, schema v40) exists AND holds at least one row.
+// Used by guide's resumption routing (guide-coaching PR-15/17): a
+// "continue / resume / where was I" task only earns a loop-resume
+// recommendation when there is actually a checkpoint to resume from.
+//
+// Defensive on purpose: v40 may not be migrated in this binary's data
+// dir (the table is created by a later schema migration), so absence
+// of the table is a normal "no" — not an error. The project-scoped
+// probe falls back to an unscoped EXISTS when the column shape
+// doesn't match (pre-v40-final schemas), preferring a cheap honest
+// answer over a hard dependency on a migration this branch doesn't
+// own.
+func (s *Store) LoopLedgerNonEmpty(projectID string) bool {
+	var one int
+	err := s.ro.QueryRow(
+		`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'loop_checkpoints'`,
+	).Scan(&one)
+	if err != nil {
+		return false // table absent (sql.ErrNoRows) or store unreadable
+	}
+	if projectID != "" {
+		var n int
+		if err := s.ro.QueryRow(
+			`SELECT EXISTS(SELECT 1 FROM loop_checkpoints WHERE project_id = ?)`, projectID,
+		).Scan(&n); err == nil {
+			return n == 1
+		}
+		// Column shape unknown — fall through to the unscoped probe.
+	}
+	var n int
+	if err := s.ro.QueryRow(`SELECT EXISTS(SELECT 1 FROM loop_checkpoints)`).Scan(&n); err != nil {
+		return false
+	}
+	return n == 1
+}
+
 // FTS5Fragmentation returns per-corpus fragmentation stats for the
 // three per-corpus FTS5 virtual tables (`symbols_code_fts`,
 // `symbols_config_fts`, `symbols_docs_fts`). Reader-routed; uses the
@@ -794,6 +831,32 @@ func (s *Store) FTS5Fragmentation() ([]FTS5CorpusFragmentation, error) {
 		out = append(out, row)
 	}
 	return out, nil
+}
+
+// SettingSymbolCountsByProject returns, per project, how many symbols
+// have kind='Setting'. One aggregate GROUP BY query — cheap enough for
+// doctor's advisory pass. Used by the settings_flood advisory: a
+// project whose symbol surface is dominated by Setting symbols (the
+// signature of indexed data/model artifacts — observed in the wild as
+// 27,672 junk Setting symbols, 96% of a project) should be pointed at
+// .pincherignore rather than left to discover the noise via search.
+func (s *Store) SettingSymbolCountsByProject() (map[string]int, error) {
+	rows, err := s.ro.Query(
+		`SELECT project_id, COUNT(*) FROM symbols WHERE kind = 'Setting' GROUP BY project_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var pid string
+		var n int
+		if err := rows.Scan(&pid, &n); err != nil {
+			return nil, err
+		}
+		out[pid] = n
+	}
+	return out, rows.Err()
 }
 
 // MigrationInvalidates declares what previously-extracted data a
@@ -1810,6 +1873,42 @@ END;`,
 	// DDL, deliberately non-invalidating so this groundwork does not force
 	// a full reindex after the #1899 writer-starvation fix.
 	`ALTER TABLE edges ADD COLUMN provenance_tier TEXT NOT NULL DEFAULT 'EXTRACTED';`,
+
+	// v39 → v40: loop_checkpoints — the loop ledger (loop-substrate
+	// PR-8/9). Append-only work-state for multi-iteration agent loops:
+	// one row per EGDL checkpoint {claim, decision, confidence,
+	// reopen_trigger, evidence}, stamped with the index watermark at
+	// write time so `loop resume` can tell whether the graph moved
+	// since. New empty table; nothing previously extracted is touched.
+	`CREATE TABLE IF NOT EXISTS loop_checkpoints (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		project_id TEXT NOT NULL,
+		loop_name TEXT NOT NULL,
+		seq INTEGER NOT NULL,
+		created_at TEXT NOT NULL,
+		claim TEXT NOT NULL DEFAULT '',
+		decision TEXT NOT NULL DEFAULT '',
+		confidence TEXT NOT NULL DEFAULT '',
+		reopen_trigger TEXT NOT NULL DEFAULT '',
+		evidence TEXT NOT NULL DEFAULT '',
+		watermark TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX IF NOT EXISTS idx_loop_ckpt_proj_loop_seq ON loop_checkpoints(project_id, loop_name, seq);`,
+
+	// v40 → v41: hook redirect savings telemetry (hook-redirect-v2).
+	// (Authored as v39 → v40 on its feature branch; renumbered to v41
+	// during the loop-substrate integration because loop_checkpoints
+	// landed first as v40.)
+	// est_tokens_served = estimated tokens of the suggested `context
+	// lite=true` response (largest-symbol span / 4 + envelope, capped by
+	// the redirect's max_tokens budget). baseline_tokens = estimated
+	// tokens the intercepted Read would have returned (stat-ed file
+	// size / 4, capped by the Read call's own limit when present).
+	// Together they back the honest "savings vs realistic baseline"
+	// number in hook-stats. Telemetry only; pre-migration rows hold
+	// NULL on both and are excluded from savings sums.
+	`ALTER TABLE hook_invocations ADD COLUMN est_tokens_served INTEGER;
+	 ALTER TABLE hook_invocations ADD COLUMN baseline_tokens INTEGER;`,
 }
 
 // schemaMigrationInvalidates classifies each migration in schemaMigrations
@@ -1894,6 +1993,8 @@ var schemaMigrationInvalidates = []MigrationInvalidates{
 	invalidatesNothing, // [35] v36→v37: edge project/to_id grouping index for hotspots (pure DDL; no extracted data changes)
 	invalidatesNothing, // [36] v37→v38: trace endpoint planner indexes (pure DDL; no extracted data changes)
 	invalidatesNothing, // [37] v38→v39: edges.provenance_tier DEFAULT 'EXTRACTED' (pure additive DDL; existing edge data remains valid)
+	invalidatesNothing, // [38] v39→v40: CREATE TABLE loop_checkpoints (new empty table; populated only by the loop tool)
+	invalidatesNothing, // [39] v40→v41: hook_invocations.est_tokens_served + baseline_tokens (telemetry only; pre-migration rows hold NULL)
 }
 
 func init() {
@@ -3822,6 +3923,24 @@ func (s *Store) ListSymbolsForProject(projectID string) ([]Symbol, error) {
 // SQL uses NOT EXISTS rather than LEFT JOIN ... IS NULL so the
 // edges table's (project_id, to_id) index dominates the plan.
 func (s *Store) GetDeadCode(projectID string, kinds []string, language string, minConfidence float64, limit int) ([]Symbol, error) {
+	return s.getDeadCodeFiltered(projectID, kinds, language, minConfidence, limit, nil)
+}
+
+// GetDeadCodeForFiles is GetDeadCode restricted to symbols whose
+// file_path is one of files. Backs verify_change's post-edit orphan
+// check (loop-substrate PR-10): after an edit, symbols in the changed
+// files that NOW have zero inbound edges are possibly-orphaned-by-the-
+// change candidates. Shares the exact SQL with GetDeadCode (same
+// exported/entry-point/test/init carve-outs) so the two surfaces can't
+// drift; only the file_path IN (...) restriction differs.
+func (s *Store) GetDeadCodeForFiles(projectID string, files []string, kinds []string, minConfidence float64, limit int) ([]Symbol, error) {
+	if len(files) == 0 {
+		return nil, nil
+	}
+	return s.getDeadCodeFiltered(projectID, kinds, "", minConfidence, limit, files)
+}
+
+func (s *Store) getDeadCodeFiltered(projectID string, kinds []string, language string, minConfidence float64, limit int, files []string) ([]Symbol, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -3874,6 +3993,12 @@ func (s *Store) GetDeadCode(projectID string, kinds []string, language string, m
 	args := []any{projectID, minConfidence}
 	for _, k := range kinds {
 		args = append(args, k)
+	}
+	if len(files) > 0 {
+		q += " AND s.file_path IN (" + inPlaceholders(len(files)) + ")"
+		for _, f := range files {
+			args = append(args, f)
+		}
 	}
 	if language != "" {
 		q += " AND s.language = ?"
@@ -6614,6 +6739,14 @@ type HookInvocation struct {
 	SuggestedArgs      string // JSON blob; null/empty on pass_through
 	NextToolWithin3    string
 	TookRecommendation *bool // nullable; nil until joiner runs
+	// EstTokensServed / BaselineTokens (v41, hook-redirect-v2) back the
+	// honest "savings vs realistic baseline" hook-stats number.
+	// EstTokensServed estimates the suggested `context lite=true`
+	// response cost; BaselineTokens estimates what the intercepted Read
+	// would actually have returned (stat-ed file size, capped by the
+	// Read call's own limit). Zero on pass-through rows.
+	EstTokensServed int64
+	BaselineTokens  int64
 }
 
 // LogHookInvocation writes one hook decision into the telemetry table.
@@ -6623,10 +6756,12 @@ func (s *Store) LogHookInvocation(inv HookInvocation) error {
 	_, err := s.db.Exec(
 		`INSERT INTO hook_invocations(
 			ts, session_id, tool_name, file_path, file_bytes,
-			decision, suggested_tool, suggested_args
-		) VALUES (?,?,?,?,?,?,?,?)`,
+			decision, suggested_tool, suggested_args,
+			est_tokens_served, baseline_tokens
+		) VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		inv.TS, inv.SessionID, inv.ToolName, inv.FilePath, inv.FileBytes,
 		inv.Decision, inv.SuggestedTool, inv.SuggestedArgs,
+		inv.EstTokensServed, inv.BaselineTokens,
 	)
 	return err
 }
@@ -6745,30 +6880,32 @@ func (s *Store) CountSymbolsInFile(projectID, filePath string) (int, error) {
 	return n, err
 }
 
-// LargestSymbolInFile returns the ID of the symbol with the widest
-// byte span in (projectID, filePath). Used by the PreToolUse hook
-// to pick a sensible default for the `context id=...` redirect —
-// the file's main entry point is usually the largest symbol.
-// Returns empty string when the file has no indexed symbols.
+// LargestSymbolInFile returns the ID and byte span of the symbol with
+// the widest byte span in (projectID, filePath). Used by the PreToolUse
+// hook to pick a sensible default for the `context id=...` redirect —
+// the file's main entry point is usually the largest symbol. The span
+// feeds the hook's est_tokens_served telemetry (hook-redirect-v2).
+// Returns ("", 0) when the file has no indexed symbols.
 // Reader-routed.
-func (s *Store) LargestSymbolInFile(projectID, filePath string) (string, error) {
+func (s *Store) LargestSymbolInFile(projectID, filePath string) (string, int64, error) {
 	var id string
+	var span int64
 	err := s.ro.QueryRow(
-		`SELECT id FROM symbols
+		`SELECT id, (end_byte - start_byte) FROM symbols
 		  WHERE project_id = ? AND file_path = ?
 		  ORDER BY (end_byte - start_byte) DESC
 		  LIMIT 1`,
 		projectID, filePath,
-	).Scan(&id)
+	).Scan(&id, &span)
 	if err != nil {
 		// Treat \"no rows\" as empty string + no error (caller wants
 		// best-effort, not a hard fail).
 		if err == sql.ErrNoRows {
-			return "", nil
+			return "", 0, nil
 		}
-		return "", err
+		return "", 0, err
 	}
-	return id, nil
+	return id, span, nil
 }
 
 // HookConversionRate7d returns the conversion rate over the trailing
@@ -6854,6 +6991,55 @@ func (s *Store) HookCountsByTool7d() (map[string]map[string]int, error) {
 		out[tool] = map[string]int{"redirects": redirects, "taken": taken}
 	}
 	return out, rows.Err()
+}
+
+// HookFileSeenInSession reports whether the PreToolUse hook already
+// logged an invocation for (sessionID, filePath) — i.e. the agent has
+// Read (or been redirected on) this exact file earlier in the same
+// session. Backs the hook's repeat-read awareness line
+// (hook-redirect-v2): when the file content is also unchanged, the
+// hint tells the agent a re-read returns identical bytes. Cheap point
+// query on idx_hook_session. Reader-routed; best-effort (false on
+// error — the hint is supplementary, never load-bearing).
+func (s *Store) HookFileSeenInSession(sessionID, filePath string) bool {
+	if sessionID == "" || filePath == "" {
+		return false
+	}
+	var n int
+	if err := s.ro.QueryRow(
+		`SELECT COUNT(1) FROM hook_invocations
+		  WHERE session_id = ? AND file_path = ?`,
+		sessionID, filePath,
+	).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
+}
+
+// HookSavings7d sums the v41 per-redirect savings telemetry over the
+// trailing 7 days: estServed = estimated tokens of the suggested
+// `context lite=true` responses, baseline = estimated tokens the
+// intercepted Reads would actually have returned (stat-ed file size
+// capped by the Read call's own limit). Only redirect rows with a
+// recorded baseline contribute — pre-v41 rows hold NULL and are
+// excluded, so the ratio never mixes measured and unmeasured eras.
+// This is the honest "savings vs realistic baseline" number that
+// hook-stats headlines. Reader-routed.
+func (s *Store) HookSavings7d() (estServed, baseline int64, err error) {
+	row := s.ro.QueryRow(
+		`SELECT
+		    COALESCE(SUM(est_tokens_served), 0),
+		    COALESCE(SUM(baseline_tokens), 0)
+		   FROM hook_invocations
+		  WHERE decision IN ('redirect','redirect_advisory')
+		    AND baseline_tokens IS NOT NULL AND baseline_tokens > 0
+		    AND ts > ?`,
+		time.Now().Add(-7*24*time.Hour).UnixNano(),
+	)
+	if err := row.Scan(&estServed, &baseline); err != nil {
+		return 0, 0, err
+	}
+	return estServed, baseline, nil
 }
 
 // FormatSize formats a byte count as a human-readable string.

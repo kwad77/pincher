@@ -101,7 +101,19 @@ type hookStatsExport struct {
 		Resolved  int     `json:"resolved"`
 	} `json:"override"`
 	ByTool map[string]map[string]int `json:"by_tool"`
-	Host   *hookStatsHost            `json:"host,omitempty"`
+	// Savings (hook-redirect-v2, additive — consumers tolerate new
+	// fields so the schema string stays v1): per-redirect estimated
+	// tokens served by the suggested context-lite call vs the realistic
+	// baseline (stat-ed size of what the intercepted Read would have
+	// returned, capped by the Read's own limit). Only redirects logged
+	// by a v41+ binary contribute; older rows are excluded from both
+	// sums so the percentage never mixes measured and unmeasured eras.
+	Savings struct {
+		EstTokensServed int64   `json:"est_tokens_served"`
+		BaselineTokens  int64   `json:"baseline_tokens"`
+		EstSavedPct     float64 `json:"est_saved_pct"`
+	} `json:"savings"`
+	Host *hookStatsHost `json:"host,omitempty"`
 }
 
 type hookStatsHost struct {
@@ -144,6 +156,17 @@ func buildHookStatsExport(store *db.Store, includeHost bool) (*hookStatsExport, 
 	out.Override.Pct = ovrPct
 	out.Override.Overrides = overrides
 	out.Override.Resolved = resolved
+
+	// Best-effort: a savings query failure (e.g. pre-v41 DB opened
+	// read-only before migration) zeroes the block rather than failing
+	// the whole export.
+	if estServed, baselineTok, err := store.HookSavings7d(); err == nil {
+		out.Savings.EstTokensServed = estServed
+		out.Savings.BaselineTokens = baselineTok
+		if baselineTok > 0 {
+			out.Savings.EstSavedPct = float64(baselineTok-estServed) / float64(baselineTok) * 100
+		}
+	}
 
 	if includeHost {
 		out.Host = &hookStatsHost{

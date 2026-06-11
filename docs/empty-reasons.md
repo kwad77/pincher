@@ -127,9 +127,9 @@ search query="*" limit=10 offset=0       # rewind to start
 
 **Constant:** `EmptyReasonAllFilesBlocked`
 
-**Fires when:** Every discovered file was filtered by `ast.ShouldSkip` (lockfiles, minified bundles, source maps, generated code). Expected for vendor-only or build-artifact-only directories.
+**Fires when:** Every discovered file was filtered by `ast.ShouldSkip` (lockfiles, minified bundles, source maps, generated code). Expected for vendor-only or build-artifact-only directories. A `.pincherignore` file (gitignore semantics) covering every source file produces the same shape — the walker drops ignored files before extraction, so they never even reach `ast.ShouldSkip`.
 
-**Recovery:** Either the path is wrong (you indexed a `node_modules/` or `dist/` directory) or the path genuinely has nothing pincher can extract. Check the path; if it's correct, pick a different directory.
+**Recovery:** Either the path is wrong (you indexed a `node_modules/` or `dist/` directory), the path genuinely has nothing pincher can extract, or an over-broad `.pincherignore` / `.gitignore` rule excluded everything. Check the path and any ignore files at the project root; if it's correct, pick a different directory.
 
 ### `extractor_emitted_nothing`
 

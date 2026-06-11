@@ -61,6 +61,12 @@ type Indexer struct {
 	active   map[string]bool // projectID → indexing in progress
 	progress sync.Map        // projectID → *IndexProgress
 
+	// generation counts completed index passes this process (PR-4'
+	// loop-substrate). Backs _meta.watermark: equal generations between
+	// two responses mean the symbol graph did not change in between.
+	// Accessed via Generation()/bumpGeneration() (generation.go).
+	generation int64
+
 	// currentBranchByProject — populated at Index() start with the
 	// detected git branch and consumed by flushBatch to stamp
 	// Symbol.Branch / Edge.Branch on every per-file write (#1303
@@ -215,15 +221,20 @@ func (idx *Indexer) GetProgressDetail(projectID string) (done, total, startedAtU
 
 // IndexResult summarises a completed indexing run.
 type IndexResult struct {
-	ProjectID  string
-	Project    string
-	Path       string
-	Files      int
-	Symbols    int
-	Edges      int
-	Skipped    int // files skipped (unchanged hash)
-	Blocked    int // files refused by ast.ShouldSkip (lockfiles, minified bundles, source maps)
-	Deleted    int // files removed from disk since last index — symbols GC'd this run (#326)
+	ProjectID string
+	Project   string
+	Path      string
+	Files     int
+	Symbols   int
+	Edges     int
+	Skipped   int // files skipped (unchanged hash)
+	Blocked   int // files refused by ast.ShouldSkip (lockfiles, minified bundles, source maps)
+	Deleted   int // files removed from disk since last index — symbols GC'd this run (#326)
+	// NOTE: there is deliberately no Ignored counter for .pincherignore.
+	// Ignore filtering happens inside gocodewalker (walker.CustomIgnore),
+	// which never yields the dropped files, so counting them would need a
+	// second unfiltered walk per index run. See the CustomIgnore comment
+	// in indexImpl.
 	DurationMS int64
 
 	// #1231 v0.66 DOGFOOD: post-pass parity check. ParityMismatchFiles
@@ -556,6 +567,29 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 	fileListQueue := make(chan *gocodewalker.File, 256)
 	walker := gocodewalker.NewFileWalker(absPath, fileListQueue)
 	walker.ExcludeDirectory = skippedDirSlice()
+	// .pincherignore: user-controlled ignore file with gitignore semantics
+	// (parsed by gocodewalker exactly like a .gitignore, including nested
+	// files in subdirectories and `!` negation). Motivation: a real
+	// project's data/*.json model artifacts (2.5 MB each — under the 4 MB
+	// cap) became 27,672 junk Setting symbols, 96% of the project, with no
+	// user-facing way to exclude them. Two properties fall out of doing
+	// this at the walker level:
+	//
+	//   1. GC correctness for free: ignored files are never yielded, so
+	//      they never enter seenFiles — the #326 tail-pass GC below reaps
+	//      previously-indexed symbols of newly-ignored files on the next
+	//      ordinary (non-force) index run.
+	//   2. No Ignored counter on IndexResult: gocodewalker filters inside
+	//      the walk and never surfaces what it dropped, so counting
+	//      ignored files would require a second unfiltered walk per index
+	//      run. Deliberately skipped — `pincher.index.gc.summary`
+	//      (files_reaped) is the observable signal when an ignore rule
+	//      newly takes effect.
+	//
+	// Keep in sync with the init profiler's walker (internal/init/profile.go),
+	// which applies the same ignore file so `pincher init`'s census matches
+	// what indexing will actually extract.
+	walker.CustomIgnore = []string{".pincherignore"}
 
 	// Start walker in background; gocodewalker closes the channel when done.
 	go func() {
@@ -1730,6 +1764,10 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 	// #1163 traces half (indexer scope): stamp the post-pass outcome
 	// attributes on the OTLP span before defer span.End() fires.
 	finishIndexSpan(span, totalFiles, totalSymbols, totalEdges, totalSkipped, totalBlocked, totalDeleted, duration.Milliseconds(), nil)
+
+	// PR-4': bump the watermark generation on the single success
+	// return — same exactly-once guarantee the #654 event above rides.
+	idx.bumpGeneration()
 
 	return result, nil
 }
@@ -4082,15 +4120,23 @@ func excludeMethodSyms(syms []db.Symbol) []db.Symbol {
 func excludeNonCodeSyms(syms []db.Symbol) []db.Symbol {
 	out := make([]db.Symbol, 0, len(syms))
 	for _, s := range syms {
-		switch s.Kind {
-		case "Setting", "Section", "Document", "Resource",
-			"Output", "Local", "Provider", "Block", "DataSource":
-			// non-code — skip
-		default:
+		if !isNonCodeKind(s.Kind) {
 			out = append(out, s)
 		}
 	}
 	return out
+}
+
+// isNonCodeKind reports whether a symbol kind comes from config/doc
+// extraction rather than code. Shared by excludeNonCodeSyms and the
+// Python suffix-fallback index in resolveCalls.
+func isNonCodeKind(kind string) bool {
+	switch kind {
+	case "Setting", "Section", "Document", "Resource",
+		"Output", "Local", "Provider", "Block", "DataSource":
+		return true
+	}
+	return false
 }
 
 // resolveMethodByName is the #285 receiver-method fallback. Looks up
@@ -4549,18 +4595,111 @@ func (idx *Indexer) resolveCalls(projectID string, pending []ast.ExtractedEdge, 
 		return resolveByReceiverType(toName, recvType, fromQN)
 	}
 
+	// Python unique-suffix fallback: when no source-root candidate
+	// matches a dotted Python to_name exactly, accept a project symbol
+	// whose qualified name ends with "."+to_name — but ONLY when exactly
+	// one distinct QN matches. Bridges import paths that don't align with
+	// pincher's file-path QNs (missing `src.` style prefixes, imports
+	// anchored below the real package root, relative-import leftovers).
+	// Ambiguity (2+ candidate QNs) leaves the edge unresolved — never
+	// guess. Scoped to Python code symbols so Go/JS resolution is
+	// untouched. The index is built lazily, once per resolve pass, and
+	// buckets QNs by their final dotted segment so each lookup scans a
+	// handful of entries instead of the whole symbol table.
+	var pySuffixQNs map[string][]string
+	buildPySuffixQNs := func() map[string][]string {
+		out := map[string][]string{}
+		seenQN := map[string]bool{}
+		add := func(s db.Symbol) {
+			if s.Language != "Python" || isNonCodeKind(s.Kind) {
+				return
+			}
+			qn := s.QualifiedName
+			if qn == "" || seenQN[qn] {
+				return
+			}
+			seenQN[qn] = true
+			last := qn
+			if i := strings.LastIndex(qn, "."); i >= 0 {
+				last = qn[i+1:]
+			}
+			out[last] = append(out[last], qn)
+		}
+		if qnMap != nil {
+			for _, syms := range qnMap {
+				for i := range syms {
+					add(syms[i])
+				}
+			}
+			return out
+		}
+		syms, err := idx.store.ListSymbolsForProject(projectID)
+		if err != nil {
+			slog.Warn("pincher.calls.py_suffix.load.err", "err", err)
+			return out
+		}
+		for i := range syms {
+			add(syms[i])
+		}
+		return out
+	}
+	lookupPythonSuffix := func(toName string) string {
+		// Relative-import leftovers keep their leading dots; strip them so
+		// the remaining dotted path can still suffix-match.
+		trimmed := strings.TrimLeft(toName, ".")
+		i := strings.LastIndex(trimmed, ".")
+		if i <= 0 || i == len(trimmed)-1 {
+			return "" // dotted to_names only — bare names are too ambiguous
+		}
+		if pySuffixQNs == nil {
+			pySuffixQNs = buildPySuffixQNs()
+		}
+		want := "." + trimmed
+		match := ""
+		for _, qn := range pySuffixQNs[trimmed[i+1:]] {
+			if strings.HasSuffix(qn, want) {
+				if match != "" {
+					return "" // ambiguous — leave unresolved
+				}
+				match = qn
+			}
+		}
+		if match == "" {
+			return ""
+		}
+		return lookupQN(match)
+	}
+
 	// lookupPythonCall expands a Python call's to_name through every
 	// source-root candidate, returning the first hit. The extractor has
-	// already alias-rewritten imported names and self.X → class.X, so
-	// what we get here is either a bare local name, a dotted path that
-	// might need a src-prefix, or a relative-import path (rare for calls).
+	// already alias-rewritten imported names, self.X → class.X, and
+	// one-hop-inferred instance receivers (`x = Cls(); x.m()` → Cls path,
+	// confidence 0.6), so what we get here is either a bare local name, a
+	// dotted path that might need a src-prefix, or a relative-import path.
+	// When every exact candidate misses, the unique-suffix fallback runs.
 	lookupPythonCall := func(toName, fromFile string) string {
+		externalID := ""
 		for _, c := range ast.PythonImportCandidates(toName, fromFile, pythonRoots) {
 			if id := lookupQN(c); id != "" {
+				// An unresolved IMPORTS edge synthesizes an External
+				// Module (#1340) whose QN is the literal import path.
+				// That phantom must not outrank a real in-project symbol
+				// the unique-suffix fallback can still find (the import
+				// may simply be anchored below the real package root).
+				// Hold it as the last resort instead.
+				if strings.HasPrefix(id, "@external/") {
+					if externalID == "" {
+						externalID = id
+					}
+					continue
+				}
 				return id
 			}
 		}
-		return ""
+		if id := lookupPythonSuffix(toName); id != "" {
+			return id
+		}
+		return externalID
 	}
 
 	// #1177 v0.72: TS/JS receiver-type binding via class-name lookup.

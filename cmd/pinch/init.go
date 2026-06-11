@@ -153,6 +153,7 @@ func runInitCLI(args []string) {
 	noHook := fs.Bool("no-hook", false, "(claude/goose targets only) Skip writing runtime hook config. Default false — the hook is what closes the Read/Grep → pincher gap at runtime.")
 	gitHooks := fs.Bool("git-hooks", false, "Install post-checkout / post-merge / post-rewrite git hooks into .git/hooks so branch switches and rebases trigger an eager reindex (#1261). Pincher-managed hooks carry a marker comment; pre-existing non-pincher hooks are skipped unless --force is set.")
 	quiet := fs.Bool("quiet", false, "Suppress the per-language extraction-tier profile printed after the wiring step (#631). The wiring itself still runs.")
+	skillsWrite := fs.Bool("write", false, "(claude-skills target only) Apply the skills install. claude-skills previews by default — it writes a tree of files into the global ~/.claude/skills/, so mutation is opt-in, mirroring the MCP init tool's write=true contract.")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: pincher init [--target=NAME] [--global] [--dry-run] [--force]")
 		fmt.Fprintln(os.Stderr, "  Seed a pincher usage policy file for an editor or agent (idempotent; replace-in-place via marker comments).")
@@ -161,8 +162,9 @@ func runInitCLI(args []string) {
 		for _, t := range pinit.AllTargets {
 			fmt.Fprintf(os.Stderr, "    %-14s %s\n", t.Name, t.Describe)
 		}
+		fmt.Fprintln(os.Stderr, "    claude-skills  Install the shipped pincher methodology skills to ~/.claude/skills (preview by default; add --write to install)")
 		fmt.Fprintln(os.Stderr, "    detect         Pick every target whose marker file exists under cwd")
-		fmt.Fprintln(os.Stderr, "    all            Write every project-scoped target")
+		fmt.Fprintln(os.Stderr, "    all            Write every project-scoped target (includes claude-skills)")
 		fs.PrintDefaults()
 	}
 	fs.Parse(args)
@@ -180,6 +182,18 @@ func runInitCLI(args []string) {
 	if *targetFlag == "" {
 		*targetFlag = autoResolveInitTarget(cwd, out)
 	}
+	// claude-skills (#shipped-skills): the methodology-skills installer.
+	// Always-global (~/.claude/skills/) and multi-file, so it bypasses
+	// the Target registry. Standalone --target=claude-skills runs only
+	// the skills leg; --target=all appends it after the registry loop.
+	if *targetFlag == pinit.SkillsTargetName {
+		if err := runInitSkillsDefault(out, *skillsWrite && !*dryRun); err != nil {
+			fmt.Fprintf(os.Stderr, "pincher init: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	targets, err := pinit.ResolveTargets(*targetFlag, cwd)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pincher init: %v\n", err)
@@ -207,6 +221,17 @@ func runInitCLI(args []string) {
 				fmt.Fprintf(os.Stderr, "pincher init: goose hook install: %v\n", err)
 				os.Exit(1)
 			}
+		}
+	}
+
+	// claude-skills rides along with target=all. It keeps its own
+	// dry-run-by-default contract: without --write the leg previews,
+	// so `pincher init --target=all` never silently writes into the
+	// user's home directory.
+	if *targetFlag == "all" {
+		if err := runInitSkillsDefault(out, *skillsWrite && !*dryRun); err != nil {
+			fmt.Fprintf(os.Stderr, "pincher init: %v\n", err)
+			os.Exit(1)
 		}
 	}
 

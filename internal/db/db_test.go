@@ -598,9 +598,12 @@ var readerRoutedStoreMethods = map[string]bool{
 	"ListCallEdgesForProject":        true, // architecture: pure SELECT, reader pool.
 	"GetHotspots":                    true,
 	"GetDeadCode":                    true,
+	"GetDeadCodeForFiles":            true, // loop-substrate PR-10: verify_change orphan check — same SELECT as GetDeadCode, reader pool.
 	"SearchSymbols":                  true,
 	"SearchSymbolsByCorpus":          true,
 	"FTS5Fragmentation":              true, // #1612 v0.87: per-corpus shadow-table COUNT(*)s.
+	"SettingSymbolCountsByProject":   true, // .pincherignore settings_flood advisory: one aggregate GROUP BY over symbols.
+	"LoopLedgerNonEmpty":             true, // guide-coaching PR-15/17: sqlite_master probe + EXISTS on loop_checkpoints. Pure SELECTs.
 	"LoadPendingEdgesByKindAndFiles": true, // #1629 v0.87: scoped pending-edges load for incremental resolve.
 	"EdgesFrom":                      true,
 	"EdgesFromScoped":                true,
@@ -613,6 +616,8 @@ var readerRoutedStoreMethods = map[string]bool{
 	"ProjectsContainingPath":         true,
 	"GetADR":                         true,
 	"ListADRs":                       true,
+	"ListLoopCheckpoints":            true, // PR-8/9 loop ledger reads
+	"ListLoops":                      true, // PR-8/9 loop ledger reads
 	"GetFileHash":                    true,
 	"ListFilesForProject":            true,
 	"ListFilesWithHashesForProject":  true,
@@ -652,6 +657,17 @@ var readerRoutedStoreMethods = map[string]bool{
 	"HookConversionRate7d": true,
 	"HookOverrideRate7d":   true,
 	"HookCountsByTool7d":   true,
+	// hook-redirect-v2: repeat-read point query + v40 savings sum.
+	// Both pure SELECTs — reader-routed.
+	"HookFileSeenInSession": true,
+	"HookSavings7d":         true,
+	// coach telemetry readers — pure SELECT / PRAGMA over recorded
+	// telemetry; coach never mutates what it mines.
+	"ToolCallsSince":                true,
+	"QueryMetricsSince":             true,
+	"HookRedirectOutcomes":          true,
+	"HookTokenColumnsPresent":       true,
+	"HookRedirectTokensLeftOnTable": true,
 	// Accessors that return the underlying *sql.DB. RO() returns the
 	// reader pool by definition; DB() returns the writer (semantic
 	// belongs to writer-routed since callers may write through it).
@@ -715,6 +731,7 @@ var writerRoutedStoreMethods = map[string]bool{
 	"DeleteFileHash":                             true,
 	"ClearFileHashesByLanguage":                  true,
 	"SetADR":                                     true,
+	"AppendLoopCheckpoint":                       true, // PR-8/9 loop ledger append (writer handle for read-back too)
 	"DeleteADR":                                  true,
 	"RecordSession":                              true,
 	"RecordSessionWithMetrics":                   true,

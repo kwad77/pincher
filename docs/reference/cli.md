@@ -155,9 +155,13 @@ pincher init --target=windsurf            # ./.windsurf/rules/pincher.md
 pincher init --target=aider               # ./CONVENTIONS.md
 pincher init --target=continue            # ~/.continue/config.json (merges into systemMessage)
 pincher init --target=detect              # write only to editors whose marker file exists under cwd
-pincher init --target=all                 # write every project-scoped target
+pincher init --target=all                 # write every project-scoped target (+ previews claude-skills)
+pincher init --target=claude-skills       # preview the shipped methodology skills -> ~/.claude/skills/
+pincher init --target=claude-skills --write   # actually install/update them
 pincher init --dry-run                    # print what would be written; do not modify
 ```
+
+The `claude-skills` target installs the methodology skills that ship with pincher (`pincher-loop`, `pincher-onboard`, `pincher-review`, `pincher-debug`, `pincher-steward` — the canonical copies under `plugin/skills/`) into the per-user `~/.claude/skills/` directory, one directory per skill. Unlike the rules-file targets it **previews by default** — it writes a multi-file tree into your home directory, so mutation requires `--write`. Re-runs are idempotent; a skill whose installed `SKILL.md` declares a **newer** `version:` than the shipped copy is refused (never downgraded) — delete that skill's directory to force a downgrade. It also rides along with `--target=all` under the same preview/`--write` contract, and is CLI-only (the MCP `init` tool refuses it because the destination escapes the project root).
 
 The cursor target preserves any user-edited YAML frontmatter (`description`, `globs`, `alwaysApply`) on re-runs — only the marker block in the body is replaced. The continue target preserves all unknown JSON keys; only the `systemMessage` field is touched.
 
@@ -276,6 +280,22 @@ pincher verify --data-dir /x                      # override data directory
 ```
 
 Stoa-family precedent: `stoa verify` hashes manifests as the integrity-check leg of the verify/doctor/probe trinity. Pincher's `doctor` is the doctor leg already; `verify` adds the integrity leg. Exit codes: `0` no drift, `1` drift detected (caller re-indexes), `2` couldn't open the database.
+
+### `pincher test-impacted`
+
+Computes the current diff's blast radius — the **same** diff → changed-symbols → impacted-tests analysis the `changes` MCP tool runs (shared core, not a fork) — and executes exactly the Go tests it implicates, grouped into one `go test <pkg> -run '^(TestA|TestB)$' -count=1` invocation per package. Output is conclusion-dense: one `ok`/`FAIL` line per package, failing test names plus the output tail only on failure, and a final `IMPACTED: P packages, T tests — PASS|FAIL` summary.
+
+```bash
+pincher test-impacted                             # run tests implicated by unstaged changes
+pincher test-impacted --scope staged              # pre-commit: what `git add`ed changes implicate
+pincher test-impacted --scope base:master         # PR view: committed diff vs master's merge-base
+pincher test-impacted --dry-run                   # print the per-package go test commands, run nothing
+pincher test-impacted --max-tests 10              # cap to the 10 highest-overlap tests
+pincher test-impacted --timeout 5m                # total execution budget (default 10m)
+pincher test-impacted --json                      # structured per-package results
+```
+
+Run it from the indexed repo root (the index provides the call graph — it names `pincher index` if the project isn't indexed). Impacted tests that aren't Go `Test*` functions (e.g. `*.spec.ts` suites, benchmarks) are listed under "not runnable by this command" instead of silently dropped. A clean tree, or a diff that no indexed test reaches, exits `0` with an explanatory line; any failing test exits `1`.
 
 ### `pincher savings`
 

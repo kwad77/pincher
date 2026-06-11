@@ -14,7 +14,7 @@
 ┌───────────────────────┐          ┌───────────────────────────┐
 │  pincher (MCP process)│          │  pincher --http 127.0.0.1:8080 │
 │                       │          │  (dashboard / REST)       │
-│  • 29 MCP tools       │          │                           │
+│  • 34 MCP tools       │          │                           │
 │  • idx.Watch()        │          │  • POST /v1/{tool}        │
 │  • SessionFlusher     │          │  • GET /v1/dashboard      │
 │    (flush every 10 s) │          │  • GET /v1/openapi.json   │
@@ -134,7 +134,7 @@ Project-scoped paths — `search`, `symbol`/`symbols` when `project=` is passed,
 
 ## Schema
 
-Schema is versioned via the `schema_version` table. Current version: **v39**. Migrations apply automatically on startup — no data loss, no manual steps. To add a migration: append a SQL string to `schemaMigrations` in `db.go`; the version number is auto-derived from the slice length.
+Schema is versioned via the `schema_version` table. Current version: **v41**. Migrations apply automatically on startup — no data loss, no manual steps. To add a migration: append a SQL string to `schemaMigrations` in `db.go`; the version number is auto-derived from the slice length.
 
 Migration history:
 
@@ -179,6 +179,8 @@ Migration history:
 | v36→v37 | `idx_edge_project_to` — project-scoped inbound edge grouping index for `hotspot`, avoiding a temp grouping B-tree when ranking the most-called symbols. |
 | v37→v38 | Trace endpoint planner hardening — supplemental project-scoped endpoint indexes plus endpoint-first `INDEXED BY` hints so recursive trace CTEs seek by the current frontier endpoint instead of scanning project/kind edge buckets on large graphs. |
 | v38→v39 | `edges.provenance_tier` column (default `'EXTRACTED'`) — substrate column for separating deterministically-extracted edges from future inferred / heuristic / plugin-emitted edges (#1945, [ADR-0005](../adr/0005-v1.3-substrate-and-language-coverage.md)). Pure additive DDL, classified `invalidatesNothing` — existing edge data remains valid and is auto-defaulted to `EXTRACTED` by the SQLite column-default. |
+| v39→v40 | `loop_checkpoints` table — the loop ledger (loop-substrate PR-8/9): append-only work-state for multi-iteration agent loops, one row per checkpoint `{claim, decision, confidence, reopen_trigger, evidence}` stamped with the index watermark. Backs the `loop` tool's `start`/`checkpoint`/`list`/`resume` actions. New empty table, classified `invalidatesNothing`. |
+| v40→v41 | `hook_invocations.est_tokens_served` + `baseline_tokens` (hook-redirect-v2; renumbered from v40 during the loop-substrate integration) — per-redirect savings telemetry: estimated tokens of the suggested `context lite=true` call vs the stat-ed size of what the intercepted Read would actually have returned, capped by the Read's own `limit`. Backs the honest "savings vs realistic baseline" number in `/v1/hook-stats`, `pincher hook-stats --export-7d`, and the `pincher stats` HOOK 7D section. Telemetry only, classified `invalidatesNothing`; pre-migration rows hold NULL and are excluded from savings sums. |
 
 ---
 
@@ -227,7 +229,7 @@ pincherMCP/
 │   │   ├── bloat_trap.go         # IsBloatTrap: refuse filesystem root + $HOME;
 │   │   │                         # hook mode also requires a project marker
 │   │   └── lockfile.go           # Cross-process project lockfile w/ stale reclaim
-│   └── server/server.go          # 29 MCP tools, HTTP REST, gzip, OpenAPI 3.1, bearer auth,
+│   └── server/server.go          # 34 MCP tools, HTTP REST, gzip, OpenAPI 3.1, bearer auth,
 │                                 # basepath / reverse-proxy support, sessions persistence
 └── go.mod
 ```

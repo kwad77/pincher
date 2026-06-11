@@ -435,6 +435,28 @@ func (s *Server) handlePlanChange(ctx context.Context, req *mcp.CallToolRequest)
 		}
 	}
 
+	// loop-substrate PR-10: stash the plan so verify_change can compare
+	// predicted vs actual blast radius after the edit. Captured BEFORE
+	// the transport truncation below — the comparison needs the FULL
+	// depth-1 set, not the rendered top-25. Allocation-light: one
+	// []string of ids the loop below was iterating anyway; no maps,
+	// no copies of blastRow.
+	predictedIDs := make([]string, 0, len(depth1))
+	for _, c := range depth1 {
+		predictedIDs = append(predictedIDs, c.ID)
+	}
+	var planGen int64
+	if s.indexer != nil {
+		planGen = s.indexer.Generation()
+	}
+	s.stashPlan(planCacheEntry{
+		target:     target,
+		file:       resolved.File,
+		primaryID:  resolved.SymbolsAffected[0].ID,
+		depth1IDs:  predictedIDs,
+		generation: planGen,
+	})
+
 	// Bound the caller lists for transport. plan_change against a file
 	// full of hotspots (an indexer with Index/New, a server with its
 	// handler set) traces thousands of unique inbound callers; the
