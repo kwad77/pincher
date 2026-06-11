@@ -247,14 +247,14 @@ The result is an edit loop with fewer blind reads and better handoffs after cont
 
 ---
 
-## Where Pincher is now (v1.5)
+## Where Pincher is now (v1.6)
 
-Pincher v1.0 froze the core tool/schema surface; everything since has been additive. v1.2 shipped Pincher-native graph intelligence (`pincher report`, rationale symbols, hotspot risk scoring). v1.3 landed the substrate (edge provenance tiers, MCP progress + prompts). v1.4 was the **loop release** — the agent-loop substrate (`loop` checkpoint ledger, `batch`, `verify_change`, `coach`, `assert_graph`, `_meta.watermark` on every envelope, diff-encoded `context` default-on) plus the ADR-0008 AST-tier language wave (real tree-sitter via WASM, pure Go: Rust, Java, C#, TS/TSX, Swift, Kotlin, PHP, Ruby, C++ at confidence 1.0) and five shippable Claude Code skills (`pincher init --target=claude-skills`). v1.5 is the **self-measuring loop**:
+Pincher v1.0 froze the core tool/schema surface; everything since has been additive. v1.2 shipped Pincher-native graph intelligence (`pincher report`, rationale symbols, hotspot risk scoring). v1.3 landed the substrate (edge provenance tiers, MCP progress + prompts). v1.4 was the **loop release** — the agent-loop substrate (`loop` checkpoint ledger, `batch`, `verify_change`, `coach`, `assert_graph`, `_meta.watermark` on every envelope, diff-encoded `context` default-on) plus the ADR-0008 AST-tier language wave (real tree-sitter via WASM, pure Go: Rust, Java, C#, TS/TSX, Swift, Kotlin, PHP, Ruby, C++ at confidence 1.0) and five shippable Claude Code skills. v1.5 made the loop **measure itself** (LES, pointer handoffs, the PreCompact hook, loopbench). v1.6 is the **schema diet, measured at scale**:
 
-- **LES — the Loop Efficiency Score** — pincher's own success metric, computed entirely from already-recorded telemetry: tokens per loop iteration, waste rate, recovery load, continuation fidelity. One compact line in `stats` (session + trailing 7d), a priced week-over-week `les_regression` finding in `coach`, a `les_hint` on `loop resume`. Diagnostic only, never a gate; a non-computable input renders `-`, never a faked number.
-- **Pointer handoffs** — `loop handoff` composes a ≤600-token server-side manifest (open reopen-triggers with `AWAITING HUMAN` entries verbatim, ADR keys, live working-tree summary, recent receipts, re-entry seed ids) that replaces 2-5k-token prose handoff.md files; `resume` leads with it; `loop export` renders human-readable Markdown from the ledger on demand, never to disk.
-- **PreCompact hook** — when Claude Code compacts a session, `pincher hook-check` tells the summarizer what the ledger already holds, so the summary keeps pointers (`<loop>#<seq>`, ADR keys, symbol ids) and drops payloads. Fail-open by contract; registered additively by `pincher init`.
-- **loopbench** — `scripts/loopbench/`: reproducible cross-toolset benchmark arms (real `claude -p` stdio-MCP sessions) with billing-grade usage capture, replacing ad-hoc benchmark agents.
+- **core/lean by default** — `tools/list` now advertises the 10 loop-essential tools with lean first-sentence descriptions (~3.0k approx tokens vs ~18.4k full/rich, re-read every turn). Measured at 10x corpus scale: full/rich burned 1.44M total tokens vs 475k for core+lean at identical 8/8 accuracy. All 34 tools stay registered (HTTP `/v1/<tool>`, OpenAPI, `batch` sub-queries); `PINCHER_TOOLSET=full` + `PINCHER_SCHEMA_STYLE=rich` restores the old surface.
+- **Graph-answer authority in the contract** — `trace`/`changes`/`verify_change` descriptions now state that graph answers are authoritative for caller/callee/count/blast-radius questions; an n=3 benchmark showed agents coached to trust the graph halve their turns at equal accuracy.
+- **Startup DB discipline** — read-only surfaces (`web`, `bench`, health checks) stop contending with the single writer; schema migrations are loud, snapshot-backed, and consent-gated on dev builds.
+- **Quality of life** — hook v2.1 (Glob advisories, `--data-dir` baked into installed hooks), `pincher init --dco-hook` (automatic `Signed-off-by`), and the messy-corpus + scale benchmark harness that produced the diet decision, in-tree.
 
 The boundary is deliberate: no default LLM extraction pipeline, no dashboard-first claims without API/report provenance, and no unsupported savings multipliers. If a report names a symbol or file, it should come with source provenance or say the data is missing.
 
@@ -284,7 +284,7 @@ Full reference: [`docs/reference/tools.md`](docs/reference/tools.md). HTTP shape
 
 ## Known limitations
 
-- SQLite is local and single-user. Cross-process indexing is safe, but team-shared indexes need a server mode.
+- SQLite is local and single-user. Cross-process indexing is safe, and since v1.6 read-only surfaces (`pincher web`, `bench`, health checks) no longer contend with the single writer — but team-shared indexes still need a server mode.
 - Symbol extraction is AST-tier (confidence 1.0) for twelve code languages as of v1.4 (Go, Python, JavaScript, Rust, Java, C#, TypeScript, Swift, Kotlin, PHP, Ruby, C++ — see [language support](docs/reference/languages.md)), but cross-file `CALLS` resolution still varies: Go and Python resolve cross-file calls; JS/TS use heuristic unique-name binding; other languages have same-file calls only.
 - Haskell has no extractor today.
 - Sequence-like YAML/JSON arrays can produce unstable IDs when items are inserted before existing entries. Search by name instead of storing those IDs long term.

@@ -7,6 +7,58 @@ minors.
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-06-11 — The schema diet: core/lean tools/list by default, measured at scale
+
+v1.6 ships the measured decision the schema-diet work (#2003) deferred:
+the MCP `tools/list` advertisement now defaults to the **10
+loop-essential tools with lean first-sentence descriptions** (~3.0k
+approx tokens instead of ~18.4k, re-read by the host every turn). The
+flip is backed by the messy-corpus benchmark ladder (#2002) executed at
+10x scale with repetition (#2005): full/rich burned **1,440,781 total
+tokens vs 475,246 for core+lean at identical 8/8 accuracy**. All 34
+tools stay registered in every mode (HTTP `POST /v1/<tool>`, OpenAPI,
+`batch` sub-queries), and `PINCHER_TOOLSET=full` +
+`PINCHER_SCHEMA_STYLE=rich` restores the pre-v1.6 surface — a MINOR
+behavior flip with env opt-out, per RELEASING.md. Around it:
+graph-answer authority stated in the `trace`/`changes`/`verify_change`
+contracts (#2009), startup DB discipline so read-only surfaces stop
+contending with the single writer and migrations are loud +
+consent-gated (#1974/#1975), hook v2.1 (Glob advisories + `--data-dir`
+baking, #2006), and `pincher init --dco-hook` (#2008). Tool count stays
+34, schema stays v41 (zero migrations); no tool, field, `_meta` key,
+HTTP route, CLI subcommand, or symbol-ID format was removed or renamed
+(ADR-0002 frozen-surface review passed; see
+[docs/release-signoff-v1.6.0.md](docs/release-signoff-v1.6.0.md)).
+
+### Added
+- loopbench: messy-corpus benchmark — a deliberately hostile polyglot fixture repo
+(Go service + Python workers + TS storefront, registry/dispatch indirection, dead
+same-named twins, ~1.3 MB of generated grep-chaff) built by
+`scripts/loopbench/fixtures/build-messy-corpus.sh`, plus the `messy-10q` task set
+with a verified answer key and a three-arm ladder run (native-naive /
+native-coached / pincher-mcp) answering the standing reopen-trigger: re-run the
+ladder where naive navigation degrades.
+- **Schema diet — core toolset + lean descriptions (#2003).** The messy-corpus loopbench (PR #2002) measured the MCP tool-schema advertisement as pincher's binding cost constraint: ~46.5k cache-create tokens vs ~27k for native arms, re-read every turn — a 10/10-accuracy, 22-vs-36-turn run still lost on tokens. Two opt-in knobs, both measured and gate-tested (`internal/server/testdata/schema-weight.md`): `PINCHER_TOOLSET=core` / `--toolset core` advertises only the 10 loop-essential tools over `tools/list` (search, symbol, symbols, context, trace, changes, batch, loop, verify_change, guide — ~8.7k approx tokens vs 18.4k full) while every tool stays reachable via HTTP `POST /v1/<tool>` and as `batch` sub-queries, and `guide` names the escape hatches when it recommends a full-mode tool; `PINCHER_SCHEMA_STYLE=lean` applies one deterministic registration-time transform (first-sentence descriptions, arg descriptions capped at ~120 chars) across all 34 tools (full/lean ~6.9k; core+lean ~3.0k, hard-gated under 4k by `TestSchemaWeight_CoreLean_UnderBudget`). Defaults stay `full`/`rich` this release — zero drift on the tool-contract golden; flipping the default is a future measured decision.
+- **Scale + repetition benchmark round (#2005).** The standing falsification gate from the messy-corpus verdict (#2002) and the schema-diet rerun (#2003), executed: `fixtures/build-messy-corpus.sh` grows a `--scale N` mode (N parameterized shard copies of the order-processing cluster with distinct symbols per copy — `internal/pkg01..pkgNN` + Python handlers + TS modules — cross-wired so call chains span copies, plus proportionally scaled generated chaff; `--scale 0` stays byte-identical to the original 43-file corpus). New task set `tasks/messy-scale-8q.md` (+ verified answer key) covers cross-copy call chains, which-of-N twins, dead twins, and blast radius on the 542-file scaled build. Three arms ran n=3/n=3/n=1 (`native-naive`, `pincher-mcp-core-lean`, `pincher-mcp` full/rich control); scoreboard, hand-graded accuracy, and the verdicts on both open questions (does the token gap invert at scale? does core-lean turn inflation bite at n≥3?) live in `scripts/loopbench/out/scale-20260611/RESULTS-scale.md`.
+- hook-check handles Glob tool calls: advisory hint suggesting `onboard_module` / `search` when a glob targets code files inside an indexed project; the installer matcher widened to `Read|Grep|Glob`
+- **`pincher init --dco-hook` — automatic DCO sign-off via a `prepare-commit-msg` git hook ([#2008](https://github.com/kwad77/pincher/pull/2008)).** Per-commit DCO enforcement fails a PR on a single unsigned commit, and `git config format.signoff true` does not cover plain `git commit`. The new opt-in flag installs a pincher-managed `prepare-commit-msg` hook that appends `Signed-off-by: Name <email>` (from `git config user.name`/`user.email`) whenever the message lacks it — skipping merge/squash messages, never duplicating, and preserving cherry-picked commits' existing trailers. Install mirrors `--git-hooks`: per-repo, idempotent, silent skip outside git repos; an existing non-pincher `prepare-commit-msg` hook is never overwritten (no `--force` escape — sign-off is an attestation).
+
+### Changed
+- **v1.5.0 release integration (#2000).** Wave-2 branches (#1996 loopbench, #1997 loop handoff, #1998 PreCompact hook, #1999 LES) integrated and reconciled: unioned loop-tool surface (handoff/export actions + les_hint coexist on resume), the LES iteration-cost denominators exclude handoff manifests (sev-2 from the adversarial review, fixed pre-tag), and the les_hint basis names its upper-bound approximation.
+- **Schema-diet defaults flipped: `PINCHER_TOOLSET` now defaults to `core`, `PINCHER_SCHEMA_STYLE` to `lean` ([#2003](https://github.com/kwad77/pincher/issues/2003), measured in [#2005](https://github.com/kwad77/pincher/pull/2005)).** The scale round delivered the measured decision #2003 deferred: at 10x corpus scale over the same 8-question run, the full/rich `tools/list` surface burned **1,440,781 total tokens vs 475,246 for core+lean at identical 8/8 accuracy** — 3.0x waste from the ~18.4k rich schema advertisement re-read every turn. By default pincher now advertises the 10 loop-essential tools (`search`, `symbol`, `symbols`, `context`, `trace`, `changes`, `batch`, `loop`, `verify_change`, `guide`) with lean first-sentence descriptions (~3.0k approx tokens, gate-tested under 4k). Every tool stays registered underneath in all modes — HTTP `POST /v1/<tool>` routes, the OpenAPI spec and `batch` sub-query dispatch keep the full 34-tool surface, and `guide` names the escape hatches when it recommends a non-advertised tool. Opt out with `PINCHER_TOOLSET=full` (or `--toolset full`) + `PINCHER_SCHEMA_STYLE=rich` to restore the pre-v1.6 advertisement (MINOR per RELEASING.md: behavior flip with env opt-out). The tool-contract golden now pins the FULL/rich surface explicitly; the new default surface gets its own gate (`TestToolContract_DefaultSurface`).
+- **`trace` / `changes` / `verify_change` descriptions now state graph-answer authority ([#2009](https://github.com/kwad77/pincher/pull/2009)).** Each description (both rich and lean schema styles) now says results are computed from the indexed symbol graph and are authoritative for caller/callee, count, and blast-radius questions — act on them directly, re-verify with text search only on a mid-task watermark change or an explicit warning. _Why:_ agents that don't trust graph answers re-verify them with grep/Read; an n=3 benchmark showed stating the trust policy halved agent turns at equal accuracy (48/48). Baking it into the descriptions reaches every MCP client without system-prompt coaching. The `guide` next-step why-strings for trace/changes carry the same note. core+lean schema weight: 3014 → 3094 approx tokens (budget 4000).
+
+### Fixed
+- **Startup DB discipline: read-only surfaces stop contending for the writer, and schema migrations are loud + consent-gated ([#1974](https://github.com/kwad77/pincher/issues/1974), [#1975](https://github.com/kwad77/pincher/issues/1975)).** `db.Open` no longer takes a write transaction when the store is already at the binary's schema version — startup is a pure read, so a long-running `pincher index` can no longer starve every new MCP server / `pincher web` / `pincher health-check` on the machine into a `database is locked` death (~17s busy-retry, then exit). `pincher web`, `pincher bench` (without `--persist`), and `pincher init`'s dashboard footer now open the store read-only outright. `pincher health-check` failures name the live writer ("DB locked by PID X, project Y, binary Z" from the `locks/` files) so starvation is distinguishable from a broken server. Upward schema migration of an _existing_ store is now an explicit decision (#1974): tagged release builds migrate automatically — loudly, with a pre-migration snapshot written to `<data-dir>/backups/` — while dev builds refuse with an actionable error unless `PINCHER_ALLOW_MIGRATE=1` is set, so an unreleased schema bump can never brick a shared store as a silent startup side effect. Fresh database creation is unaffected.
+- `pincher init --target=claude` now bakes `--data-dir` into the installed hook command when PINCHER_DATA_DIR is set — a bare `pincher hook-check` resolved the platform-default data dir, found no indexed projects, and passed everything through
+### DOGFOOD
+
+Friction found in this release window, and what happened to it:
+
+- **Found + corrected in-window:** the pre-merge "What's New" draft attributed the nine-language tree-sitter AST rollout to v1.6.0 — it shipped in v1.4.0 (its stubs were folded into the v1.4.0 changelog entry; the C++ Phase-2 commit is an ancestor of the `v1.4.0` tag). The release docs were fact-checked against the tree and corrected before publishing.
+- **Found, sev-2, deferred:** cross-PR emergent shape #2006 × #2007 — the new Glob hook advisory suggests `onboard_module`, which the new default `PINCHER_TOOLSET=core` session cannot `tools/call` (loud `-32602`, advisory-only so Glob still passes through; `search` in the same hint works). Recorded with a suggested fix in [docs/release-signoff-v1.6.0.md](docs/release-signoff-v1.6.0.md) §2; issue filing from the release environment was permission-denied, so it is flagged there for manual filing.
+- **Process note:** `CHANGELOG.d/2000.changed.md` / `2001.added.md` — the v1.5.0 release PR's own stub-gate entries — fold into this entry by design (each release PR's stub rides the next release).
+
 ## [1.5.0] — 2026-06-11 — The self-measuring loop: LES, pointer handoffs, compaction advisories, loopbench
 
 v1.5 closes the loop the v1.4 substrate opened: the loop now **measures
@@ -4265,7 +4317,8 @@ Highlights:
 - `docs/index.html`: single-file GitHub Pages landing page.
 - CI coverage gate lowered to 83% to match reality.
 
-[Unreleased]: https://github.com/kwad77/pincher/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/kwad77/pincher/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/kwad77/pincher/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/kwad77/pincher/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/kwad77/pincher/compare/v1.3.0-rc.1...v1.4.0
 [1.3.0-rc.1]: https://github.com/kwad77/pincher/compare/v1.2.0-rc.2...v1.3.0-rc.1
