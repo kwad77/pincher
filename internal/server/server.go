@@ -4564,7 +4564,7 @@ func (s *Server) registerTools() {
 	// 16. guide
 	s.addTool(&mcp.Tool{
 		Name:        "guide",
-		Description: "**Call first when you don't know which tool to use.** Takes a free-form task description (\"fix login retry bug\", \"refactor the auth middleware\", \"understand how indexing works\") and returns 2-3 recommended pincher tool calls with reasoning. A starter tool — eliminates the decision friction of choosing between search/context/trace/changes from scratch.",
+		Description: "**Call first when you don't know which tool to use.** Takes a free-form task description (\"fix login retry bug\", \"refactor the auth middleware\", \"understand how indexing works\") and returns 2-3 recommended pincher tool calls with reasoning. Phase-aware: a pasted stack trace routes to `investigate_failure`, a directory-shaped task (\"onboard internal/server/\") to `onboard_module`, pre-edit intent (\"what breaks if I change X\") to `plan_change`, caller questions (\"who calls X\") to `trace`, resumption (\"continue where I left off\") to the loop ledger or `adr` list, and multi-question tasks to `batch` when registered. Recommendations are ordered by this process's measured next_steps followed-rate once a tool has ≥10 emissions (not persisted across restarts). A starter tool — eliminates the decision friction of choosing between search/context/trace/changes from scratch.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["task"],"properties":{
 				"task":{"type":"string","description":"Free-form description of what you're trying to do (e.g. 'fix the login timeout bug', 'add caching to the API gateway', 'understand how the indexer handles symlinks')."},
@@ -11153,6 +11153,15 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	b.WriteString(line("With pincher:", commify(tokensUsed)+" tokens"))
 	b.WriteString(line("Saved:", "~"+commify(tokensSaved)+" tokens"+pct))
 	b.WriteString(line("Avg latency:", fmt.Sprintf("%d ms", avgLatency)))
+	// Guide-coaching PR-15/17: surface next_steps adherence — the
+	// counter was stamped on every envelope (#1631) but consumed by
+	// nothing, so a 0%-followed session went unnoticed. Process-
+	// lifetime scope, same as the other SESSION counters; suppressed
+	// when nothing has been emitted yet.
+	if emitted, followed := s.nextStepsAdherence.Stats(); emitted > 0 {
+		b.WriteString(line("next_steps followed:",
+			fmt.Sprintf("%d%% (%d emitted)", followed*100/emitted, emitted)))
+	}
 
 	// ALL-TIME section — only render when the DB has data (otherwise it's
 	// just a row of zeros, noisy for first-use).
@@ -11657,7 +11666,26 @@ const (
 	shapeToolAudit  guideShape = "tool_audit" // empirical audit of a tool's OUTPUT quality (#497) — "find FPs in dead_code", "audit search results"
 	shapeDeadCode   guideShape = "dead_code"  // unreachable / zero-caller / unused-function surveys — routes to the dead_code tool
 	shapeUnknown    guideShape = "unknown"    // fallback
+	// Composite-backed shapes (guide-coaching PR-15/17): the front door
+	// leads with the composite tool that answers the whole task in one
+	// call, instead of the generic search/architecture starter.
+	shapeFailure guideShape = "failure" // stack-trace / panic / file:line triage → investigate_failure
+	shapeOnboard guideShape = "onboard" // directory-shaped orientation → onboard_module
+	shapeResume  guideShape = "resume"  // session resumption — loop ledger when non-empty, else adr list
+	shapeBatch   guideShape = "batch"   // several distinct questions in one task → batch (when registered)
 )
+
+// compositeShapeTool maps a composite-backed shape to the tool its
+// recommendations lead with. computeGuide gates each shape on the
+// tool actually being registered in this process (s.tools) rather
+// than hardcoding availability, so the routing works both before and
+// after the PRs that add new composites (e.g. `batch`) merge. An
+// unregistered composite falls back to the legacy keyword path.
+var compositeShapeTool = map[guideShape]string{
+	shapeFailure: "investigate_failure",
+	shapeOnboard: "onboard_module",
+	shapeBatch:   "batch",
+}
 
 // pincherToolNames is the set of registered tool names a tool-output
 // audit task might reference (#497). Used by classifyTaskShape and
@@ -11777,6 +11805,15 @@ var auditBareThresholdPattern = regexp.MustCompile(
 // distinctive enough to stay plain substring checks.
 var refactorExtractWord = regexp.MustCompile(`\bextract\b`)
 
+// preEditWord (guide-coaching PR-15/17) matches pre-edit verbs in
+// LEADING position only ("change the retry policy", "modify
+// flushSession"). Leading-anchored rather than word-bounded because
+// "change" is too common as a noun mid-sentence ("fix the change
+// detection bug" is a fix task, "review my changes" is a review
+// task); as the task's first verb it unambiguously signals edit
+// intent, which wants plan_change's blast-radius preview first.
+var preEditWord = regexp.MustCompile(`^\s*(change|changing|modify|modifying|edit|editing)\b`)
+
 // reviewDiffWord (#937) word-bounds the "diff" review keyword so it
 // doesn't substring-match "difference" / "different" / "differentiate".
 // Same pattern as refactorExtractWord — bare `contains("diff")`
@@ -11785,13 +11822,135 @@ var refactorExtractWord = regexp.MustCompile(`\bextract\b`)
 // question about pincher's own tool surface.
 var reviewDiffWord = regexp.MustCompile(`\bdiff\b`)
 
+// fileLinePattern matches stack-frame-style `path/file.ext:123`
+// locations — the strongest single signal that a task is a pasted
+// failure (panic dump, traceback, compiler error) rather than a
+// described one. Extension capped at 5 word-chars so prose like
+// "ratio 1.5:1" doesn't trigger (no extension-shaped token).
+var fileLinePattern = regexp.MustCompile(`[\w./\\-]+\.\w{1,5}:\d+`)
+
+// enumItemPattern matches enumeration markers ("1. do X", "2) then Y")
+// at a line start or after whitespace. Two or more markers (or two or
+// more question marks) flag a multi-question task for batch routing.
+var enumItemPattern = regexp.MustCompile(`(^|\n|\s)\d{1,2}[.)]\s`)
+
+// resumeLeadPattern matches resumption phrasing where continue/resume
+// is the leading verb of the task ("continue the migration", "resume
+// where we stopped"). Leading-position anchoring keeps incidental uses
+// ("the loop should continue after errors") routed to their real shape.
+var resumeLeadPattern = regexp.MustCompile(`^\s*(continue|continuing|resume|resuming)\b`)
+
+// classifyCompositeTaskShape detects the task shapes that route to a
+// composite tool or to session-resumption (guide-coaching PR-15/17).
+// Runs BEFORE the keyword classifier: a pasted stack trace contains
+// "error"/"fix"-family tokens that would otherwise win, and a
+// directory-shaped task has no verb for the keyword path to grab.
+// Returns "" when no composite shape matches — the caller falls
+// through to classifyKeywordTaskShape.
+//
+// Pure function. Runtime gating (is the composite actually registered
+// in this process? is the loop ledger non-empty?) happens in
+// computeGuide, not here, so the classifier stays unit-testable.
+func classifyCompositeTaskShape(task string) guideShape {
+	t := strings.ToLower(task)
+	contains := func(needles ...string) bool {
+		for _, n := range needles {
+			if strings.Contains(t, n) {
+				return true
+			}
+		}
+		return false
+	}
+	switch {
+	// Stack-trace-looking task → investigate_failure. file:line frames
+	// fire on their own; bare failure words ("panic", "error:") only
+	// fire on multi-line tasks, so a described bug ("fix panic in the
+	// indexer") still routes to the shapeFix search flow while a pasted
+	// dump routes to the composite that parses it.
+	case fileLinePattern.MatchString(task),
+		contains("stack trace", "stacktrace", "traceback", "goroutine ", "segfault", "core dump"),
+		strings.Contains(task, "\n") && contains("panic", "error:", "exception", "fatal error", "assertion failed"):
+		return shapeFailure
+	// Directory-shaped / orientation task → onboard_module. Strong
+	// signals only: an explicit onboard/orient verb, or a token with a
+	// trailing slash ("internal/server/"). The weaker "contains / but
+	// no extension" form is handled in classifyKeywordTaskShape's
+	// default branch so verb-ful tasks ("find pkg/sub") keep their
+	// keyword routing.
+	case contains("onboard", "orient", "get up to speed", "ramp up", "familiarize", "familiarise", "new to this"),
+		hasTrailingSlashToken(task):
+		return shapeOnboard
+	// Resumption → loop resume (ledger-gated in computeGuide) or adr
+	// list. Leading continue/resume verb, or the idiomatic phrases.
+	case resumeLeadPattern.MatchString(t),
+		contains("where was i", "where did i leave", "left off", "pick up where", "pick up from"):
+		return shapeResume
+	// Several distinct questions in one task → batch (registration-
+	// gated in computeGuide). ≥2 question marks or ≥2 enumeration
+	// markers.
+	case strings.Count(task, "?") >= 2,
+		len(enumItemPattern.FindAllString(task, 3)) >= 2:
+		return shapeBatch
+	}
+	return ""
+}
+
+// hasTrailingSlashToken reports whether any whitespace-separated token
+// of the task ends in "/" after trimming surrounding punctuation —
+// the unambiguous "this is a directory" spelling ("internal/server/").
+func hasTrailingSlashToken(task string) bool {
+	for _, tok := range strings.Fields(task) {
+		tok = strings.Trim(tok, `"'`+"`()[]{},;:")
+		if len(tok) > 1 && strings.HasSuffix(tok, "/") {
+			return true
+		}
+	}
+	return false
+}
+
+// directoryHintFromTask extracts the most directory-looking token from
+// a task ("onboard me on internal/ast" → "internal/ast"). Prefers a
+// trailing-slash token, then any token containing "/" whose last
+// segment has no extension. Returns "" when the task names no path —
+// the caller falls back to a placeholder.
+func directoryHintFromTask(task string) string {
+	var fallback string
+	for _, tok := range strings.Fields(task) {
+		tok = strings.Trim(tok, `"'`+"`()[]{},;:")
+		if len(tok) <= 1 || !strings.Contains(tok, "/") {
+			continue
+		}
+		if strings.HasSuffix(tok, "/") {
+			return tok
+		}
+		last := tok[strings.LastIndex(tok, "/")+1:]
+		if fallback == "" && !strings.Contains(last, ".") {
+			fallback = tok
+		}
+	}
+	return fallback
+}
+
 // classifyTaskShape inspects a task description and returns the most
-// likely intent. Keyword-based heuristic — no parsing or NLP. Order
+// likely intent. Composite shapes (stack-trace triage, directory
+// onboarding, resumption, multi-question batch) are detected first;
+// everything else falls through to the keyword heuristic.
+//
+// Pure function; pinned by tests so future tweaks don't drift.
+func classifyTaskShape(task string) guideShape {
+	if shape := classifyCompositeTaskShape(task); shape != "" {
+		return shape
+	}
+	return classifyKeywordTaskShape(task)
+}
+
+// classifyKeywordTaskShape is the legacy keyword path (pre-composite
+// fallback). Keyword-based heuristic — no parsing or NLP. Order
 // matters: the first matching shape wins because some keywords
 // overlap ("fix tests" → tests, not fix).
 //
 // Pure function; pinned by tests so future keyword tweaks don't drift.
-func classifyTaskShape(task string) guideShape {
+func classifyKeywordTaskShape(task string) guideShape {
 	t := strings.ToLower(task)
 	contains := func(needles ...string) bool {
 		for _, n := range needles {
@@ -11877,6 +12036,12 @@ func classifyTaskShape(task string) guideShape {
 		return shapeAudit
 	case contains("test", "spec ", "coverage"):
 		return shapeTest
+	// Guide-coaching PR-15/17: "blast radius of <symbol>" is a caller
+	// question — trace answers it. Only when the task doesn't mention a
+	// change/diff/commit; "blast radius of this change" stays a review
+	// task (the `changes` tool maps the diff to impacted callers).
+	case contains("blast radius") && !contains("change", "diff", "commit", "review"):
+		return shapeTraceIn
 	// #937: "diff" word-bounded so it doesn't substring-match
 	// "difference" / "different" / "differentiate" — meta questions
 	// about pincher's own tool surface ("what's the difference between
@@ -11892,7 +12057,13 @@ func classifyTaskShape(task string) guideShape {
 	// "extract the error-wrapping helper"). Pre-fix those routed to
 	// shapeFix and guide recommended a bug-hunt search flow.
 	case contains("refactor", "rename", "restructure", "clean up") ||
-		refactorExtractWord.MatchString(t):
+		refactorExtractWord.MatchString(t) ||
+		// Guide-coaching PR-15/17: pre-edit intent. "what breaks if I
+		// change X" / "modify the retry loop" is the plan_change use
+		// case — the agent is about to edit and wants the blast radius
+		// first. Word-bounded so "changes"/"changelog" don't match.
+		contains("what breaks", "what would break", "will break") ||
+		preEditWord.MatchString(t):
 		// Note: "split", "move" intentionally NOT in this list — both are
 		// also nouns ("FTS5 split", "the move detector") and would over-
 		// match. Lose those signal words rather than false-positive.
@@ -11940,11 +12111,21 @@ func classifyTaskShape(task string) guideShape {
 	case contains("find ", "where is", "where are", "locate", "look up", "lookup"):
 		return shapeFind
 	default:
+		// Guide-coaching PR-15/17: a verb-less task that's basically a
+		// directory path ("internal/server", "pkg/sub") is an
+		// orientation request — onboard_module answers it in one call.
+		// Only fires here in the default branch so verb-ful tasks
+		// ("find pkg/sub", "who calls os.Stat") keep their keyword
+		// routing; an extension-bearing path ("cmd/pinch/stats.go") is
+		// a file, not a directory, and falls through to shapeFind.
+		if directoryHintFromTask(task) != "" {
+			return shapeOnboard
+		}
 		// #290: fall back to `find` when the task carries a qualified
-		// identifier (`os.Stat`, `pkg/sub`, `Class::method`). A user
-		// typing those almost always wants to *find* it, even without
-		// a verb keyword. Better than `unknown` which routes to a
-		// generic architecture+search recommendation.
+		// identifier (`os.Stat`, `Class::method`). A user typing those
+		// almost always wants to *find* it, even without a verb
+		// keyword. Better than `unknown` which routes to a generic
+		// architecture+search recommendation.
 		if qualifiedIdentifierHint(task) != "" {
 			return shapeFind
 		}
@@ -11988,7 +12169,12 @@ var domainConcepts = []struct {
 		why:      "extractors self-register in init() — see internal/ast/registry.go for the Extractor interface; existing extractors are the template",
 	},
 	{
-		patterns: []string{"git diff", "blast radius", "changed_files", "scope=base", "compare branches"},
+		// Guide-coaching PR-15/17: "blast radius" removed from this
+		// pattern list (#616-style tighten) — it's a caller/impact
+		// question owned by the shape router now (shapeTraceIn for a
+		// named symbol, shapeReview for a diff), not a pointer at
+		// pincher's git-diff internals.
+		patterns: []string{"git diff", "changed_files", "scope=base", "compare branches"},
 		tool:     "search",
 		args:     `{"query":"runGitDiff"}`,
 		why:      "git diff handling lives in runGitDiff / parseGitDiffFiles (internal/server/server.go) — that's where scope=base:<branch> dispatches",
@@ -12191,11 +12377,18 @@ func guideRecommendations(shape guideShape, taskHint, auditedTool, fullTask stri
 				"why": "find similar existing code; copy its shape rather than reinvent"},
 		}
 	case shapeRefactor:
+		// Guide-coaching PR-15/17: pre-edit tasks lead with the
+		// plan_change composite — one call returns depth-1/2 callers,
+		// package-boundary crossings, intersecting tests, and related
+		// ADRs, replacing the search → trace → changes → adr sequence.
+		planArgs := nextStepArgs(map[string]any{"target": taskHint})
 		return []map[string]string{
+			{"tool": "plan_change", "args": planArgs,
+				"why": "pre-edit composite: depth-1 (CRITICAL) + depth-2 (HIGH) callers, boundary crossings, intersecting tests, and related ADRs in one call — see the blast radius before touching anything"},
 			{"tool": "search", "args": queryArgs,
-				"why": "locate the symbol you want to refactor"},
+				"why": "if plan_change's name resolution picked the wrong target, confirm the exact symbol and re-run with its id"},
 			{"tool": "trace", "args": `{"name":"<symbol-name>","direction":"inbound"}`,
-				"why": "find callers — refactors that miss callers cause regressions"},
+				"why": "deeper caller traversal when the depth-2 blast radius isn't enough"},
 		}
 	case shapeUnderstand:
 		return []map[string]string{
@@ -12282,18 +12475,70 @@ func guideRecommendations(shape guideShape, taskHint, auditedTool, fullTask stri
 				"why": "for each FP cluster, read the symbol's source to identify the missed-edge mechanism (interface dispatch, runtime invocation, build-tag gate, etc.)"},
 		}
 	case shapeTraceIn:
+		// Guide-coaching PR-15/17: caller questions lead with trace —
+		// it IS the answer. search demoted to the recovery step for
+		// when the extracted name doesn't resolve.
 		return []map[string]string{
-			{"tool": "search", "args": queryArgs,
-				"why": "first confirm the exact symbol name; ambiguous names trace the wrong target"},
 			{"tool": "trace", "args": traceInArgs,
 				"why": "find every caller (CRITICAL=direct, HIGH=2 hops, MEDIUM=3 hops)"},
+			{"tool": "search", "args": queryArgs,
+				"why": "if trace can't resolve the name (ambiguous or misspelled), confirm the exact symbol and re-trace"},
 		}
 	case shapeTraceOut:
 		return []map[string]string{
-			{"tool": "search", "args": queryArgs,
-				"why": "first confirm the exact symbol name"},
 			{"tool": "trace", "args": traceOutArgs,
 				"why": "find what this symbol calls (downstream dependency map)"},
+			{"tool": "search", "args": queryArgs,
+				"why": "if trace can't resolve the name, confirm the exact symbol and re-trace"},
+		}
+	case shapeFailure:
+		// Guide-coaching PR-15/17: a pasted stack trace / panic dump
+		// routes to the investigate_failure composite, which parses
+		// the frames itself — pass the raw task as error_text.
+		failArgs := nextStepArgs(map[string]any{"error_text": fullTask})
+		return []map[string]string{
+			{"tool": "investigate_failure", "args": failArgs,
+				"why": "composite bug-hunt: parses the stack-trace frames, ranks suspects by frame-match + recent-change + caller fan-in — replaces the manual search × trace × changes loop"},
+			{"tool": "context", "args": `{"id":"<top-suspect-from-investigate_failure>"}`,
+				"why": "read the top suspect with its dependencies before editing"},
+			{"tool": "trace", "args": `{"name":"<suspect-name>","direction":"inbound"}`,
+				"why": "check upstream callers if the fix changes behaviour"},
+		}
+	case shapeOnboard:
+		dir := directoryHintFromTask(fullTask)
+		if dir == "" {
+			dir = "<directory>"
+		}
+		onboardArgs := nextStepArgs(map[string]any{"directory": dir})
+		return []map[string]string{
+			{"tool": "onboard_module", "args": onboardArgs,
+				"why": "composite orientation: entry points, exported surface, language breakdown, and inbound/outbound boundary edges for the directory in one call"},
+			{"tool": "context", "args": `{"id":"<entry-point-from-onboard_module>"}`,
+				"why": "read the main entry point with its imports once the module map is in hand"},
+			{"tool": "architecture", "args": `{}`,
+				"why": "zoom out to whole-project hotspots if the module's boundaries point elsewhere"},
+		}
+	case shapeResume:
+		// Default resumption recipe when there is no loop checkpoint to
+		// restore (computeGuide prepends the loop-resume call when the
+		// ledger is non-empty AND the loop tool is registered).
+		return []map[string]string{
+			{"tool": "adr", "args": `{"action":"list"}`,
+				"why": "recover persisted decisions, conventions, and gotchas from prior sessions — project memory survives restarts"},
+			{"tool": "changes", "args": `{}`,
+				"why": "map uncommitted work to symbols + blast radius — the fastest way to see where the last session stopped"},
+		}
+	case shapeBatch:
+		// Several distinct questions in one task. Only reachable when
+		// the batch tool is registered (computeGuide gates on s.tools);
+		// the args example carries one sub-call per detected question.
+		calls := batchCallsFromTask(fullTask, taskHint)
+		batchArgs := nextStepArgs(map[string]any{"calls": calls})
+		return []map[string]string{
+			{"tool": "batch", "args": batchArgs,
+				"why": "the task carries several distinct questions — batch runs one sub-call per question in a single round-trip instead of N sequential calls"},
+			{"tool": "context", "args": `{"id":"<from-batch-results>"}`,
+				"why": "deep-read whichever sub-answer needs follow-up"},
 		}
 	default:
 		// Unknown shape — orient first, then ask a refined question.
@@ -12304,6 +12549,47 @@ func guideRecommendations(shape guideShape, taskHint, auditedTool, fullTask stri
 				"why": "best-effort search using your task keywords; refine the query after seeing results"},
 		}
 	}
+}
+
+// batchCallsFromTask splits a multi-question task into per-question
+// search sub-calls for the batch args example (guide-coaching
+// PR-15/17). Question-mark tasks split on "?"; enumerated lists
+// ("1. … 2. …") split on the markers. Each part contributes a search
+// call keyed on its own extracted hint; capped at 3 so the example
+// stays readable. Never returns empty — falls back to one call on the
+// overall hint.
+func batchCallsFromTask(task, overallHint string) []map[string]any {
+	var parts []string
+	if strings.Count(task, "?") >= 2 {
+		parts = strings.Split(task, "?")
+	} else {
+		parts = enumItemPattern.Split(task, -1)
+	}
+	var calls []map[string]any
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		hint := taskHintFromString(p)
+		if hint == "" {
+			continue
+		}
+		calls = append(calls, map[string]any{
+			"tool": "search",
+			"args": map[string]any{"query": hint},
+		})
+		if len(calls) == 3 {
+			break
+		}
+	}
+	if len(calls) == 0 {
+		calls = append(calls, map[string]any{
+			"tool": "search",
+			"args": map[string]any{"query": overallHint},
+		})
+	}
+	return calls
 }
 
 // taskHintFromString extracts the most discriminating phrase from a
@@ -12661,6 +12947,19 @@ func (s *Server) handleGuide(ctx context.Context, req *mcp.CallToolRequest) (*mc
 // are not re-scoped).
 func (s *Server) computeGuide(task, projectArg string) (shape guideShape, hint string, recommendations []map[string]string, projectWarning string) {
 	shape = classifyTaskShape(task)
+	// Guide-coaching PR-15/17: composite-backed shapes only survive
+	// when their tool is actually registered in this process. Checked
+	// at runtime (s.tools) rather than hardcoded so the routing works
+	// before and after the PRs adding new composites (e.g. `batch`)
+	// merge. Unregistered → legacy keyword path, exactly the pre-PR
+	// behavior.
+	if required, gated := compositeShapeTool[shape]; gated && !s.toolRegistered(required) {
+		fallback := classifyKeywordTaskShape(task)
+		if t, g := compositeShapeTool[fallback]; fallback == shape || (g && !s.toolRegistered(t)) {
+			fallback = shapeUnknown
+		}
+		shape = fallback
+	}
 	hint = taskHintFromString(task)
 	if hint == "" {
 		// Fall back to the first non-trivial token so search args isn't
@@ -12688,6 +12987,20 @@ func (s *Server) computeGuide(task, projectArg string) (shape guideShape, hint s
 	// the hint string usually drops it.
 	auditedTool := extractAuditedTool(strings.ToLower(task))
 	recommendations = guideRecommendations(shape, hint, auditedTool, task)
+	// Guide-coaching PR-15/17: resumption only earns the loop-resume
+	// recommendation when (a) the loop ledger (loop_checkpoints,
+	// schema v40) exists and is non-empty for this project, and (b) a
+	// `loop` tool is registered to act on it. Otherwise the adr-list
+	// recipe from guideRecommendations stands — there's nothing to
+	// resume.
+	if shape == shapeResume && s.toolRegistered("loop") {
+		if pid, err := s.resolveProjectID(projectArg); err == nil && s.store.LoopLedgerNonEmpty(pid) {
+			recommendations = append([]map[string]string{{
+				"tool": "loop", "args": `{"action":"resume"}`,
+				"why": "the loop ledger has checkpoints for this project — resume restores the last checkpoint's stage and evidence instead of re-acquiring context from scratch",
+			}}, recommendations...)
+		}
+	}
 	// #397: if the task mentions a pincher-domain concept, prepend a
 	// concept-aware starter that points at the actual file/symbol where
 	// the concept lives. The shape-default recommendations follow as
@@ -12695,7 +13008,61 @@ func (s *Server) computeGuide(task, projectArg string) (shape guideShape, hint s
 	if cc := domainConceptHint(task); cc != nil {
 		recommendations = append([]map[string]string{*cc}, recommendations...)
 	}
+	// Adherence flywheel (guide-coaching PR-15/17): order the final
+	// list by historical followed-rate where the signal is strong
+	// enough. Process-lifetime counters only — see
+	// nextStepsAdherenceTracker; tools below adherenceRankMinEmitted
+	// emissions keep their shape-driven positions.
+	recommendations = s.rankRecommendationsByAdherence(recommendations)
 	return shape, hint, recommendations, projectWarning
+}
+
+// toolRegistered reports whether a tool name is registered on this
+// server instance. s.tools is written only during registerTools (start-
+// up) and read-only afterwards, so the lookup is safe without a lock.
+func (s *Server) toolRegistered(name string) bool {
+	_, ok := s.tools[name]
+	return ok
+}
+
+// rankRecommendationsByAdherence reorders guide's recommendations by
+// each tool's process-lifetime followed-rate (followed / emitted from
+// the next_steps adherence tracker, #1631), but only among entries
+// whose tool has ≥ adherenceRankMinEmitted emissions this process —
+// below that the rate is noise. Entries without enough signal keep
+// their exact shape-driven positions; the qualifying entries are
+// stable-sorted by rate descending and re-inserted into the same
+// slots. NOT persisted: counters reset on server restart (documented
+// scope — no schema change this iteration).
+func (s *Server) rankRecommendationsByAdherence(recs []map[string]string) []map[string]string {
+	if len(recs) < 2 {
+		return recs
+	}
+	type scored struct {
+		idx  int
+		rate float64
+	}
+	var eligible []scored
+	for i, r := range recs {
+		emitted, followed := s.nextStepsAdherence.ToolStats(r["tool"])
+		if emitted >= adherenceRankMinEmitted {
+			eligible = append(eligible, scored{idx: i, rate: float64(followed) / float64(emitted)})
+		}
+	}
+	if len(eligible) < 2 {
+		return recs
+	}
+	slots := make([]int, len(eligible))
+	for i, e := range eligible {
+		slots[i] = e.idx
+	}
+	sort.SliceStable(eligible, func(a, b int) bool { return eligible[a].rate > eligible[b].rate })
+	out := make([]map[string]string, len(recs))
+	copy(out, recs)
+	for i, e := range eligible {
+		out[slots[i]] = recs[e.idx]
+	}
+	return out
 }
 
 // extractTextFromHTML strips HTML markup and returns (title, bodyText).

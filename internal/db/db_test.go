@@ -603,6 +603,7 @@ var readerRoutedStoreMethods = map[string]bool{
 	"SearchSymbolsByCorpus":          true,
 	"FTS5Fragmentation":              true, // #1612 v0.87: per-corpus shadow-table COUNT(*)s.
 	"SettingSymbolCountsByProject":   true, // .pincherignore settings_flood advisory: one aggregate GROUP BY over symbols.
+	"LoopLedgerNonEmpty":             true, // guide-coaching PR-15/17: sqlite_master probe + EXISTS on loop_checkpoints. Pure SELECTs.
 	"LoadPendingEdgesByKindAndFiles": true, // #1629 v0.87: scoped pending-edges load for incremental resolve.
 	"EdgesFrom":                      true,
 	"EdgesFromScoped":                true,
