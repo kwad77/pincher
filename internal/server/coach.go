@@ -44,6 +44,14 @@ package server
 //     counts-only with est_tokens_left_on_table = 0 and a basis that
 //     says counts-only.
 //
+//  6. les_regression — LES (the Loop Efficiency Score, ADR
+//     LOOP_EFFICIENCY_METRIC) compared week-over-week: when a
+//     sub-metric regressed vs the prior 7d window, one finding names
+//     the biggest mover. iteration_cost and waste_rate regressions are
+//     priced from recorded numbers; recovery_load and
+//     continuation_fidelity are counts-only (est 0 — their token cost
+//     isn't recorded). See les.go.
+//
 // Fewer than coachMinCallsForFindings calls in the window returns empty
 // findings plus a note — small samples would price noise, not patterns.
 
@@ -192,6 +200,13 @@ func (s *Server) handleCoach(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		findings = append(findings, f)
 	}
 	if f := s.coachHookFallThrough(window, since); f != nil {
+		findings = append(findings, f)
+	}
+	// LES week-over-week regression (ADR LOOP_EFFICIENCY_METRIC).
+	// Always computed over trailing-7d vs prior-7d from persisted
+	// telemetry, whichever coach window was asked for — the basis
+	// string says so. Nil when the prior week has no recorded calls.
+	if f := s.coachLESRegression(now); f != nil {
 		findings = append(findings, f)
 	}
 

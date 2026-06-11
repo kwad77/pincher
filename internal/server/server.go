@@ -289,6 +289,24 @@ type Server struct {
 	statsQueriesZeroExpected   int64
 	statsQueriesZeroUnexpected int64
 
+	// LES (ADR LOOP_EFFICIENCY_METRIC) session counters — see les.go.
+	// statsErrorEnvelopes counts top-level IsError responses at the
+	// withRequestID middleware (error paths never reach
+	// jsonResultWithMeta, so statsCalls excludes them). The
+	// statsWarn* counters tally warnings_v2 codes on the envelope hot
+	// path; statsInvestigateFailureCalls and lesLoopOpenedSession feed
+	// recovery_load and continuation_fidelity. In-memory only —
+	// persisting warning-code occurrences would need a schema
+	// migration and is deliberately deferred; the 7d LES basis strings
+	// document the omission.
+	statsErrorEnvelopes          int64
+	statsWarnBudgetTruncated     int64
+	statsWarnPlanStale           int64
+	statsWarnUnpredictedImpact   int64
+	statsWarnIndexMoved          int64
+	statsInvestigateFailureCalls int64
+	lesLoopOpenedSession         int32
+
 	// #1631 v0.85: in-conversation next_steps adherence telemetry.
 	// Tracks emitted vs followed recommendations per session so the
 	// dashboard can surface `adherence_pct = followed / emitted` — the
@@ -4517,7 +4535,7 @@ func (s *Server) registerTools() {
 	// for the pattern catalogue (including the honestly-dropped one).
 	s.addTool(&mcp.Tool{
 		Name:        "coach",
-		Description: "**Retro-coaching from pincher's own usage telemetry.** Mines the recorded per-call events (session_tool_calls), the query-failure counters, and hook_invocations for the current session (default) or the trailing 7 days, and returns priced findings — \"you did X N times; pattern Y would have cost ~Z fewer tokens\" — every number computed from recorded telemetry, each finding carrying a `basis` string documenting the arithmetic. Patterns: `single_fact_burst` (≥3 sub-600-token search/symbol/trace calls → batch with `symbols`), `unbudgeted_heavy_context` (context/symbols responses >2000 tokens → cap with `fields`/`lite`), `zero_result_churn` (unexpected-empty queries → recover with `why_empty`), `hook_fall_through` (ignored PreToolUse redirects; counts-only when the schema lacks per-row token estimates). Returns empty findings plus a note when fewer than 10 calls are recorded in the window — never extrapolates from noise.",
+		Description: "**Retro-coaching from pincher's own usage telemetry.** Mines the recorded per-call events (session_tool_calls), the query-failure counters, and hook_invocations for the current session (default) or the trailing 7 days, and returns priced findings — \"you did X N times; pattern Y would have cost ~Z fewer tokens\" — every number computed from recorded telemetry, each finding carrying a `basis` string documenting the arithmetic. Patterns: `single_fact_burst` (≥3 sub-600-token search/symbol/trace calls → batch with `symbols`), `unbudgeted_heavy_context` (context/symbols responses >2000 tokens → cap with `fields`/`lite`), `zero_result_churn` (unexpected-empty queries → recover with `why_empty`), `hook_fall_through` (ignored PreToolUse redirects; counts-only when the schema lacks per-row token estimates), `les_regression` (the Loop Efficiency Score moved against you week-over-week — names which sub-metric regressed: iteration_cost, waste_rate, recovery_load, or continuation_fidelity; priced from recorded numbers where possible, counts-only otherwise). Returns empty findings plus a note when fewer than 10 calls are recorded in the window — never extrapolates from noise.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"window":{"type":"string","enum":["session","7d"],"description":"Telemetry window to analyze. \"session\" (default) = this process's recorded calls; \"7d\" = trailing 7 days across all sessions."},
@@ -4574,7 +4592,7 @@ func (s *Server) registerTools() {
 	// PR-8/9). ADR holds conventions; the ledger holds in-flight work.
 	s.addTool(&mcp.Tool{
 		Name:        "loop",
-		Description: "**Durable work-state for multi-iteration agent loops.** Actions: `start` (open a named loop with its framing claim), `checkpoint` (append one iteration's {claim, decision, confidence, reopen_trigger, evidence} — the capture step of an evidence-gated loop), `list` (loops, or one loop's checkpoints), `resume` (ONE bounded brief — recent checkpoints + open reopen_triggers + ADR keys + whether the index changed since the last checkpoint — so a fresh session or a different model picks up mid-flight work in a single call instead of re-reading transcripts). Checkpoints stamp the index watermark at write time; `resume` warns via warnings_v2 code=index_moved_since_checkpoint when the graph moved. Pass max_tokens to bound the brief (default ~800).",
+		Description: "**Durable work-state for multi-iteration agent loops.** Actions: `start` (open a named loop with its framing claim), `checkpoint` (append one iteration's {claim, decision, confidence, reopen_trigger, evidence} — the capture step of an evidence-gated loop), `list` (loops, or one loop's checkpoints), `resume` (ONE bounded brief — recent checkpoints + open reopen_triggers + ADR keys + whether the index changed since the last checkpoint — so a fresh session or a different model picks up mid-flight work in a single call instead of re-reading transcripts). Checkpoints stamp the index watermark at write time; `resume` warns via warnings_v2 code=index_moved_since_checkpoint when the graph moved, and carries a one-line `les_hint` (recorded tokens per non-empty-decision checkpoint) when this loop's LES iteration_cost is computable. Pass max_tokens to bound the brief (default ~800).",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["action"],"properties":{
 				"action":{"type":"string","enum":["start","checkpoint","list","resume"],"description":"start=open a named loop; checkpoint=append an iteration record; list=loops or one loop's checkpoints; resume=bounded brief to continue mid-flight work."},
@@ -4629,7 +4647,7 @@ func (s *Server) registerTools() {
 	// 14. stats — session savings + cumulative counters. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
 		Name:        "stats",
-		Description: "**Use to track context-budget savings** for the current session and all-time. Returns a text-rendered box (not JSON) with three sections: SESSION (process uptime, tool calls, tokens-without-pincher baseline, tokens-with-pincher, tokens saved with bounded %, avg latency), ALL-TIME (cumulative tool calls / tokens used / tokens saved across every persisted session — rendered only when the DB has historical data), and PROJECT (name, files, symbols, edges for the session or `project`-arg-resolved project). Process uptime (#420) lets the agent distinguish \"session counters low because the inner respawned 30s ago\" from \"session counters low because nothing has happened.\" Useful as a sanity check that pincher tools are being preferred over `Read`/`Grep` — if `Saved` is 0 after a chunk of work, the agent is probably bypassing the index.",
+		Description: "**Use to track context-budget savings** for the current session and all-time. Returns a text-rendered box (not JSON) with three sections: SESSION (process uptime, tool calls, tokens-without-pincher baseline, tokens-with-pincher, tokens saved with bounded %, avg latency), ALL-TIME (cumulative tool calls / tokens used / tokens saved across every persisted session — rendered only when the DB has historical data), and PROJECT (name, files, symbols, edges for the session or `project`-arg-resolved project). Process uptime (#420) lets the agent distinguish \"session counters low because the inner respawned 30s ago\" from \"session counters low because nothing has happened.\" Useful as a sanity check that pincher tools are being preferred over `Read`/`Grep` — if `Saved` is 0 after a chunk of work, the agent is probably bypassing the index. SESSION also carries LES, the Loop Efficiency Score (one line for this session, one for the trailing 7 days; each suppressed when its window has no recorded calls): i=tokens per non-empty-decision loop checkpoint, w=waste rate, r=recovery load, f=continuation fidelity — all computed from recorded telemetry, `-` when a sub-metric isn't computable. Diagnostic only, never a gate; `coach` explains week-over-week LES movement.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string","description":"Project to include in index size breakdown. Defaults to session project."}
@@ -11588,6 +11606,32 @@ func (s *Server) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		b.WriteString(line("next_steps followed:",
 			fmt.Sprintf("%d%% (%d emitted)", followed*100/emitted, emitted)))
 	}
+	// LES — the Loop Efficiency Score (ADR LOOP_EFFICIENCY_METRIC):
+	// i=tokens per non-empty-decision loop checkpoint, w=waste rate,
+	// r=recovery load, f=continuation fidelity; "-" = not computable
+	// from recorded data (never a fake zero). One line for this
+	// session, one for the trailing 7 days; each suppressed when its
+	// window has no recorded calls. Rendered with a narrower label
+	// column than line() because the four sub-metrics need up to 24
+	// value chars and the standard 20-char label column caps values at
+	// 21. See les.go for sub-metric definitions + documented omissions.
+	lesRow := func(label, value string) string {
+		content := fmt.Sprintf("  %-15s %s", label, value)
+		if len(content) < w {
+			content += strings.Repeat(" ", w-len(content))
+		}
+		return "│" + content + "│\n"
+	}
+	lesNow := time.Now()
+	// Gate on the snapshot's own live call count, not the (possibly
+	// DB-backfilled) `calls` display variable — the session LES line
+	// describes THIS process's session only.
+	if sess := s.lesSessionSnapshot(lesNow); sess.totalCalls > 0 {
+		b.WriteString(lesRow("LES (session):", lesLineValue(sess, true)))
+	}
+	if w7 := s.lesWindowSnapshot(lesNow.Add(-7*24*time.Hour), lesNow.Add(time.Second)); w7.totalCalls > 0 {
+		b.WriteString(lesRow("LES (7d):", lesLineValue(w7, false)))
+	}
 
 	// ALL-TIME section — only render when the DB has data (otherwise it's
 	// just a row of zeros, noisy for first-use).
@@ -13971,6 +14015,11 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 		// Query-failure / retry-rate counters (#241). Only the four
 		// query-shaped tools contribute; everything else is a no-op.
 		s.recordQueryMetrics(tool, args, data, tokensUsed)
+
+		// LES (ADR LOOP_EFFICIENCY_METRIC): tally warnings_v2 codes +
+		// the recovery/fidelity signals this envelope carries. Cheap —
+		// a map lookup plus a scan only when warnings_v2 is present.
+		s.recordLESSignals(tool, meta, newCalls)
 
 		// #635 v0.64: append per-call event for dashboard triangulating
 		// panels. Buffer is drained by flushSession every 10s; cap is the
