@@ -319,20 +319,24 @@ func TestLargestSymbolInFile(t *testing.T) {
 	if err := store.BulkUpsertSymbols(syms); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	id, err := store.LargestSymbolInFile("p1", "f.go")
+	id, span, err := store.LargestSymbolInFile("p1", "f.go")
 	if err != nil {
 		t.Fatalf("largest: %v", err)
 	}
 	if id != "p1::big#Function" {
 		t.Errorf("largest = %q, want p1::big#Function", id)
 	}
+	// hook-redirect-v2: span feeds est_tokens_served telemetry.
+	if span != 4900 {
+		t.Errorf("span = %d, want 4900 (5000-100)", span)
+	}
 
-	// Empty file: returns ("", nil) — best-effort, not a hard error.
-	id, err = store.LargestSymbolInFile("p1", "missing.go")
+	// Empty file: returns ("", 0, nil) — best-effort, not a hard error.
+	id, span, err = store.LargestSymbolInFile("p1", "missing.go")
 	if err != nil {
 		t.Errorf("missing file should not error; got %v", err)
 	}
-	if id != "" {
-		t.Errorf("missing file should return empty id; got %q", id)
+	if id != "" || span != 0 {
+		t.Errorf("missing file should return empty id + zero span; got %q / %d", id, span)
 	}
 }

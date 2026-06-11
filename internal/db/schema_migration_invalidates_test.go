@@ -51,10 +51,10 @@ func TestSchemaMigrationInvalidates_ClassificationCount(t *testing.T) {
 			nothingN++
 		}
 	}
-	// Snapshot as of v39 (38 migration entries): 33 Nothing / 5 All.
-	// v38→v39 added edges.provenance_tier DEFAULT 'EXTRACTED' — pure
-	// additive DDL, classified Nothing (#1945 / ADR-0005).
-	const wantNothing = 33
+	// Snapshot as of v40 (39 migration entries): 34 Nothing / 5 All.
+	// v39→v40 added hook_invocations.est_tokens_served + baseline_tokens
+	// (hook-redirect-v2) — telemetry-only columns, classified Nothing.
+	const wantNothing = 34
 	const wantAll = 5
 	if nothingN != wantNothing || allN != wantAll {
 		t.Errorf("classification drifted: got Nothing=%d All=%d, want Nothing=%d All=%d. If you intentionally added/changed a migration's invalidates value, update these constants AND the rationale block in db.go.",
