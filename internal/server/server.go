@@ -4495,7 +4495,7 @@ func (s *Server) registerTools() {
 	// right cluster of code + recent changes.
 	s.addTool(&mcp.Tool{
 		Name:        "context_for_task",
-		Description: "**Call when you're investigating a feature/bug and need the cluster, not one symbol.** Takes either a free-form task (\"fix the login retry bug\") OR a `seed_id` from a prior `search`. Composes one envelope: top-N matching seeds via `search`, each seed's source + direct deps via `context`, callers + callees up to depth=2 via `trace direction=both`, and any `changes` overlap with the resolved seeds. Replaces the typical 5-10 atomic calls an agent loop fires when picking up an investigation. Returns `{seeds, neighbors, callers, callees, recent_changes}` plus `_meta.empty_reason` if no seeds resolve.",
+		Description: "**Call when you're investigating a feature/bug and need the cluster, not one symbol.** Takes either a free-form task (\"fix the login retry bug\") OR a `seed_id` from a prior `search`. Composes one envelope: top-N matching seeds via `search`, each seed's source + direct deps via `context`, callers + callees up to depth=2 via `trace direction=both`, and any `changes` overlap with the resolved seeds. Replaces the typical 5-10 atomic calls an agent loop fires when picking up an investigation. Returns `{seeds, neighbors, callers, callees, recent_changes}` plus `_meta.empty_reason` if no seeds resolve. Task-mode responses carry `_meta.seed_quality` (high/medium/low); when no seed NAME overlaps the task's tokens the response degrades to `mode:suggestions_only` (seed metadata, ~300 tokens) instead of a likely wrong-cluster envelope — pick a `seed_id` from the suggestions or pass `expand=true` to override.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"task":{"type":"string","description":"Free-form description of what you're investigating (e.g. 'fix the login timeout bug', 'understand how indexing handles symlinks'). Mutually exclusive with seed_id — pass one or the other."},
@@ -4503,7 +4503,8 @@ func (s *Server) registerTools() {
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
 				"max_seeds":{"type":"integer","description":"Cap on number of search-result seeds expanded (default 3, max 10). Each seed runs a context + trace call, so the response cost is roughly linear in this number."},
 				"trace_depth":{"type":"integer","description":"Max BFS depth for caller/callee traversal per seed (default 2, max 4). Deeper traversals are correct but expand quickly."},
-				"include_changes":{"type":"boolean","description":"If true, include git-changes overlap with resolved seeds in the envelope. Default true."}
+				"include_changes":{"type":"boolean","description":"If true, include git-changes overlap with resolved seeds in the envelope. Default true."},
+				"expand":{"type":"boolean","description":"PR-6 override: force full envelope expansion even when the seed-quality gate scores the task/seed name-overlap as low. Default false — low-overlap tasks return mode:suggestions_only with _meta.warnings_v2 code=seed_quality_low so a wrong-cluster expansion never costs 5k tokens."}
 			}
 		}`),
 	}, s.handleContextForTask)

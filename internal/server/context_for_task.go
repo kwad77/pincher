@@ -120,6 +120,9 @@ func (s *Server) handleContextForTask(ctx context.Context, req *mcp.CallToolRequ
 		Score         float64 `json:"score,omitempty"`
 	}
 	seeds := []seedRow{}
+	// PR-6: how task-mode seeds were obtained (and | identifier_or |
+	// or_fallback) — feeds the seed-quality stamp below.
+	seededVia := "and"
 
 	if seedID != "" {
 		sym, err := s.store.GetSymbolScoped(projectID, seedID)
@@ -158,8 +161,22 @@ func (s *Server) handleContextForTask(ctx context.Context, req *mcp.CallToolRequ
 		if err == nil && len(results) == 0 && !strings.Contains(task, `"`) {
 			tokens := strings.Fields(task)
 			if len(tokens) > 1 && !containsBareFTS5Operator(tokens) {
-				sanitised := make([]string, len(tokens))
-				for i, t := range tokens {
+				// PR-6: prefer identifier-shaped + non-stopword tokens
+				// for the OR fallback. The legacy OR-of-every-word pulls
+				// noise — prose filler ("the", "make", "missing") BM25-
+				// matches unrelated docstrings. Fall back to the raw
+				// token list only when filtering leaves nothing.
+				strong, weak := identifierTokens(task)
+				candidates := make([]string, 0, len(strong)+len(weak))
+				candidates = append(candidates, strong...)
+				candidates = append(candidates, weak...)
+				seededVia = "identifier_or"
+				if len(candidates) == 0 {
+					candidates = tokens
+					seededVia = "or_fallback"
+				}
+				sanitised := make([]string, len(candidates))
+				for i, t := range candidates {
 					sanitised[i] = wrapTokenIfNeeded(t)
 				}
 				orQuery := strings.Join(sanitised, " OR ")
@@ -272,6 +289,53 @@ func (s *Server) handleContextForTask(ctx context.Context, req *mcp.CallToolRequ
 			"_meta":          meta,
 		}
 		return s.jsonResultWithMeta(data, start, tool, args, 0), nil
+	}
+
+	// ── PR-6: seed-quality gate (task mode only) ───────────────────────
+	// BM25 can anchor on docstring/signature text the caller never said.
+	// When no seed's NAME overlaps the task's tokens, the full envelope
+	// is likely a wrong-cluster dump — return the seed suggestions alone
+	// (~300 tokens instead of ~5k) and let the caller pick a seed_id or
+	// force expansion with expand=true.
+	var taskSeedQuality *seedQuality
+	if task != "" {
+		names := make([]string, len(seeds))
+		qns := make([]string, len(seeds))
+		for i, sd := range seeds {
+			names[i] = sd.Name
+			qns[i] = sd.QualifiedName
+		}
+		sq := computeSeedQuality(task, seededVia, names, qns)
+		taskSeedQuality = &sq
+		if sq.Level == "low" && !boolArg(args, "expand") {
+			meta := map[string]any{
+				"seed_quality": sq,
+				"next_steps": []map[string]string{
+					{"tool": "context_for_task", "args": fmt.Sprintf(`{"seed_id":%q}`, seeds[0].ID),
+						"why": "anchor on the most likely suggestion to get the full envelope"},
+					{"tool": "context_for_task", "args": fmt.Sprintf(`{"task":%q,"expand":true}`, task),
+						"why": "force full expansion if these seeds look right despite the low name-overlap"},
+					{"tool": "search", "args": fmt.Sprintf(`{"query":%q}`, task),
+						"why": "widen beyond callable kinds to find a better anchor"},
+				},
+			}
+			data := map[string]any{
+				"task":           task,
+				"seed_id":        seedID,
+				"mode":           "suggestions_only",
+				"seeds":          seeds,
+				"neighbors":      []any{},
+				"callers":        []any{},
+				"callees":        []any{},
+				"recent_changes": []any{},
+				"_meta":          meta,
+			}
+			attachWarningStructured(data, "seed_quality_low", WarningSeverityWarning,
+				fmt.Sprintf("task %q matched seeds by BM25 text, but no seed name shares an identifier token with it (ratio %.2f, via %s) — returning seed suggestions only instead of a likely wrong-cluster envelope. Pick a seed_id, or pass expand=true to override.",
+					task, sq.NameMatchRatio, sq.SeededVia),
+				map[string]any{"level": sq.Level, "name_match_ratio": sq.NameMatchRatio, "seeded_via": sq.SeededVia})
+			return s.jsonResultWithMeta(data, start, tool, args, 0), nil
+		}
 	}
 
 	// ── Step 2: per-seed callers + callees via trace BFS ───────────────
@@ -523,6 +587,11 @@ func (s *Server) handleContextForTask(ctx context.Context, req *mcp.CallToolRequ
 		"callees_total":  calleesTotal,
 		"truncated":      ctxTruncated,
 		"recent_changes": recentChanges,
+	}
+	// PR-6: stamp seed_quality on the full envelope too, so loop agents
+	// can gate their trust in the cluster without re-deriving overlap.
+	if taskSeedQuality != nil {
+		data["_meta"] = map[string]any{"seed_quality": *taskSeedQuality}
 	}
 	// Note: jsonResultWithMeta stamps the standard envelope. The composite
 	// doesn't need its own empty_reason on the success path — the empty
