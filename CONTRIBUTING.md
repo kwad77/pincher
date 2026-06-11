@@ -12,6 +12,8 @@ git commit --amend -s                      # sign the most recent commit if you 
 git config --global format.signoff true    # sign every commit globally
 ```
 
+> **Note:** `format.signoff` only covers commands that honour it — plain `git commit` is NOT one of them. The reliable, set-and-forget option is the repo-local hook: `pincher init --dco-hook` installs a `prepare-commit-msg` hook that appends your `Signed-off-by:` trailer automatically whenever it's missing (skips merge/squash messages, never duplicates, never touches existing trailers, and refuses to overwrite a hand-written hook). See [`docs/reference/cli.md`](docs/reference/cli.md#pincher-init---dco-hook).
+
 The `DCO sign-off` GitHub Actions check runs on every PR and fails if any commit in the diff lacks the trailer. Bulk-fix an unsigned series with:
 
 ```bash
