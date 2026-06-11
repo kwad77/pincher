@@ -4256,7 +4256,8 @@ func (s *Server) registerTools() {
 				"ids":{"type":"array","items":{"type":"string"},"description":"Array of stable symbol IDs."},
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project. Pass '*' to look every ID up unscoped (cross-repo)."},
 				"fields":{"type":"string","description":"Comma-separated fields to include per result, e.g. 'id,name,signature'. Omit for all fields. Skipping 'source' avoids the per-symbol disk read entirely — major win on 50+ ID batches where the agent only needs metadata."},
-				"cross_project":{"type":"boolean","description":"#1799 opt-in: the batch is session-scoped by default (an ID is path+QN+kind, so an unscoped lookup can resolve it from an indexed mirror of the session repo). An ID absent from the session project surfaces as not_found. Pass cross_project=true to fall back to an unscoped lookup for those missed IDs. Default false. Ignored when project= is set."}
+				"cross_project":{"type":"boolean","description":"#1799 opt-in: the batch is session-scoped by default (an ID is path+QN+kind, so an unscoped lookup can resolve it from an indexed mirror of the session repo). An ID absent from the session project surfaces as not_found. Pass cross_project=true to fall back to an unscoped lookup for those missed IDs. Default false. Ignored when project= is set."},
+				"max_tokens":{"type":"integer","description":"Response budget in approximate tokens across the whole batch, applied in input order: entries past the budget keep metadata but set source_omitted:true and skip the disk read entirely (span-estimate gate). 0/omitted = unlimited. _meta.warnings_v2 code=budget_truncated reports how many entries were trimmed. Pair with fields= to drop unused keys per entry. Loop-substrate PR-5."}
 			}
 		}`),
 	}, s.handleSymbols)
@@ -4271,7 +4272,8 @@ func (s *Server) registerTools() {
 				"project":{"type":"string"},
 				"fields":{"type":"string","description":"Comma-separated top-level keys to include, e.g. 'symbol,callees' to drop imports. Omit for all. _meta is preserved unconditionally."},
 				"lite":{"type":"boolean","description":"When true, return only {id, source} — no imports, no callees, no next_steps. Used by PreToolUse hook to land on minimum-envelope shape when redirecting a Read call. Default false."},
-				"cross_project":{"type":"boolean","description":"#1232 opt-in: when the requested ID isn't in the session project but exists in another indexed project, default behavior is to error (rich-error with next_steps) instead of silently returning the other project's data — including its callees + imports, which would also belong to the wrong tree. Pass cross_project=true to opt back into the legacy silent-fallback-with-warning behavior. Default false. Has no effect when project= is set explicitly."}
+				"cross_project":{"type":"boolean","description":"#1232 opt-in: when the requested ID isn't in the session project but exists in another indexed project, default behavior is to error (rich-error with next_steps) instead of silently returning the other project's data — including its callees + imports, which would also belong to the wrong tree. Pass cross_project=true to opt back into the legacy silent-fallback-with-warning behavior. Default false. Has no effect when project= is set explicitly."},
+				"max_tokens":{"type":"integer","description":"Per-call response budget in approximate tokens (same chars/4 heuristic as _meta.tokens_used). 0/omitted = unlimited — exact legacy shape. Deterministic degradation order: the primary symbol source is cut at a line boundary first; then callees, then imports return metadata-only entries with source_omitted:true (span-estimate gate — omitted entries skip the disk read). When the cap fires, _meta.warnings_v2 carries code=budget_truncated with per-section counts so you can fetch the omitted bodies selectively via symbols. Composes with fields= and lite=true. Loop-substrate PR-5: lets an agent hard-bound every probe so one giant function can never blow the context window."}
 			}
 		}`),
 	}, s.handleContext)
@@ -5363,6 +5365,12 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 		sort.Strings(symbolsUnknownFields)
 	}
 	includeSource := fieldSet == nil || fieldSet["source"]
+	// max_tokens budget (loop-substrate PR-5): batch-wide cap applied
+	// in input order; entries past the budget keep metadata but set
+	// source_omitted:true and skip the disk read entirely.
+	maxTokens := maxTokensArg(args)
+	budgetRemaining := maxTokens
+	budgetSourceOmitted := 0
 	root := s.sessionRoot
 	// #1048: skip resolution when projectArg=="*" — documented
 	// cross-project sentinel. Batch lookups with "*" map to "look
@@ -5482,17 +5490,29 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 			crossProjectSources[sym.ProjectID]++
 		}
 		source := ""
+		sourceOmitted := false
 		symRoot := rootForProject(sym.ProjectID)
 		if includeSource {
-			if symRoot != "" {
-				source, _ = index.ReadSymbolSource(symRoot, *sym)
+			// PR-5 budget gate: span-based estimate, no disk read for
+			// entries that can't fit.
+			if maxTokens > 0 && (sym.EndByte-sym.StartByte+3)/4 > budgetRemaining {
+				sourceOmitted = true
+				budgetSourceOmitted++
 			}
-			// Document symbols (fetched URLs) store their content in Docstring —
-			// no local file to seek. Mirrors the fallback in handleSymbol so a
-			// batch lookup of mixed source-file + Document symbols returns the
-			// same shape as N single-symbol calls.
-			if source == "" && sym.Kind == "Document" {
-				source = sym.Docstring
+			if !sourceOmitted {
+				if symRoot != "" {
+					source, _ = index.ReadSymbolSource(symRoot, *sym)
+				}
+				// Document symbols (fetched URLs) store their content in Docstring —
+				// no local file to seek. Mirrors the fallback in handleSymbol so a
+				// batch lookup of mixed source-file + Document symbols returns the
+				// same shape as N single-symbol calls.
+				if source == "" && sym.Kind == "Document" {
+					source = sym.Docstring
+				}
+				if maxTokens > 0 {
+					budgetRemaining -= db.ApproxTokens(source)
+				}
 			}
 		}
 		// #766: blank a Document's docstring — its text is already in
@@ -5534,10 +5554,17 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 		// Apply per-entry projection. _meta (the staleness warning
 		// attached just above) is preserved by projectFields.
 		entry = projectFields(entry, fieldSet)
+		// PR-5: attached post-projection so the flag survives the
+		// default compact field set.
+		if sourceOmitted {
+			entry["source_omitted"] = true
+		}
 		results = append(results, entry)
 		// Document symbols have no on-disk file; skip them in the
 		// savings baseline so we don't os.Stat a non-existent path.
-		if sym.Kind != "Document" && sym.FilePath != "" {
+		// Budget-omitted entries delivered no content — keep them out
+		// of the savings baseline too.
+		if !sourceOmitted && sym.Kind != "Document" && sym.FilePath != "" {
 			filePathsByProject[sym.ProjectID] = append(filePathsByProject[sym.ProjectID], sym.FilePath)
 		}
 	}
@@ -5568,6 +5595,14 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 	data := map[string]any{
 		"symbols": results,
 		"count":   len(results),
+	}
+	// PR-5: batch-level budget summary, structured for selective
+	// follow-up fetches.
+	if budgetSourceOmitted > 0 {
+		attachWarningStructured(data, "budget_truncated", WarningSeverityWarning,
+			fmt.Sprintf("%d of %d entries returned metadata-only (source_omitted:true) under max_tokens=%d — raise the budget or fetch those ids in a follow-up batch",
+				budgetSourceOmitted, len(ids), maxTokens),
+			map[string]any{"max_tokens": maxTokens, "entries_source_omitted": budgetSourceOmitted})
 	}
 	// #1066: surface batch-level not-found summary so a partial-hit
 	// response is obviously partial. `count` historically lumps
@@ -5645,6 +5680,12 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	}
 	// #400: response-level field projection. Caller-driven cut.
 	fieldSet := parseFieldsArg(str(args, "fields"))
+	// max_tokens budget (loop-substrate PR-5): per-call response cap
+	// in approximate tokens. 0 / omitted = unlimited (legacy shape).
+	// Applied to the primary body after the #655 diff shaping so the
+	// budget trims exactly the bytes that would ship; callee/import
+	// bodies degrade to metadata-only once the remainder is spent.
+	maxTokens := maxTokensArg(args)
 
 	// #1039: context's schema declares a `project` arg ("Project name
 	// or ID. Defaults to session project.") but the handler used to
@@ -5763,9 +5804,20 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// byte-offset precision. Skips the IMPORTS/CALLS edge walks that
 	// account for most of context's per-call latency on big symbols.
 	if lite, _ := args["lite"].(bool); lite {
+		liteSource := source
+		liteDropped := 0
+		liteTruncated := false
+		if maxTokens > 0 {
+			liteSource, liteDropped, liteTruncated = truncateSourceToTokens(source, maxTokens)
+		}
 		liteData := map[string]any{
 			"id":     sym.ID,
-			"source": source,
+			"source": liteSource,
+		}
+		if liteTruncated {
+			attachWarningStructured(liteData, "budget_truncated", WarningSeverityWarning,
+				fmt.Sprintf("source cut at a line boundary to fit max_tokens=%d (-%d lines) — raise max_tokens for the full body", maxTokens, liteDropped),
+				map[string]any{"max_tokens": maxTokens, "source_lines_dropped": liteDropped})
 		}
 		// Apply field projection if requested — keeps the contract
 		// consistent (callers already use `fields=` patterns elsewhere).
@@ -5840,6 +5892,20 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		}
 	}
 
+	// max_tokens budget (loop-substrate PR-5): trim the primary body
+	// first — whatever the #655 diff shaping decided ships is what
+	// gets cut — then hand the remainder to the callee/import loops
+	// below. Deterministic for a given index state + budget.
+	budgetRemaining := 0
+	srcBudgetDropped := 0
+	srcBudgetTruncated := false
+	importsSourceOmitted := 0
+	calleesSourceOmitted := 0
+	if maxTokens > 0 {
+		source, srcBudgetDropped, srcBudgetTruncated = truncateSourceToTokens(source, maxTokens)
+		budgetRemaining = maxTokens - db.ApproxTokens(source)
+	}
+
 	// Find IMPORTS edges from this symbol — cross-package dependencies.
 	importEdges, _ := s.store.EdgesFromScoped(sym.ProjectID, sym.ID, []string{"IMPORTS"})
 	// #332: zero-len init so JSON shape is stable when the symbol has
@@ -5887,7 +5953,24 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		if imp == nil {
 			continue
 		}
+		// Budget gate (PR-5): span-based estimate avoids the disk read
+		// when the entry can't fit anyway. Metadata survives so the
+		// agent can fetch the bodies it needs via symbol/symbols.
+		if maxTokens > 0 && (imp.EndByte-imp.StartByte+3)/4 > budgetRemaining {
+			imports = append(imports, map[string]any{
+				"id":             imp.ID,
+				"name":           imp.Name,
+				"kind":           imp.Kind,
+				"file_path":      imp.FilePath,
+				"source_omitted": true,
+			})
+			importsSourceOmitted++
+			continue
+		}
 		impSource, _ := index.ReadSymbolSource(root, *imp)
+		if maxTokens > 0 {
+			budgetRemaining -= db.ApproxTokens(impSource)
+		}
 		imports = append(imports, map[string]any{
 			"id":        imp.ID,
 			"name":      imp.Name,
@@ -5902,7 +5985,22 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		if callee == nil {
 			continue
 		}
+		// Budget gate (PR-5) — same shape as the imports loop above.
+		if maxTokens > 0 && (callee.EndByte-callee.StartByte+3)/4 > budgetRemaining {
+			callees = append(callees, map[string]any{
+				"id":             callee.ID,
+				"name":           callee.Name,
+				"kind":           callee.Kind,
+				"file_path":      callee.FilePath,
+				"source_omitted": true,
+			})
+			calleesSourceOmitted++
+			continue
+		}
 		calleeSource, _ := index.ReadSymbolSource(root, *callee)
+		if maxTokens > 0 {
+			budgetRemaining -= db.ApproxTokens(calleeSource)
+		}
 		callees = append(callees, map[string]any{
 			"id":        callee.ID,
 			"name":      callee.Name,
@@ -5939,6 +6037,22 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// suggestion is offered: there's nothing further to chase.
 	if next := suggestContextNextSteps(*sym); len(next) > 0 {
 		data["_meta"] = map[string]any{"next_steps": next}
+	}
+	// PR-5: surface what the budget dropped, structured so a client
+	// can fetch the omitted bodies selectively instead of re-issuing
+	// the whole call with a bigger cap. Attached AFTER the next_steps
+	// block above — that block replaces data["_meta"] wholesale and
+	// would clobber anything attached earlier.
+	if srcBudgetTruncated || importsSourceOmitted > 0 || calleesSourceOmitted > 0 {
+		attachWarningStructured(data, "budget_truncated", WarningSeverityWarning,
+			fmt.Sprintf("response trimmed to max_tokens=%d: primary source -%d lines; %d callee(s) + %d import(s) are metadata-only (source_omitted:true) — fetch the ones you need via symbols",
+				maxTokens, srcBudgetDropped, calleesSourceOmitted, importsSourceOmitted),
+			map[string]any{
+				"max_tokens":             maxTokens,
+				"source_lines_dropped":   srcBudgetDropped,
+				"callees_source_omitted": calleesSourceOmitted,
+				"imports_source_omitted": importsSourceOmitted,
+			})
 	}
 	// #317: warn if the seed file changed since indexing.
 	// #980: same check for imports/callees — they're read via the
