@@ -11,17 +11,17 @@ Default since v1.6 (#2005): toolset=core, style=lean. PINCHER_TOOLSET=full
 
 | toolset | style | tools | total tokens |
 |---|---|--:|--:|
-| full | rich | 34 | 18374 |
-| full | lean | 34 | 6898 |
-| core | rich | 10 | 8717 |
-| core | lean | 10 | 3014 |
+| full | rich | 34 | 18564 |
+| full | lean | 34 | 6978 |
+| core | rich | 10 | 8907 |
+| core | lean | 10 | 3094 |
 
 ## Per-tool weight, full/rich (heaviest first)
 
 | tool | tokens | core |
 |---|--:|:--:|
 | search | 1523 | x |
-| trace | 1436 | x |
+| trace | 1505 | x |
 | batch | 1137 | x |
 | context | 1073 | x |
 | loop | 1020 | x |
@@ -31,19 +31,19 @@ Default since v1.6 (#2005): toolset=core, style=lean. PINCHER_TOOLSET=full
 | symbols | 654 | x |
 | symbol | 633 | x |
 | context_for_task | 624 |  |
+| verify_change | 604 | x |
 | query | 601 |  |
 | doctor | 579 |  |
-| verify_change | 542 | x |
 | list | 503 |  |
 | assert_graph | 486 |  |
 | coach | 482 |  |
 | init | 429 |  |
 | investigate_failure | 415 |  |
+| changes | 408 | x |
 | onboard_module | 403 |  |
 | plan_change | 399 |  |
 | stats | 394 |  |
 | guide | 350 | x |
-| changes | 349 | x |
 | architecture | 318 |  |
 | branch_overlap | 304 |  |
 | adr | 270 |  |

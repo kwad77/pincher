@@ -4114,7 +4114,7 @@ func (s *Server) addTool(tool *mcp.Tool, handler mcp.ToolHandler) {
 	// surface by setting the env explicitly (the contract documents
 	// the complete surface, independent of the shipped default).
 	if s.schemaStyle == schemaStyleLean {
-		tool.Description = leanToolDescription(tool.Description)
+		tool.Description = leanToolDescription(tool.Name, tool.Description)
 		if raw, err := json.Marshal(tool.InputSchema); err == nil {
 			tool.InputSchema = leanInputSchema(raw)
 		}
@@ -4465,7 +4465,7 @@ func (s *Server) registerTools() {
 	// 7. trace
 	s.addTool(&mcp.Tool{
 		Name:        "trace",
-		Description: "**Use before changing behaviour** that other code depends on, to find callers (inbound) or what it calls (outbound). Risk labels: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Pass `name` for the common case; when the name is ambiguous (multiple symbols share it) trace falls back to the first match and surfaces alternatives in `_meta.ambiguous_match`. To trace a specific alternative, pass `id=` with the exact symbol ID from search/symbols/query — that's the disambiguation escape hatch (#474). Default traversal follows CALLS-family edges; pass `kinds=READS,WRITES` to trace data-flow edges instead (or `kinds=CALLS,READS` to mix). Test files and testdata/ fixtures are filtered by default; pass `include_tests=true` to see test coverage of a symbol. When `depth` is omitted, the result is auto-trimmed to the smallest depth with ≥5 hops (so hotspots don't dump 100+ rows); `_meta.depth_used` reports the trim. Pass `depth=N` explicitly to skip the trim. Pass `format=\"text\"` for a dense TSV rendering of the hops (`results_text`) or `format=\"toon\"` for a TOON tabular rendering (`results_toon`) instead of the JSON hops array — same envelope, materially fewer tokens on hot traces.",
+		Description: "**Use before changing behaviour** that other code depends on, to find callers (inbound) or what it calls (outbound). Risk labels: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Pass `name` for the common case; when the name is ambiguous (multiple symbols share it) trace falls back to the first match and surfaces alternatives in `_meta.ambiguous_match`. To trace a specific alternative, pass `id=` with the exact symbol ID from search/symbols/query — that's the disambiguation escape hatch (#474). Default traversal follows CALLS-family edges; pass `kinds=READS,WRITES` to trace data-flow edges instead (or `kinds=CALLS,READS` to mix). Test files and testdata/ fixtures are filtered by default; pass `include_tests=true` to see test coverage of a symbol. When `depth` is omitted, the result is auto-trimmed to the smallest depth with ≥5 hops (so hotspots don't dump 100+ rows); `_meta.depth_used` reports the trim. Pass `depth=N` explicitly to skip the trim. Pass `format=\"text\"` for a dense TSV rendering of the hops (`results_text`) or `format=\"toon\"` for a TOON tabular rendering (`results_toon`) instead of the JSON hops array — same envelope, materially fewer tokens on hot traces. Results are computed from the indexed symbol graph and are authoritative for caller/callee and count questions — act on returned paths directly; 0 inbound edges IS the dead-code answer. Re-verify with text search only if the watermark changed mid-task or a warning is present.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"name":{"type":"string","description":"Function name to trace (short name, e.g. 'ProcessOrder'). When ambiguous, trace picks the first match and surfaces alternatives via _meta.ambiguous_match — pass id= instead to trace a specific alternative."},
@@ -4490,7 +4490,7 @@ func (s *Server) registerTools() {
 	// 8. changes
 	s.addTool(&mcp.Tool{
 		Name:        "changes",
-		Description: "**Use before final response after code edits** to surface the blast radius. Maps `git diff` to affected symbols, BFS-traces impact, returns `changed_symbols` + impacted callers tagged CRITICAL/HIGH/MEDIUM/LOW + summary counts + `tests_to_run` (test functions that exercise the changed symbols, ranked by overlap descending — re-run the top entries before pushing). Scopes: `unstaged` (default) / `staged` / `all` (includes untracked) / `base:<branch>` (committed-only diff vs <branch>'s merge-base — use this to preview a PR's blast radius before opening it).",
+		Description: "**Use before final response after code edits** to surface the blast radius. Maps `git diff` to affected symbols, BFS-traces impact, returns `changed_symbols` + impacted callers tagged CRITICAL/HIGH/MEDIUM/LOW + summary counts + `tests_to_run` (test functions that exercise the changed symbols, ranked by overlap descending — re-run the top entries before pushing). Scopes: `unstaged` (default) / `staged` / `all` (includes untracked) / `base:<branch>` (committed-only diff vs <branch>'s merge-base — use this to preview a PR's blast radius before opening it). Results are computed from the indexed symbol graph and are authoritative for blast-radius and impacted-caller questions — act on them directly; re-verify with text search only if the watermark changed mid-task or a warning is present.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string"},
@@ -4847,7 +4847,7 @@ func (s *Server) registerTools() {
 	// advisory, Functions only — Methods are dispatch-blind).
 	s.addTool(&mcp.Tool{
 		Name:        "verify_change",
-		Description: "**Use after an edit, before declaring done — \"did my edit do what I planned, what do I run, what broke\" in ONE call.** Composes: (1) the `changes` blast-radius analysis over `scope` (unstaged/staged/all/base:<branch>); (2) `tests_to_run` ranked by overlap — run the top entries first; (3) when `target` matches a prior `plan_change` run, a predicted-vs-actual comparison: `plan_comparison.{predicted_callers, actual_impacted, unpredicted_impact}` with `warnings_v2 code=unpredicted_impact` when the edit reached callers the plan never saw, and `code=plan_stale` when the index moved between plan and verify (no bogus diff); (4) `possibly_orphaned` — symbols in the changed files with zero inbound edges NOW (advisory `possibly_orphaned_by_change`; Functions only, Methods are interface-dispatch-blind). Pass `max_tokens` to bound the envelope (bulk lists trim first; summary counts always ship). Read-only; the post-edit half of the plan_change → edit → verify_change loop.",
+		Description: "**Use after an edit, before declaring done — \"did my edit do what I planned, what do I run, what broke\" in ONE call.** Composes: (1) the `changes` blast-radius analysis over `scope` (unstaged/staged/all/base:<branch>); (2) `tests_to_run` ranked by overlap — run the top entries first; (3) when `target` matches a prior `plan_change` run, a predicted-vs-actual comparison: `plan_comparison.{predicted_callers, actual_impacted, unpredicted_impact}` with `warnings_v2 code=unpredicted_impact` when the edit reached callers the plan never saw, and `code=plan_stale` when the index moved between plan and verify (no bogus diff); (4) `possibly_orphaned` — symbols in the changed files with zero inbound edges NOW (advisory `possibly_orphaned_by_change`; Functions only, Methods are interface-dispatch-blind). Pass `max_tokens` to bound the envelope (bulk lists trim first; summary counts always ship). Read-only; the post-edit half of the plan_change → edit → verify_change loop. Results are computed from the indexed symbol graph and are authoritative for blast-radius, plan-comparison, and orphan questions — act on them directly; re-verify with text search only if the watermark changed mid-task or a warning is present.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"scope":{"type":"string","description":"Which diff to verify: 'unstaged' (default), 'staged', 'all' (includes untracked), or 'base:<branch>' (committed diff vs merge-base of <branch>)"},
@@ -12918,7 +12918,7 @@ func guideRecommendations(shape guideShape, taskHint, auditedTool, fullTask stri
 	case shapeReview:
 		return []map[string]string{
 			{"tool": "changes", "args": `{}`,
-				"why": "see your git diff mapped to symbols + blast radius"},
+				"why": "see your git diff mapped to symbols + blast radius — graph-derived and authoritative, no text-search re-verification needed absent warnings"},
 			{"tool": "context", "args": `{"id":"<from-changes>"}`,
 				"why": "read each high-risk impacted caller before declaring done"},
 		}
@@ -12989,7 +12989,7 @@ func guideRecommendations(shape guideShape, taskHint, auditedTool, fullTask stri
 		// when the extracted name doesn't resolve.
 		return []map[string]string{
 			{"tool": "trace", "args": traceInArgs,
-				"why": "find every caller (CRITICAL=direct, HIGH=2 hops, MEDIUM=3 hops)"},
+				"why": "find every caller (CRITICAL=direct, HIGH=2 hops, MEDIUM=3 hops) — graph-derived and authoritative, no text-search re-verification needed absent warnings"},
 			{"tool": "search", "args": queryArgs,
 				"why": "if trace can't resolve the name (ambiguous or misspelled), confirm the exact symbol and re-trace"},
 		}
