@@ -263,7 +263,7 @@ The boundary is deliberate: no default LLM extraction pipeline, no dashboard-fir
 
 ## Tool surface
 
-Pincher currently exposes 33 MCP tools. The high-frequency set:
+Pincher currently exposes 34 MCP tools. The high-frequency set:
 
 - `guide` — choose the next Pincher call from a task description
 - `search` — BM25 symbol/config/docs search

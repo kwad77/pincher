@@ -1,4 +1,4 @@
-# The 33 MCP tools
+# The 34 MCP tools
 
 [Back to reference index](README.md)
 
@@ -117,6 +117,12 @@ Tested latency: 12 ms.
 Diffs two in-flight branches against their shared merge-base, maps changed files to symbols, intersects the sets. Returns `overlapping_files`, `overlapping_symbols`, and a merge-order-risk `verdict`.
 
 Tested latency: ~10 ms.
+
+### `coach` {#tool-coach}
+
+Retro-coaching mined from pincher's own recorded usage telemetry (per-call events, query-failure counters, hook invocations). `window=session` (default) or `window=7d`. Returns priced findings — `single_fact_burst`, `unbudgeted_heavy_context`, `zero_result_churn`, `hook_fall_through` — each with `occurrences`, `est_tokens_left_on_table`, a concrete `recommendation`, and a `basis` string documenting exactly how the number was computed from recorded data. Degrades honestly: counts-only when the schema lacks per-row token estimates, empty findings plus a note when fewer than 10 calls are recorded in the window.
+
+Tested latency: ~5 ms.
 
 ### `schema` {#tool-schema}
 

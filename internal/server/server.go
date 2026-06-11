@@ -3769,6 +3769,7 @@ var toolComplexityTiers = map[string]string{
 	"dead_code":      "standard",
 	"architecture":   "standard",
 	"branch_overlap": "standard",
+	"coach":          "standard", // pure-data findings mined from recorded telemetry
 	"fetch":          "standard",
 	"batch":          "standard", // loop-substrate: envelope of N read-only sub-queries — bounded by the shared max_tokens, medium response
 
@@ -3827,6 +3828,7 @@ var toolIdempotent = map[string]bool{
 	"fetch":               true,
 	"architecture":        true,
 	"branch_overlap":      true,
+	"coach":               true, // read-only telemetry introspection
 	"dead_code":           true,
 	"neighborhood":        true,
 	"list":                true,
@@ -4144,6 +4146,7 @@ var toolMetadata = map[string]toolMetadataEntry{
 	"changes":             {Annotations: annotationsReadOnly},
 	"architecture":        {Annotations: annotationsReadOnly},
 	"branch_overlap":      {Title: "Merge-order risk between two branches", Annotations: annotationsReadOnly},
+	"coach":               {Title: "Retro-coaching from usage telemetry", Annotations: annotationsReadOnly},
 	"schema":              {Annotations: annotationsReadOnly},
 	"list":                {Annotations: annotationsReadOnly},
 	"neighborhood":        {Title: "Same-file symbols", Annotations: annotationsReadOnly},
@@ -4500,6 +4503,23 @@ func (s *Server) registerTools() {
 			}
 		}`),
 	}, s.handleAssertGraph)
+
+	// 10d. coach — retro-coaching mined from pincher's own recorded
+	// usage telemetry. Read-only introspection; every number in a
+	// finding is computed from recorded events and carries a `basis`
+	// string documenting the arithmetic. See internal/server/coach.go
+	// for the pattern catalogue (including the honestly-dropped one).
+	s.addTool(&mcp.Tool{
+		Name:        "coach",
+		Description: "**Retro-coaching from pincher's own usage telemetry.** Mines the recorded per-call events (session_tool_calls), the query-failure counters, and hook_invocations for the current session (default) or the trailing 7 days, and returns priced findings — \"you did X N times; pattern Y would have cost ~Z fewer tokens\" — every number computed from recorded telemetry, each finding carrying a `basis` string documenting the arithmetic. Patterns: `single_fact_burst` (≥3 sub-600-token search/symbol/trace calls → batch with `symbols`), `unbudgeted_heavy_context` (context/symbols responses >2000 tokens → cap with `fields`/`lite`), `zero_result_churn` (unexpected-empty queries → recover with `why_empty`), `hook_fall_through` (ignored PreToolUse redirects; counts-only when the schema lacks per-row token estimates). Returns empty findings plus a note when fewer than 10 calls are recorded in the window — never extrapolates from noise.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","properties":{
+				"window":{"type":"string","enum":["session","7d"],"description":"Telemetry window to analyze. \"session\" (default) = this process's recorded calls; \"7d\" = trailing 7 days across all sessions."},
+				"project":{"type":"string","description":"Accepted for interface consistency and validated, but telemetry is recorded per-session (not per-project), so it does not scope the analysis."},
+				"limit":{"type":"integer","description":"Max findings returned, biggest measured win first. Default 5, max 20."}
+			}
+		}`),
+	}, s.handleCoach)
 
 	// 11. schema — agent-callable introspection. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
@@ -14118,6 +14138,7 @@ var baselineMethodForTool = map[string]string{
 	"index":          baselineMethodNone,
 	"architecture":   baselineMethodNone,
 	"branch_overlap": baselineMethodNone,
+	"coach":          baselineMethodNone, // introspection over recorded telemetry — no Read/Grep alternative
 	"schema":         baselineMethodNone,
 	"list":           baselineMethodNone,
 	"adr":            baselineMethodNone,
