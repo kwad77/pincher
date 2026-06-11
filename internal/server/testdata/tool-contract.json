@@ -83,7 +83,7 @@
   },
   {
     "name": "batch",
-    "description": "**Ask up to 12 read-only questions in ONE call.** Carries an array of {tool, args} sub-queries — any of `search`, `symbol`, `symbols`, `context`, `trace`, `query`, `neighborhood`, `changes` — and answers them in order inside a single envelope under a shared `max_tokens` budget (default 4000; once exhausted, later sub-queries return skipped:\"budget_exhausted\" + a budget_truncated warning instead of blowing the context window). Each entry ships a slim per-entry `_meta` ({empty_reason, tokens_used, warnings_v2} only); the outer envelope carries the one full `_meta` (watermark/capabilities/stats) for the whole batch — that deduplicated ceremony is the point. Sub-errors are isolated: a bad symbol ID or typo'd pinchQL yields a per-entry `error` field (plus a batch_sub_errors warning naming the failed indexes) and the rest of the batch completes normally. Top-level `project` is merged into every sub-query that doesn't set its own. Use when a loop iteration needs several probes at once — three greps' worth of answers for one call's ceremony.",
+    "description": "**Ask up to 12 read-only questions in ONE call.** Carries an array of {tool, args} sub-queries — any of `search`, `symbol`, `symbols`, `context`, `trace`, `query`, `neighborhood`, `changes` — and answers them in order inside a single envelope under a shared `max_tokens` budget (default 4000; once exhausted, later sub-queries return skipped:\"budget_exhausted\" + a budget_truncated warning instead of blowing the context window). Each entry ships a slim per-entry `_meta` ({empty_reason, tokens_used, warnings_v2} only); the outer envelope carries the one full `_meta` (watermark/capabilities/stats) for the whole batch — that deduplicated ceremony is the point. Sub-errors are isolated: a bad symbol ID or typo'd pinchQL yields a per-entry `error` field (plus a batch_sub_errors warning naming the failed indexes) and the rest of the batch completes normally. Top-level `project` is merged into every sub-query that doesn't set its own. Use when a loop iteration needs several probes at once — three greps' worth of answers for one call's ceremony. **Chain mode:** when sub-query N's input is an earlier result's output, add `from:{query:\u003clower index\u003e,select:\"top_id\"|\"ids\"|\"files\",into:\"\u003carg key\u003e\"?}` and the server splices the selection in — the intermediate never crosses your context. Mark the upstream `quiet:true` to omit its body entirely (its entry keeps {index, tool, quiet, selected} for provenance): a quiet search → chained context returns ONE context envelope plus a one-line pointer. If the upstream errored or the selector finds nothing, the dependent entry returns skipped:\"upstream_empty\" — never a guessed call. Forward references rich-error before any execution.",
     "input_schema": {
       "properties": {
         "max_tokens": {
@@ -95,12 +95,43 @@
           "type": "string"
         },
         "queries": {
-          "description": "Sub-queries answered in order (max 12). Each is {tool, args} where args matches the sub-tool's own schema.",
+          "description": "Sub-queries answered in order (max 12). Each is {tool, args} where args matches the sub-tool's own schema, plus optional chain-mode keys: from (splice an earlier result's selection into args) and quiet (omit this entry's body from the response).",
           "items": {
             "properties": {
               "args": {
                 "description": "Arguments for the sub-tool — identical schema to calling it directly.",
                 "type": "object"
+              },
+              "from": {
+                "description": "Chain mode: splice value(s) selected from an EARLIER sub-query's result into this sub-query's args, server-side. If the upstream errored, was skipped, or the selector finds nothing, this entry returns skipped:\"upstream_empty\".",
+                "properties": {
+                  "into": {
+                    "description": "Arg key the selection splices into. Defaults: context/symbol/trace→\"id\", symbols→\"ids\"; other sub-tools require an explicit key.",
+                    "type": "string"
+                  },
+                  "query": {
+                    "description": "Index of an earlier sub-query (must be LOWER than this one — forward references fail validation before any execution).",
+                    "type": "integer"
+                  },
+                  "select": {
+                    "description": "Named selector over the upstream result (v1 — no path language): top_id=first result's stable symbol id (search results[0].id / trace hops[0].nodes[0].id / context symbol.id); ids=all result ids, deduped, capped at 20 with a chain_selector_trimmed warning; files=distinct file_path values, capped at 10. Multi-value selects pair with the symbols sub-tool's ids arg only (no fan-out in v1).",
+                    "enum": [
+                      "top_id",
+                      "ids",
+                      "files"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query",
+                  "select"
+                ],
+                "type": "object"
+              },
+              "quiet": {
+                "description": "Run this sub-query for chaining but OMIT its body from the response — the entry becomes {index, tool, quiet:true, selected:\u003cvalue(s) passed on\u003e} so the chain stays auditable. This is where the token win lands: intermediates never cross the envelope.",
+                "type": "boolean"
               },
               "tool": {
                 "description": "Read-only sub-tool to dispatch. Writers and batch-in-batch are rejected per-entry.",
