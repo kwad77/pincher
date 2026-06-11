@@ -82,6 +82,56 @@
     }
   },
   {
+    "name": "batch",
+    "description": "**Ask up to 12 read-only questions in ONE call.** Carries an array of {tool, args} sub-queries — any of `search`, `symbol`, `symbols`, `context`, `trace`, `query`, `neighborhood`, `changes` — and answers them in order inside a single envelope under a shared `max_tokens` budget (default 4000; once exhausted, later sub-queries return skipped:\"budget_exhausted\" + a budget_truncated warning instead of blowing the context window). Each entry ships a slim per-entry `_meta` ({empty_reason, tokens_used, warnings_v2} only); the outer envelope carries the one full `_meta` (watermark/capabilities/stats) for the whole batch — that deduplicated ceremony is the point. Sub-errors are isolated: a bad symbol ID or typo'd pinchQL yields a per-entry `error` field (plus a batch_sub_errors warning naming the failed indexes) and the rest of the batch completes normally. Top-level `project` is merged into every sub-query that doesn't set its own. Use when a loop iteration needs several probes at once — three greps' worth of answers for one call's ceremony.",
+    "input_schema": {
+      "properties": {
+        "max_tokens": {
+          "description": "Shared response budget in approximate tokens across ALL sub-queries (default 4000), spent in input order. Budget-aware sub-tools (context, symbols) inherit the remaining budget as their own max_tokens when unset. _meta.warnings_v2 code=budget_truncated reports skipped sub-queries.",
+          "type": "integer"
+        },
+        "project": {
+          "description": "Default project merged into each sub-query that doesn't set its own. Defaults to session project.",
+          "type": "string"
+        },
+        "queries": {
+          "description": "Sub-queries answered in order (max 12). Each is {tool, args} where args matches the sub-tool's own schema.",
+          "items": {
+            "properties": {
+              "args": {
+                "description": "Arguments for the sub-tool — identical schema to calling it directly.",
+                "type": "object"
+              },
+              "tool": {
+                "description": "Read-only sub-tool to dispatch. Writers and batch-in-batch are rejected per-entry.",
+                "enum": [
+                  "search",
+                  "symbol",
+                  "symbols",
+                  "context",
+                  "trace",
+                  "query",
+                  "neighborhood",
+                  "changes"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "tool"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "queries"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "branch_overlap",
     "description": "**Check two in-flight branches for merge-order risk.** Diffs `branch_a` and `branch_b` each against their shared merge-base (override with `base`), maps the changed files to symbols, and intersects the sets. Returns `overlapping_files`, `overlapping_symbols`, and a `verdict`: independent (disjoint files — merge in any order), low risk (shared files but no shared symbols — textual conflict only), or merge-order risk (shared symbols — the branch that merges second needs re-review). Deterministic: `git diff` + pincher's file→symbol index.",
     "input_schema": {
@@ -155,6 +205,10 @@
           "description": "When true, return only {id, source} — no imports, no callees, no next_steps. Used by PreToolUse hook to land on minimum-envelope shape when redirecting a Read call. Default false.",
           "type": "boolean"
         },
+        "max_tokens": {
+          "description": "Per-call response budget in approximate tokens (same chars/4 heuristic as _meta.tokens_used). 0/omitted = unlimited — exact legacy shape. Deterministic degradation order: the primary symbol source is cut at a line boundary first; then callees, then imports return metadata-only entries with source_omitted:true (span-estimate gate — omitted entries skip the disk read). When the cap fires, _meta.warnings_v2 carries code=budget_truncated with per-section counts so you can fetch the omitted bodies selectively via symbols. Composes with fields= and lite=true. Loop-substrate PR-5: lets an agent hard-bound every probe so one giant function can never blow the context window.",
+          "type": "integer"
+        },
         "project": {
           "type": "string"
         }
@@ -167,9 +221,13 @@
   },
   {
     "name": "context_for_task",
-    "description": "**Call when you're investigating a feature/bug and need the cluster, not one symbol.** Takes either a free-form task (\"fix the login retry bug\") OR a `seed_id` from a prior `search`. Composes one envelope: top-N matching seeds via `search`, each seed's source + direct deps via `context`, callers + callees up to depth=2 via `trace direction=both`, and any `changes` overlap with the resolved seeds. Replaces the typical 5-10 atomic calls an agent loop fires when picking up an investigation. Returns `{seeds, neighbors, callers, callees, recent_changes}` plus `_meta.empty_reason` if no seeds resolve.",
+    "description": "**Call when you're investigating a feature/bug and need the cluster, not one symbol.** Takes either a free-form task (\"fix the login retry bug\") OR a `seed_id` from a prior `search`. Composes one envelope: top-N matching seeds via `search`, each seed's source + direct deps via `context`, callers + callees up to depth=2 via `trace direction=both`, and any `changes` overlap with the resolved seeds. Replaces the typical 5-10 atomic calls an agent loop fires when picking up an investigation. Returns `{seeds, neighbors, callers, callees, recent_changes}` plus `_meta.empty_reason` if no seeds resolve. Task-mode responses carry `_meta.seed_quality` (high/medium/low); when no seed NAME overlaps the task's tokens the response degrades to `mode:suggestions_only` (seed metadata, ~300 tokens) instead of a likely wrong-cluster envelope — pick a `seed_id` from the suggestions or pass `expand=true` to override.",
     "input_schema": {
       "properties": {
+        "expand": {
+          "description": "PR-6 override: force full envelope expansion even when the seed-quality gate scores the task/seed name-overlap as low. Default false — low-overlap tasks return mode:suggestions_only with _meta.warnings_v2 code=seed_quality_low so a wrong-cluster expansion never costs 5k tokens.",
+          "type": "boolean"
+        },
         "include_changes": {
           "description": "If true, include git-changes overlap with resolved seeds in the envelope. Default true.",
           "type": "boolean"
@@ -405,6 +463,64 @@
           "type": "boolean"
         }
       },
+      "type": "object"
+    }
+  },
+  {
+    "name": "loop",
+    "description": "**Durable work-state for multi-iteration agent loops.** Actions: `start` (open a named loop with its framing claim), `checkpoint` (append one iteration's {claim, decision, confidence, reopen_trigger, evidence} — the capture step of an evidence-gated loop), `list` (loops, or one loop's checkpoints), `resume` (ONE bounded brief — recent checkpoints + open reopen_triggers + ADR keys + whether the index changed since the last checkpoint — so a fresh session or a different model picks up mid-flight work in a single call instead of re-reading transcripts). Checkpoints stamp the index watermark at write time; `resume` warns via warnings_v2 code=index_moved_since_checkpoint when the graph moved. Pass max_tokens to bound the brief (default ~800).",
+    "input_schema": {
+      "properties": {
+        "action": {
+          "description": "start=open a named loop; checkpoint=append an iteration record; list=loops or one loop's checkpoints; resume=bounded brief to continue mid-flight work.",
+          "enum": [
+            "start",
+            "checkpoint",
+            "list",
+            "resume"
+          ],
+          "type": "string"
+        },
+        "claim": {
+          "description": "The falsifiable claim this iteration works toward (start/checkpoint).",
+          "type": "string"
+        },
+        "confidence": {
+          "description": "Confidence label for the decision: measured | inferred | assumed (checkpoint).",
+          "type": "string"
+        },
+        "decision": {
+          "description": "The iteration's terminating decision: Accept / Defer-with-trigger / Reject, plus a clause of why (checkpoint).",
+          "type": "string"
+        },
+        "evidence": {
+          "description": "Pointers to evidence — symbol IDs, test names, benchmark numbers. Keep it pointer-shaped; the ledger is a map, not the territory (checkpoint).",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max rows for list (default: 20 loops / 10 checkpoints).",
+          "type": "integer"
+        },
+        "max_tokens": {
+          "description": "Budget for the resume brief in approximate tokens (default 800). Older checkpoints drop first; omitted_checkpoints reports the cut.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Loop name (e.g. 'rust-ast-rollout'). Required for start/checkpoint; optional for list (omit to enumerate loops) and resume (omit to resume the most recently touched loop).",
+          "type": "string"
+        },
+        "project": {
+          "description": "Project name or ID. Defaults to session project.",
+          "type": "string"
+        },
+        "reopen_trigger": {
+          "description": "For deferred decisions: the explicit condition that reopens this item. Surfaced by every future resume until addressed (checkpoint).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
       "type": "object"
     }
   },
@@ -692,6 +808,10 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "max_tokens": {
+          "description": "Response budget in approximate tokens across the whole batch, applied in input order: entries past the budget keep metadata but set source_omitted:true and skip the disk read entirely (span-estimate gate). 0/omitted = unlimited. _meta.warnings_v2 code=budget_truncated reports how many entries were trimmed. Pair with fields= to drop unused keys per entry. Loop-substrate PR-5.",
+          "type": "integer"
         },
         "project": {
           "description": "Project name or ID. Defaults to session project. Pass '*' to look every ID up unscoped (cross-repo).",

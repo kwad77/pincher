@@ -1810,6 +1810,27 @@ END;`,
 	// DDL, deliberately non-invalidating so this groundwork does not force
 	// a full reindex after the #1899 writer-starvation fix.
 	`ALTER TABLE edges ADD COLUMN provenance_tier TEXT NOT NULL DEFAULT 'EXTRACTED';`,
+
+	// v39 → v40: loop_checkpoints — the loop ledger (loop-substrate
+	// PR-8/9). Append-only work-state for multi-iteration agent loops:
+	// one row per EGDL checkpoint {claim, decision, confidence,
+	// reopen_trigger, evidence}, stamped with the index watermark at
+	// write time so `loop resume` can tell whether the graph moved
+	// since. New empty table; nothing previously extracted is touched.
+	`CREATE TABLE IF NOT EXISTS loop_checkpoints (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		project_id TEXT NOT NULL,
+		loop_name TEXT NOT NULL,
+		seq INTEGER NOT NULL,
+		created_at TEXT NOT NULL,
+		claim TEXT NOT NULL DEFAULT '',
+		decision TEXT NOT NULL DEFAULT '',
+		confidence TEXT NOT NULL DEFAULT '',
+		reopen_trigger TEXT NOT NULL DEFAULT '',
+		evidence TEXT NOT NULL DEFAULT '',
+		watermark TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX IF NOT EXISTS idx_loop_ckpt_proj_loop_seq ON loop_checkpoints(project_id, loop_name, seq);`,
 }
 
 // schemaMigrationInvalidates classifies each migration in schemaMigrations
@@ -1894,6 +1915,7 @@ var schemaMigrationInvalidates = []MigrationInvalidates{
 	invalidatesNothing, // [35] v36→v37: edge project/to_id grouping index for hotspots (pure DDL; no extracted data changes)
 	invalidatesNothing, // [36] v37→v38: trace endpoint planner indexes (pure DDL; no extracted data changes)
 	invalidatesNothing, // [37] v38→v39: edges.provenance_tier DEFAULT 'EXTRACTED' (pure additive DDL; existing edge data remains valid)
+	invalidatesNothing, // [38] v39→v40: CREATE TABLE loop_checkpoints (new empty table; populated only by the loop tool)
 }
 
 func init() {

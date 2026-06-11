@@ -134,7 +134,7 @@ Project-scoped paths — `search`, `symbol`/`symbols` when `project=` is passed,
 
 ## Schema
 
-Schema is versioned via the `schema_version` table. Current version: **v39**. Migrations apply automatically on startup — no data loss, no manual steps. To add a migration: append a SQL string to `schemaMigrations` in `db.go`; the version number is auto-derived from the slice length.
+Schema is versioned via the `schema_version` table. Current version: **v40**. Migrations apply automatically on startup — no data loss, no manual steps. To add a migration: append a SQL string to `schemaMigrations` in `db.go`; the version number is auto-derived from the slice length.
 
 Migration history:
 
@@ -179,6 +179,7 @@ Migration history:
 | v36→v37 | `idx_edge_project_to` — project-scoped inbound edge grouping index for `hotspot`, avoiding a temp grouping B-tree when ranking the most-called symbols. |
 | v37→v38 | Trace endpoint planner hardening — supplemental project-scoped endpoint indexes plus endpoint-first `INDEXED BY` hints so recursive trace CTEs seek by the current frontier endpoint instead of scanning project/kind edge buckets on large graphs. |
 | v38→v39 | `edges.provenance_tier` column (default `'EXTRACTED'`) — substrate column for separating deterministically-extracted edges from future inferred / heuristic / plugin-emitted edges (#1945, [ADR-0005](../adr/0005-v1.3-substrate-and-language-coverage.md)). Pure additive DDL, classified `invalidatesNothing` — existing edge data remains valid and is auto-defaulted to `EXTRACTED` by the SQLite column-default. |
+| v39→v40 | `loop_checkpoints` table — the loop ledger (loop-substrate PR-8/9): append-only work-state for multi-iteration agent loops, one row per checkpoint `{claim, decision, confidence, reopen_trigger, evidence}` stamped with the index watermark. Backs the `loop` tool's `start`/`checkpoint`/`list`/`resume` actions. New empty table, classified `invalidatesNothing`. |
 
 ---
 

@@ -290,6 +290,45 @@ var outputSchemas = map[string]string{
 		}
 	}`,
 
+	// 13b. loop — ledger ops return {loop, seq, watermark}; list returns
+	// {loops} or {loop, checkpoints}; resume returns the bounded brief.
+	"loop": `{
+		"type":"object",
+		"properties":{
+			"loop":{"type":"string"},
+			"seq":{"type":"integer"},
+			"watermark":{"type":"string"},
+			"loops":{"type":"array","items":{"type":"object"}},
+			"checkpoints":{"type":"array","items":{"type":"object"}},
+			"brief":{"type":"array","items":{"type":"object"}},
+			"open_triggers":{"type":"array","items":{"type":"object"}},
+			"adr_keys":{"type":"array","items":{"type":"string"}},
+			"watermark_now":{"type":"string"},
+			"index_changed_since_last_checkpoint":{"type":"boolean"},
+			"omitted_checkpoints":{"type":"integer"},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
+	// 13c. batch — one envelope, N read-only sub-query answers
+	// (loop-substrate). results entries are {index, tool, result, _meta}
+	// on success, {index, tool, error} on isolated sub-error, or
+	// {index, tool, skipped} once the shared budget is exhausted.
+	"batch": `{
+		"type":"object",
+		"required":["results","count","budget"],
+		"properties":{
+			"results":{"type":"array","items":{"type":"object"}},
+			"count":{"type":"integer"},
+			"budget":{"type":"object","properties":{
+				"max_tokens":{"type":"integer"},
+				"spent_approx":{"type":"integer"},
+				"skipped_queries":{"type":"integer"}
+			}},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
 	// 14. health — extraction quality + drift.
 	"health": `{
 		"type":"object",
