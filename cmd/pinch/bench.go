@@ -73,7 +73,19 @@ func runBenchCLI(args []string) {
 		}
 	}
 
-	store, err := db.Open(dir)
+	// #1975: bench is a read surface unless --persist asks to write the
+	// run's aggregates — only then take the write-mode open.
+	var store *db.Store
+	var err error
+	if *persist {
+		store, err = db.Open(dir)
+	} else {
+		store, err = db.OpenReadOnly(dir)
+		if err != nil && os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "pincher bench: no database at %s — run `pincher index` first\n", dir)
+			os.Exit(1)
+		}
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pincher: failed to open database: %v\n", err)
 		os.Exit(1)

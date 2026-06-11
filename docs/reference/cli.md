@@ -459,6 +459,7 @@ Used when the matching flag is empty — convenient for Docker, systemd, launchd
 | `PINCHER_SLOW_QUERY_MS` | `--slow-query-ms` |
 | `PINCHER_DB_READERS` | `--db-readers` |
 | `PINCHER_MAX_FILE_SIZE_MB` | `--max-file-size-mb` |
+| `PINCHER_ALLOW_MIGRATE` | (no flag) Set to `1` to let a **non-release** (dev) pincher binary migrate an existing database to a newer schema version. Tagged release builds migrate automatically, loudly, after writing a pre-migration snapshot to `<data-dir>/backups/`. Without the opt-in, a dev binary that finds a store below its schema version fails with an actionable error instead of silently upgrading it — schema migrations are one-way and an accidentally-migrated shared store locks out every older binary on the machine (#1974). |
 
 **Logging and observability** (no flag equivalent — env-var only; see [`docs/deployment/observability.md`](../deployment/observability.md)):
 

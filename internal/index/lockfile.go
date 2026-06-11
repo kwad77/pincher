@@ -118,6 +118,49 @@ func describeLockHolder(holder lockInfo, callerBinaryVersion string) string {
 	return base
 }
 
+// LockHolder describes a live holder of a cross-process project lock —
+// the writer most likely starving everyone else. Exposed so read-only
+// surfaces (`pincher health-check`, #1975) can NAME the process that's
+// holding the writer instead of reporting an opaque server failure.
+type LockHolder struct {
+	PID           int
+	ProjectID     string
+	BinaryVersion string // empty on legacy lockfiles
+	Since         time.Time
+}
+
+// LiveLockHolders enumerates <dataDir>/locks/*.lock entries whose
+// holder process is still alive. Stale/corrupt lockfiles are skipped
+// (not reclaimed — this is a read-only probe). A missing locks dir is a
+// normal empty answer, not an error.
+func LiveLockHolders(dataDir string) ([]LockHolder, error) {
+	lockDir := filepath.Join(dataDir, "locks")
+	entries, err := os.ReadDir(lockDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read lock dir: %w", err)
+	}
+	var out []LockHolder
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".lock" {
+			continue
+		}
+		info, err := readLockInfo(filepath.Join(lockDir, e.Name()))
+		if err != nil || !processExists(info.PID) {
+			continue
+		}
+		out = append(out, LockHolder{
+			PID:           info.PID,
+			ProjectID:     info.ProjectID,
+			BinaryVersion: info.BinaryVersion,
+			Since:         time.Unix(info.StartTime, 0),
+		})
+	}
+	return out, nil
+}
+
 // projectLockPath maps a projectID to a fixed-length lockfile path.
 // Hashing keeps the filename safe regardless of slashes/colons in the
 // projectID and bounds the name length on every filesystem.

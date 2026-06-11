@@ -39,6 +39,12 @@ import (
 var version = "dev"
 
 func main() {
+	// #1974: stamp the binary version into the db package before ANY Open
+	// — the migration consent gate uses it to distinguish tagged release
+	// builds (migrate freely) from dev builds (which must not silently
+	// upgrade a shared store's schema).
+	db.SetBinaryVersion(version)
+
 	// Subcommand dispatch — must happen before flag.Parse() since the global
 	// flagset doesn't know about subcommand flags.
 	if len(os.Args) > 1 && os.Args[1] == "index" {

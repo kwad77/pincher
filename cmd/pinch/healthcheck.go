@@ -13,6 +13,9 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/kwad77/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/index"
 )
 
 // runHealthCheckCLI is a non-interactive probe useful for external
@@ -73,8 +76,38 @@ func runHealthCheckCLI(args []string) {
 
 	if err := healthCheckProbe(ctx, bin, cmdArgs, *verbose); err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
+		// #1975: a probe failure under writer contention is
+		// indistinguishable from a real server defect unless we name the
+		// writer. The locks/ files record pid/project/binary_version —
+		// surface them so the operator sees "starved, not broken".
+		if dir, derr := db.DataDir(); derr == nil {
+			if note := writerContentionNote(dir); note != "" {
+				fmt.Fprintln(os.Stderr, note)
+			}
+		}
 		os.Exit(1)
 	}
+}
+
+// writerContentionNote formats the live cross-process lock holders under
+// dataDir, or "" when none exist. One line per holder so cron/k8s log
+// collectors keep the attribution next to the FAIL line.
+func writerContentionNote(dataDir string) string {
+	holders, err := index.LiveLockHolders(dataDir)
+	if err != nil || len(holders) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("note: live pincher writer lock(s) found — the server may be starved by an in-flight index, not broken:\n")
+	for _, h := range holders {
+		ver := h.BinaryVersion
+		if ver == "" {
+			ver = "unknown"
+		}
+		fmt.Fprintf(&b, "  DB locked by PID %d (project %q, binary %s, since %s)\n",
+			h.PID, h.ProjectID, ver, h.Since.Format(time.RFC3339))
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // replyToServerRequest produces a minimal JSON-RPC response to a

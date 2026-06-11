@@ -15,7 +15,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -197,6 +199,87 @@ func retryOnDBLock(fn func() error, maxAttempts int, backoff time.Duration) erro
 	return err
 }
 
+// MigrationConsentEnv is the environment opt-in for upward schema
+// migrations of an EXISTING store (#1974). Set to "1" (or "true"/"yes")
+// to let a non-release binary migrate a store that is below its schema
+// version. Tagged release builds migrate without it — release-train
+// upgrades stay zero-friction; the gate exists for dev builds carrying
+// in-flight schema bumps, which previously upgraded shared stores as a
+// silent startup side effect and bricked every older binary on the
+// machine.
+const MigrationConsentEnv = "PINCHER_ALLOW_MIGRATE"
+
+// migrateBinaryVersion is the running binary's --version string, set
+// once at process start via SetBinaryVersion. The db package can't see
+// main.version (ldflags land in package main), so each binary plumbs it
+// here before the first Open. Empty ⇒ treated as a dev build.
+var migrateBinaryVersion string
+
+// SetBinaryVersion records the binary's stamped version for the
+// migration consent gate (#1974). Call once from main() before any
+// Open. Safe to leave uncalled — the zero value is the conservative
+// "dev build" posture (no silent upward migrations).
+func SetBinaryVersion(v string) { migrateBinaryVersion = v }
+
+// IsReleaseBuild reports whether v looks like a clean release tag
+// ("1.5.0" / "v1.5.0"). `git describe` dev builds ("1.5.0-3-gabcdef",
+// "-dirty" suffixed) and the "dev" fallback are NOT releases — those
+// are exactly the binaries whose in-flight schema bumps must not leak
+// into shared stores (#1974).
+func IsReleaseBuild(v string) bool {
+	v = strings.TrimSpace(v)
+	if v == "" || v == "dev" {
+		return false
+	}
+	if strings.ContainsAny(v, "-+") {
+		return false
+	}
+	_, ok := parseBinaryVersion(v)
+	return ok
+}
+
+// migrationAllowed is the #1974 consent gate for upward migration of an
+// existing store: explicit env opt-in, or a tagged release build.
+func migrationAllowed() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(MigrationConsentEnv))) {
+	case "1", "true", "yes":
+		return true
+	}
+	return IsReleaseBuild(migrateBinaryVersion)
+}
+
+// MigrationPendingError is returned by Open when an existing store sits
+// below this binary's schema version and the consent gate (#1974) is
+// closed. The message is printed verbatim by CLI subcommands, so it
+// names everything the operator needs: store path, both versions, and
+// the opt-in.
+type MigrationPendingError struct {
+	Path string
+	From int // store's current schema version
+	To   int // version this binary would migrate to
+}
+
+func (e *MigrationPendingError) Error() string {
+	return fmt.Sprintf(
+		"pincher database %s is at schema v%d; this binary (%s) expects v%d — refusing to migrate automatically.\n"+
+			"Schema migrations are one-way: once migrated, older pincher binaries can no longer open this store.\n"+
+			"To migrate now, re-run with %s=1 (released pincher builds migrate automatically).",
+		e.Path, e.From, displayBinaryVersion(), e.To, MigrationConsentEnv,
+	)
+}
+
+func displayBinaryVersion() string {
+	if migrateBinaryVersion == "" {
+		return "dev"
+	}
+	return migrateBinaryVersion
+}
+
+// migrationLog receives the loud-migration announcements (#1974).
+// Stderr by default — safe for MCP stdio servers (stdout is the
+// protocol channel). Swapped for a buffer in tests.
+var migrationLog io.Writer = os.Stderr
+
 func Open(dir string) (*Store, error) {
 	// #830: create the data dir if it's missing. DataDir() already
 	// MkdirAll's the default + PINCHER_DATA_DIR paths, but a `--data-dir`
@@ -250,6 +333,12 @@ func Open(dir string) (*Store, error) {
 		// CLI commands print this verbatim; the raw cause stays wrapped.
 		if isDBLockedErr(migErr) {
 			return nil, errorsLockedWrap(migErr)
+		}
+		// #1974: the consent-gate refusal is already a complete,
+		// operator-facing message — no "migrate:" prefix noise.
+		var pending *MigrationPendingError
+		if errors.As(migErr, &pending) {
+			return nil, migErr
 		}
 		return nil, fmt.Errorf("migrate: %w", migErr)
 	}
@@ -751,8 +840,28 @@ func (s *Store) ConfigureFTSMergePolicy() error {
 			"automerge":   ftsAutomergeThreshold,
 			"crisismerge": ftsCrisisMergeThreshold,
 		} {
+			// #1975: read-first. FTS5 persists these options in the
+			// %_config shadow table, so after the first successful
+			// configure every subsequent Open can skip the write —
+			// keeping the schema-current startup path entirely free of
+			// writer-lock contention.
+			var cur int
+			err := s.db.QueryRow(
+				fmt.Sprintf(`SELECT v FROM %s_config WHERE k = ?`, table), option,
+			).Scan(&cur)
+			if err == nil && cur == value {
+				continue
+			}
 			q := fmt.Sprintf(`INSERT INTO %s(%s, rank) VALUES('%s', %d)`, table, table, option, value)
 			if _, err := s.db.Exec(q); err != nil {
+				if isDBLockedErr(err) {
+					// Merge policy is a perf knob, not correctness —
+					// availability wins over tuning while another
+					// process holds the writer (#1975). The next
+					// uncontended Open will set it.
+					fmt.Fprintf(migrationLog, "pincher: skipping FTS merge-policy tuning (%s) — database is locked by another pincher process\n", table)
+					return nil
+				}
 				return fmt.Errorf("configure %s %s: %w", table, option, err)
 			}
 		}
@@ -2087,6 +2196,56 @@ const v28RebuildSymbolsCompositePK = `
 // idempotent (IF NOT EXISTS throughout) — running it on an existing database
 // is always safe.
 func (s *Store) migrate() error {
+	maxKnown := len(schemaMigrations) + 1
+
+	// Step 0 (#1975): read-only fast path. When the store already sits at
+	// this binary's schema version, Open must not touch the writer at all
+	// — historically the unconditional baseline Exec + bootstrap INSERT
+	// below took a write transaction on EVERY open, so any held writer
+	// (a long `pincher index --force`) blocked every new MCP server /
+	// web / health probe on the machine for the full busy-timeout window
+	// and then killed it. A plain SELECT never contends in WAL mode.
+	//
+	// Convention note: this means baseline-`schema` edits no longer reach
+	// already-current stores via Open — which was never a supported path
+	// anyway; every schema change must ship as a numbered migration.
+	if version, ok := s.schemaVersionFastRead(); ok {
+		if version > maxKnown {
+			return fmt.Errorf(
+				"pincher database is at schema v%d but this binary only understands up to v%d — upgrade pincher to continue, or restore an older pincher.db from backup",
+				version, maxKnown,
+			)
+		}
+		if version == maxKnown {
+			s.lastStartupMigrationInvalidates = invalidatesNothing
+			s.lastStartupMigrationsAppliedFrom = version
+			s.lastStartupMigrationsAppliedTo = version
+			// Parity repairs are read-first and self-skipping — they only
+			// write when an actual structural deviation exists.
+			return s.schemaParityRepairs()
+		}
+		// version < maxKnown: pending upward migration of an EXISTING
+		// store. #1974: this is an explicit decision, not a startup side
+		// effect — gate it, and when it does run, announce it loudly and
+		// leave a restore point.
+		if !migrationAllowed() {
+			return &MigrationPendingError{Path: s.Path, From: version, To: maxKnown}
+		}
+		s.announceMigration(version, maxKnown)
+		s.snapshotBeforeMigration(version)
+	} else if n, tablesOK := s.userTableCount(); tablesOK && n > 0 {
+		// Existing store that predates the schema_version table (or lost
+		// the row). Same hazard, same gate — it bootstraps to v1 below and
+		// replays every migration.
+		if !migrationAllowed() {
+			return &MigrationPendingError{Path: s.Path, From: 1, To: maxKnown}
+		}
+		s.announceMigration(1, maxKnown)
+		s.snapshotBeforeMigration(1)
+	}
+	// Fresh/empty database: initialization, not an upgrade — no consent
+	// needed, nothing to announce, nothing worth snapshotting.
+
 	// Step 1: apply baseline DDL — safe to run on any existing database.
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("baseline schema: %w", err)
@@ -2122,7 +2281,7 @@ func (s *Store) migrate() error {
 	// understands. Without this check an older binary would read/write rows
 	// using its older schema knowledge and silently corrupt newer columns.
 	// The highest version this binary knows is baseline (v1) + len(migrations).
-	maxKnown := len(schemaMigrations) + 1
+	// (Normally caught by the step-0 fast read; kept as a defensive recheck.)
 	if version > maxKnown {
 		return fmt.Errorf(
 			"pincher database is at schema v%d but this binary only understands up to v%d — upgrade pincher to continue, or restore an older pincher.db from backup",
@@ -2156,21 +2315,10 @@ func (s *Store) migrate() error {
 		s.lastStartupMigrationsAppliedTo = next
 	}
 
-	// Step 4.5: idempotent schema-parity repairs. These run on every Open()
-	// and self-skip when the target state is already in place. They exist
-	// for DBs that took divergent migration paths and ended up at the
-	// current schema_version with structural deviations. See #83.
-	if err := s.ensureSymbolIDColumn(); err != nil {
-		return fmt.Errorf("symbol_id column repair: %w", err)
-	}
-
-	// Step 4.6: dedupe project rows that resolved to the same canonical
-	// path. Pre-#84 `ProjectIDFromPath` returned the literal abs path,
-	// so case-insensitive filesystems (macOS APFS, Windows NTFS)
-	// accumulated duplicates when the user invoked pincher with
-	// different casings. Self-skips when no duplicates exist.
-	if err := s.dedupProjectsByCanonicalPath(); err != nil {
-		return fmt.Errorf("project dedup: %w", err)
+	// Steps 4.5/4.6: idempotent schema-parity repairs (shared with the
+	// step-0 fast path).
+	if err := s.schemaParityRepairs(); err != nil {
+		return err
 	}
 
 	// Step 5: on a brand-new DB, seed sqlite_stat1 with one ANALYZE pass.
@@ -2183,6 +2331,93 @@ func (s *Store) migrate() error {
 		_, _ = s.db.Exec(`ANALYZE`)
 	}
 	return nil
+}
+
+// schemaVersionFastRead reads schema_version with a plain SELECT — no
+// write lock, so it succeeds instantly even while another process holds
+// the writer (#1975). ok=false when the table or row doesn't exist yet
+// (fresh DB, pre-versioning store, or a read error); callers fall
+// through to the full migrate path, which sorts those cases out and
+// surfaces any genuine error.
+func (s *Store) schemaVersionFastRead() (int, bool) {
+	var v int
+	if err := s.db.QueryRow(`SELECT version FROM schema_version`).Scan(&v); err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+// userTableCount counts non-internal tables — distinguishes a genuinely
+// fresh/empty database (initialization, no consent needed) from an
+// existing pre-versioning store (upgrade, #1974 gate applies).
+func (s *Store) userTableCount() (int, bool) {
+	var n int
+	if err := s.db.QueryRow(
+		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
+	).Scan(&n); err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// schemaParityRepairs runs the idempotent structural repairs on every
+// Open. Both are read-first and self-skip when the target state is
+// already in place; they only take the writer when an actual deviation
+// exists. See #83 (symbol_id) and #84 (project dedup).
+func (s *Store) schemaParityRepairs() error {
+	if err := s.ensureSymbolIDColumn(); err != nil {
+		return fmt.Errorf("symbol_id column repair: %w", err)
+	}
+	// Dedupe project rows that resolved to the same canonical path.
+	// Pre-#84 `ProjectIDFromPath` returned the literal abs path, so
+	// case-insensitive filesystems (macOS APFS, Windows NTFS)
+	// accumulated duplicates when the user invoked pincher with
+	// different casings.
+	if err := s.dedupProjectsByCanonicalPath(); err != nil {
+		return fmt.Errorf("project dedup: %w", err)
+	}
+	return nil
+}
+
+// announceMigration makes an upward migration loud (#1974): one stderr
+// line naming the store, both versions, and the binary doing it —
+// before any DDL runs, so even a mid-migration crash leaves a trail
+// pointing at the cause.
+func (s *Store) announceMigration(from, to int) {
+	fmt.Fprintf(migrationLog,
+		"pincher: migrating database %s from schema v%d to v%d (binary %s) — older pincher binaries will no longer be able to open this store\n",
+		s.Path, from, to, displayBinaryVersion(),
+	)
+}
+
+// snapshotBeforeMigration writes a consistent pre-migration copy of the
+// store into <dataDir>/backups/ so the long-standing "restore an older
+// pincher.db from backup" advice in the too-new error is always
+// actually possible (#1974). VACUUM INTO produces a compact,
+// WAL-independent snapshot. Best-effort: a failed backup warns loudly
+// but doesn't block the (consented) migration — the index is derived
+// data, so the worst case is re-indexing time, and refusing here would
+// turn a full disk into a bricked upgrade.
+func (s *Store) snapshotBeforeMigration(fromVersion int) {
+	backupDir := filepath.Join(filepath.Dir(s.Path), "backups")
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		fmt.Fprintf(migrationLog, "pincher: WARNING — cannot create %s (%v); migrating without a restore point\n", backupDir, err)
+		return
+	}
+	dest := filepath.Join(backupDir, fmt.Sprintf(
+		"pincher-v%d-%s.db", fromVersion, time.Now().UTC().Format("20060102T150405Z"),
+	))
+	if _, err := os.Stat(dest); err == nil {
+		// Same-second retry (retryOnDBLock re-runs migrate); the existing
+		// snapshot is already the pre-migration state.
+		return
+	}
+	q := fmt.Sprintf(`VACUUM INTO '%s'`, strings.ReplaceAll(dest, "'", "''"))
+	if _, err := s.db.Exec(q); err != nil {
+		fmt.Fprintf(migrationLog, "pincher: WARNING — pre-migration backup failed (%v); migrating without a restore point\n", err)
+		return
+	}
+	fmt.Fprintf(migrationLog, "pincher: pre-migration backup written to %s\n", dest)
 }
 
 // ensureSymbolIDColumn adds the generated `symbol_id` column to the
