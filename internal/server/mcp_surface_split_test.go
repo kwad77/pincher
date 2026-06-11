@@ -33,6 +33,7 @@ var expectedMCPTools = map[string]bool{
 	"audit_unused":        true, // #1391 v0.83 Phase 4 composite — dead-code + deep-trace confirmation
 	"onboard_module":      true, // #1391 v0.84 Phase 4 composite — new-contributor orientation
 	"why_empty":           true, // #1391 v0.85 Phase 4 composite — empty-result recovery (stateless catalog)
+	"batch":               true, // loop-substrate — one envelope, N read-only sub-queries under a shared budget
 	"trace":               true,
 	"query":               true,
 	"guide":               true,

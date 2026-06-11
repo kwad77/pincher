@@ -82,6 +82,56 @@
     }
   },
   {
+    "name": "batch",
+    "description": "**Ask up to 12 read-only questions in ONE call.** Carries an array of {tool, args} sub-queries — any of `search`, `symbol`, `symbols`, `context`, `trace`, `query`, `neighborhood`, `changes` — and answers them in order inside a single envelope under a shared `max_tokens` budget (default 4000; once exhausted, later sub-queries return skipped:\"budget_exhausted\" + a budget_truncated warning instead of blowing the context window). Each entry ships a slim per-entry `_meta` ({empty_reason, tokens_used, warnings_v2} only); the outer envelope carries the one full `_meta` (watermark/capabilities/stats) for the whole batch — that deduplicated ceremony is the point. Sub-errors are isolated: a bad symbol ID or typo'd pinchQL yields a per-entry `error` field (plus a batch_sub_errors warning naming the failed indexes) and the rest of the batch completes normally. Top-level `project` is merged into every sub-query that doesn't set its own. Use when a loop iteration needs several probes at once — three greps' worth of answers for one call's ceremony.",
+    "input_schema": {
+      "properties": {
+        "max_tokens": {
+          "description": "Shared response budget in approximate tokens across ALL sub-queries (default 4000), spent in input order. Budget-aware sub-tools (context, symbols) inherit the remaining budget as their own max_tokens when unset. _meta.warnings_v2 code=budget_truncated reports skipped sub-queries.",
+          "type": "integer"
+        },
+        "project": {
+          "description": "Default project merged into each sub-query that doesn't set its own. Defaults to session project.",
+          "type": "string"
+        },
+        "queries": {
+          "description": "Sub-queries answered in order (max 12). Each is {tool, args} where args matches the sub-tool's own schema.",
+          "items": {
+            "properties": {
+              "args": {
+                "description": "Arguments for the sub-tool — identical schema to calling it directly.",
+                "type": "object"
+              },
+              "tool": {
+                "description": "Read-only sub-tool to dispatch. Writers and batch-in-batch are rejected per-entry.",
+                "enum": [
+                  "search",
+                  "symbol",
+                  "symbols",
+                  "context",
+                  "trace",
+                  "query",
+                  "neighborhood",
+                  "changes"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "tool"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "queries"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "branch_overlap",
     "description": "**Check two in-flight branches for merge-order risk.** Diffs `branch_a` and `branch_b` each against their shared merge-base (override with `base`), maps the changed files to symbols, and intersects the sets. Returns `overlapping_files`, `overlapping_symbols`, and a `verdict`: independent (disjoint files — merge in any order), low risk (shared files but no shared symbols — textual conflict only), or merge-order risk (shared symbols — the branch that merges second needs re-review). Deterministic: `git diff` + pincher's file→symbol index.",
     "input_schema": {
