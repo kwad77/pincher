@@ -1,0 +1,8 @@
+{
+  "name": "native-naive",
+  "description": "Stock claude -p: built-in Read/Grep/Glob only, no MCP, no coaching. The 'what users get out of the box' baseline (~38.8k tokens on investigate-5q in manual rounds).",
+  "mcp_config": "none",
+  "coaching": "none",
+  "disallowed_tools": ["mcp__pincher__*"],
+  "allowed_tools": ["Bash(grep:*)", "Bash(rg:*)", "Bash(find:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)", "Bash(sed -n:*)", "Bash(cat:*)", "Bash(git log:*)", "Bash(git show:*)"]
+}

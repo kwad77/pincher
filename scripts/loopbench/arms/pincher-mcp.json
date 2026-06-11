@@ -1,0 +1,8 @@
+{
+  "name": "pincher-mcp",
+  "description": "Realistic pincher usage: pincher-next MCP server available, built-in tools NOT disallowed, one-line nudge to prefer pincher. Measures what an agent actually spends with pincher in the toolbox.",
+  "mcp_config": "mcp-pincher-next.json",
+  "coaching": "coaching/prefer-pincher.md",
+  "disallowed_tools": [],
+  "allowed_tools": ["mcp__pincher-next", "Bash(grep:*)", "Bash(rg:*)", "Bash(find:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)", "Bash(sed -n:*)", "Bash(cat:*)"]
+}

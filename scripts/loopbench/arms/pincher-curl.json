@@ -1,0 +1,8 @@
+{
+  "name": "pincher-curl",
+  "description": "DEPRECATED — kept for comparison with the five manual rounds only. Drives pincher through curl against the REST surface (http://127.0.0.1:7878/v1/<tool>) instead of MCP. Pays a harness tax (JSON quoting, curl boilerplate, full envelopes in Bash output) that real MCP integration does not; this arm exists to quantify that tax, not to represent pincher.",
+  "mcp_config": "none",
+  "coaching": "coaching/pincher-curl.md",
+  "disallowed_tools": ["mcp__pincher__*"],
+  "allowed_tools": ["Bash(curl:*)", "Bash(grep:*)", "Bash(head:*)", "Bash(jq:*)"]
+}
