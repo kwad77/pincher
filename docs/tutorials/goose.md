@@ -62,6 +62,14 @@ For a one-off session without editing config, start Goose with Pincher enabled f
 goose session --with-extension "pincher supervised"
 ```
 
+For automated smoke tests in a busy dogfood environment, prefer the repository helper:
+
+```bash
+./scripts/goose-pincher-smoke.sh
+```
+
+The helper snapshots the Pincher SQLite database into a temporary `PINCHER_DATA_DIR` before launching Goose. That keeps the verification read-only and avoids false negatives when the live watcher/indexer is holding SQLite's write lock.
+
 ## 4. Install the project-scoped Goose hook extension
 
 Run this from the repository root:
@@ -161,6 +169,10 @@ You should see a `PreToolUse` payload for `developer__shell` or `developer__text
 ## Troubleshooting
 
 **Goose does not show Pincher tools.** Confirm `~/.config/goose/config.yaml` has the `extensions.pincher` block, `enabled: true`, `type: stdio`, and `cmd` points to a working binary. Restart Goose after editing default extension config.
+
+**Goose startup reports `database is locked` or `SQLITE_BUSY`.** A Pincher watcher/index pass can hold the live SQLite writer lock long enough for a new stdio extension process to fail startup. First run `pincher health-check`; if Pincher itself is healthy, use `./scripts/goose-pincher-smoke.sh` for a read-only verification snapshot, or retry the normal Goose session after the index pass completes. For persistent daily use, keep the `supervised` extension config so Goose reconnects cleanly after transient Pincher restarts.
+
+**Goose appears to hang while connecting the Pincher extension.** Check the latest Goose CLI log under `~/.local/state/goose/logs/cli/` and look for repeated MCP `ToolListChangedNotification` warnings or a Pincher startup error. Clean up stale failed Goose extension child processes, verify `pincher health-check`, then rerun the snapshot smoke helper to separate Goose/provider health from live database lock contention.
 
 **`pincher init --target=goose` succeeded but Goose still uses raw reads first.** The init target installs the hook extension and README/policy under `.agents/plugins/pincher/`; it does not add the MCP extension config. Add the stdio extension block above so Goose has Pincher tools available.
 
