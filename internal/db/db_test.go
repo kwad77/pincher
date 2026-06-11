@@ -616,8 +616,10 @@ var readerRoutedStoreMethods = map[string]bool{
 	"ProjectsContainingPath":         true,
 	"GetADR":                         true,
 	"ListADRs":                       true,
+	"CountADRs":                      true, // precompact-hook: PreCompact advisory point query
 	"ListLoopCheckpoints":            true, // PR-8/9 loop ledger reads
 	"ListLoops":                      true, // PR-8/9 loop ledger reads
+	"LoopLedgerStats":                true, // precompact-hook: PreCompact advisory grouped read
 	"GetFileHash":                    true,
 	"ListFilesForProject":            true,
 	"ListFilesWithHashesForProject":  true,
