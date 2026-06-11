@@ -1,11 +1,27 @@
 package server
 
 import (
+	"os"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/kwad77/pincher/internal/db"
 )
+
+// diffContextDefault — PR-4' (loop-substrate) flips #655 diff-encoded
+// context to default-ON: a repeat `context` call on an unchanged file
+// short-circuits to {unchanged:true}; a changed file ships the symbol
+// body as a line diff. The v0.56 rollout note planned exactly this
+// once perf validated; the #1320 chars/4 ApproxTokens fast path
+// removed the per-call cost concern. PINCHER_DIFF_CONTEXT=0/off/false
+// opts out.
+func diffContextDefault() bool {
+	switch strings.ToLower(os.Getenv("PINCHER_DIFF_CONTEXT")) {
+	case "0", "off", "false":
+		return false
+	}
+	return true
+}
 
 // maxTokensArg parses the per-call response budget (loop-substrate
 // PR-5). The contract: 0, omitted, or negative = unlimited — the exact

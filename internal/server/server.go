@@ -385,8 +385,11 @@ type Server struct {
 	// "session" ends when the process respawns.
 	contextDiffCache sync.Map
 	// diffContext gates contextDiffCache. Read once from
-	// PINCHER_DIFF_CONTEXT at New(); default-off in v0.56 until perf
-	// validates, then default-on.
+	// PINCHER_DIFF_CONTEXT at New(). Default-ON since PR-4'
+	// (loop-substrate) — executing the v0.56 plan's "then default-on"
+	// step; the #1320 chars/4 ApproxTokens fast path removed the
+	// per-call cost concern that gated it. Set
+	// PINCHER_DIFF_CONTEXT=0/off/false to disable.
 	diffContext bool
 
 	// events is the SSE fan-out bus for GET /v1/events (#654). The
@@ -448,10 +451,10 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 		sessionStartedAt:    now,
 		exitFn:              os.Exit, // #352: substituted by tests
 		autoRestartDelay:    autoRestartExitDelay,
-		diffContext:         os.Getenv("PINCHER_DIFF_CONTEXT") == "1", // #655
-		events:              newEventBus(),                            // #654
-		metrics:             newMetricsRegistry(),                     // #1163
-		tracer:              newOTLPTracer(version),                   // #1163 traces half
+		diffContext:         diffContextDefault(),   // #655; PR-4': default ON, =0/off/false disables
+		events:              newEventBus(),          // #654
+		metrics:             newMetricsRegistry(),   // #1163
+		tracer:              newOTLPTracer(version), // #1163 traces half
 	}
 	// #654: wire the indexer's lifecycle hook to the SSE bus so
 	// index_started / index_complete reach /v1/events subscribers. The
@@ -13028,6 +13031,14 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 	// would be a no-op anyway, but being explicit guards against future
 	// callers passing a non-zero tokensSaved by mistake.
 	newCalls := atomic.AddInt64(&s.statsCalls, 1)
+	// PR-4' (loop-substrate): watermark = index generation + call seq.
+	// Equal gN between two responses ⇒ the symbol graph did not change
+	// in between — loop agents key caches and resume-checkpoints on it.
+	// Stamped after the lite-meta prune deliberately: thin clients need
+	// the loop contract too.
+	if s.indexer != nil {
+		meta["watermark"] = fmt.Sprintf("g%d.c%d", s.indexer.Generation(), newCalls)
+	}
 	atomic.AddInt64(&s.statsTokensUsed, int64(tokensUsed))
 	if baselineMethod != baselineMethodNone {
 		atomic.AddInt64(&s.statsTokensSaved, int64(tokensSaved))

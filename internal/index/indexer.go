@@ -61,6 +61,12 @@ type Indexer struct {
 	active   map[string]bool // projectID → indexing in progress
 	progress sync.Map        // projectID → *IndexProgress
 
+	// generation counts completed index passes this process (PR-4'
+	// loop-substrate). Backs _meta.watermark: equal generations between
+	// two responses mean the symbol graph did not change in between.
+	// Accessed via Generation()/bumpGeneration() (generation.go).
+	generation int64
+
 	// currentBranchByProject — populated at Index() start with the
 	// detected git branch and consumed by flushBatch to stamp
 	// Symbol.Branch / Edge.Branch on every per-file write (#1303
@@ -1730,6 +1736,10 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 	// #1163 traces half (indexer scope): stamp the post-pass outcome
 	// attributes on the OTLP span before defer span.End() fires.
 	finishIndexSpan(span, totalFiles, totalSymbols, totalEdges, totalSkipped, totalBlocked, totalDeleted, duration.Milliseconds(), nil)
+
+	// PR-4': bump the watermark generation on the single success
+	// return — same exactly-once guarantee the #654 event above rides.
+	idx.bumpGeneration()
 
 	return result, nil
 }
