@@ -47,26 +47,133 @@ import (
 //   - empty_reason mandatory on zero-candidate / zero-result branches.
 //   - Idempotent: read-only.
 
+// Dispatch-blindness hardening (feat/dispatch-blind-verdicts). Measured
+// failure: audit_unused labeled all nine live tree-sitter `extract`
+// methods (internal/ast/treesitter_*.go, e.g.
+// ast.*rustTSExtractor.extract#Method) "confidence: high" with evidence
+// "deep_trace_confirms_unreachable". They are reached via the extractor
+// registry — calls through interface values / pooled instances that the
+// static graph records NO inbound CALLS edges for. An autonomous agent
+// acting on that verdict deletes live code. The graph cannot see Go
+// interface dispatch; the verdict must say so.
+
+// astTierConfidenceFloor mirrors dead_code's default min_confidence:
+// at or above it the extractor is AST-exact and cross-file CALLS edges
+// are trustworthy; below it the language is regex-tier and cross-file
+// calls under-resolve by design — zero inbound edges is weak evidence.
+const astTierConfidenceFloor = 0.95
+
+// Per-candidate evidence vocabulary for the dispatch-blindness caps.
+const (
+	evidenceInterfaceDispatchPossible = "interface_dispatch_possible"
+	evidenceRegexTierUnderResolved    = "extraction_confidence_below_ast_tier_calls_under_resolved"
+)
+
+// interfaceMethodNamesFolded returns the case-folded (lower-cased) set
+// of every method name declared by an Interface-kind symbol in the
+// project. Chosen heuristic, after investigating how interface method
+// sets are stored:
+//
+//  1. interface_methods (v23 table, #493) — the Go AST extractor writes
+//     one row per method an interface declares. dead_code's SQL
+//     suppression already joins this table, but EXACT-CASE: the
+//     measured tree-sitter false-positive class escaped it because the
+//     impl-tier methods are spelled `extract` while the registry
+//     interface declares `Extract`. Case-folding is the cheap reliable
+//     widening — an unexported method whose folded name matches a
+//     folded interface-method name MAY be the target of dynamic
+//     dispatch the static CALLS graph cannot see. Over-capping a
+//     genuinely dead `close` to medium is the safe direction; the
+//     inverse (high on a live dispatch target) deletes running code.
+//  2. Method symbols whose Parent is an Interface symbol's name or
+//     qualified name — tree-sitter extractors (TS/Java/C#/PHP…) emit
+//     interface members as child Method symbols instead of populating
+//     interface_methods, so source 1 alone misses them.
+//
+// Both lookups are single indexed SELECTs computed once per audit
+// call, not per candidate.
+func (s *Server) interfaceMethodNamesFolded(projectID string) map[string]bool {
+	names := map[string]bool{}
+	if ims, err := s.store.LoadInterfaceMethods(projectID); err == nil {
+		for _, im := range ims {
+			if im.MethodName != "" {
+				names[strings.ToLower(im.MethodName)] = true
+			}
+		}
+	}
+	rows, err := s.store.RO().Query(`
+		SELECT DISTINCT m.name
+		FROM symbols m
+		WHERE m.project_id = ? AND m.kind = 'Method' AND m.parent != ''
+		  AND EXISTS (
+		      SELECT 1 FROM symbols i
+		      WHERE i.project_id = m.project_id AND i.kind = 'Interface'
+		        AND (i.name = m.parent OR i.qualified_name = m.parent)
+		  )`, projectID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var n string
+			if rows.Scan(&n) == nil && n != "" {
+				names[strings.ToLower(n)] = true
+			}
+		}
+		_ = rows.Err()
+	}
+	return names
+}
+
+// dispatchBlindFlags classifies one dead-code candidate against the
+// two conditions where zero inbound CALLS edges is NOT evidence of
+// death because the graph is blind there:
+//
+//   - ifaceHit: the candidate is a Method whose case-folded name
+//     matches a project interface method — interface dispatch produces
+//     no CALLS edge to the concrete method.
+//   - regexTier: extraction_confidence below the AST tier — regex
+//     extractors under-resolve cross-file calls, so missing edges are
+//     expected even for live code.
+//
+// ifaceNames may be nil (no Method candidates in the batch).
+func dispatchBlindFlags(kind, name string, extractionConfidence float64, ifaceNames map[string]bool) (ifaceHit, regexTier bool) {
+	ifaceHit = kind == "Method" && ifaceNames[strings.ToLower(name)]
+	regexTier = extractionConfidence < astTierConfidenceFloor
+	return ifaceHit, regexTier
+}
+
+// dispatchBlindWarningMessage is the response-level warnings_v2
+// (code=dispatch_blind) text shared by audit_unused and dead_code.
+func dispatchBlindWarningMessage(ifaceCount, regexCount int) string {
+	parts := []string{}
+	if ifaceCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d candidate(s) are Methods whose name matches a project interface method — zero inbound CALLS edges there may mean dynamic dispatch the static graph cannot see (interface calls produce no CALLS edge to the concrete method)", ifaceCount))
+	}
+	if regexCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d candidate(s) were extracted below AST-tier confidence (<%.2f) — regex-tier languages under-resolve cross-file calls, so missing inbound edges are expected even for live code", regexCount, astTierConfidenceFloor))
+	}
+	return strings.Join(parts, "; ") + ". Zero inbound edges is not proof of death for these: audit_unused caps their confidence at medium; read each candidate's callers/usages before deleting."
+}
+
 // auditUnusedCandidate is one ranked entry in the audit_unused response.
 type auditUnusedCandidate struct {
-	SymbolID      string                 `json:"symbol_id"`
-	Name          string                 `json:"name"`
-	QualifiedName string                 `json:"qualified_name"`
-	Kind          string                 `json:"kind"`
-	FilePath      string                 `json:"file_path"`
-	StartLine     int                    `json:"start_line"`
-	Language      string                 `json:"language"`
-	Confidence    string                 `json:"confidence"` // high | medium | low
-	TraceSummary  map[string]any         `json:"trace_summary"`
-	Evidence      []string               `json:"evidence"`
+	SymbolID      string         `json:"symbol_id"`
+	Name          string         `json:"name"`
+	QualifiedName string         `json:"qualified_name"`
+	Kind          string         `json:"kind"`
+	FilePath      string         `json:"file_path"`
+	StartLine     int            `json:"start_line"`
+	Language      string         `json:"language"`
+	Confidence    string         `json:"confidence"` // high | medium | low
+	TraceSummary  map[string]any `json:"trace_summary"`
+	Evidence      []string       `json:"evidence"`
 }
 
 // auditUnusedSummary is the rollup that accompanies the per-candidate list.
 type auditUnusedSummary struct {
-	CandidatesAudited                int `json:"candidates_audited"`
-	DeepTraceConfirmedUnused         int `json:"deep_trace_confirmed_unused"`
-	DeepTraceSurfacedDynamicCallers  int `json:"deep_trace_surfaced_dynamic_callers"`
-	DeepTraceSurfacedDirectCallers   int `json:"deep_trace_surfaced_direct_callers"`
+	CandidatesAudited               int `json:"candidates_audited"`
+	DeepTraceConfirmedUnused        int `json:"deep_trace_confirmed_unused"`
+	DeepTraceSurfacedDynamicCallers int `json:"deep_trace_surfaced_dynamic_callers"`
+	DeepTraceSurfacedDirectCallers  int `json:"deep_trace_surfaced_direct_callers"`
 }
 
 func (s *Server) handleAuditUnused(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -187,6 +294,19 @@ func (s *Server) handleAuditUnused(ctx context.Context, req *mcp.CallToolRequest
 		CandidatesAudited: len(raw),
 	}
 
+	// Dispatch-blindness inputs: the folded interface-method name set is
+	// only consulted for Method candidates, so fetch it once and only
+	// when the batch actually contains one.
+	var ifaceMethodNames map[string]bool
+	for _, sym := range raw {
+		if sym.Kind == "Method" {
+			ifaceMethodNames = s.interfaceMethodNamesFolded(projectID)
+			break
+		}
+	}
+	interfaceDispatchFlagged := 0
+	regexTierFlagged := 0
+
 	for _, sym := range raw {
 		// #1579: per-iteration cancellation check. Each trace is depth-
 		// bounded but a 100-candidate × depth-4 loop is real CPU work
@@ -291,6 +411,26 @@ func (s *Server) handleAuditUnused(ctx context.Context, req *mcp.CallToolRequest
 			summary.DeepTraceConfirmedUnused++
 		}
 
+		// Dispatch-blindness cap (see file-header comment): the deep
+		// trace can only confirm what the graph can see, and the graph
+		// cannot see Go interface dispatch or regex-tier cross-file
+		// calls. "deep_trace_confirms_unreachable" stays in evidence —
+		// it's factually true that zero CALLS edges exist — but the
+		// verdict an agent acts on (confidence) must not say "high"
+		// where the graph is structurally blind.
+		ifaceHit, regexTier := dispatchBlindFlags(sym.Kind, sym.Name, sym.ExtractionConfidence, ifaceMethodNames)
+		if ifaceHit {
+			evidence = append(evidence, evidenceInterfaceDispatchPossible)
+			interfaceDispatchFlagged++
+		}
+		if regexTier {
+			evidence = append(evidence, evidenceRegexTierUnderResolved)
+			regexTierFlagged++
+		}
+		if (ifaceHit || regexTier) && confidence == "high" {
+			confidence = "medium"
+		}
+
 		candidates = append(candidates, auditUnusedCandidate{
 			SymbolID:      sym.ID,
 			Name:          sym.Name,
@@ -344,6 +484,14 @@ func (s *Server) handleAuditUnused(ctx context.Context, req *mcp.CallToolRequest
 		"candidates": candidates,
 		"summary":    summary,
 		"_meta":      meta,
+	}
+	if interfaceDispatchFlagged > 0 || regexTierFlagged > 0 {
+		attachWarningStructured(data, "dispatch_blind", WarningSeverityWarning,
+			dispatchBlindWarningMessage(interfaceDispatchFlagged, regexTierFlagged),
+			map[string]any{
+				"interface_dispatch_candidates": interfaceDispatchFlagged,
+				"regex_tier_candidates":         regexTierFlagged,
+			})
 	}
 	return s.jsonResultWithMeta(data, start, tool, args, 0), nil
 }

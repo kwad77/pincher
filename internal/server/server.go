@@ -4387,7 +4387,7 @@ func (s *Server) registerTools() {
 	// (zelos, bifrost, detour) made the v0.35 narrowing argument obsolete.
 	s.addTool(&mcp.Tool{
 		Name:        "dead_code",
-		Description: "**Find unreachable internal functions/methods** — symbols with zero inbound edges (CALLS/READS/WRITES/REFERENCES/IMPORTS) that aren't exported, aren't entry points, and aren't tests. The inverse of `architecture` hotspots. Defaults bias toward precision via `min_confidence=0.95`, which floors to AST-tier extractors (Go and Python at 1.0; JSON/YAML/HCL/TOML parser-backed at 1.0). `language` defaults to empty (all languages above the confidence floor). `kinds` defaults to `Function,Method`. Lower `min_confidence` to include regex-tier languages (TS/JS/Rust/Java/Ruby/PHP/C#/Kotlin/Swift/Lua/Zig/Elixir/Scala/Dart/R at 0.70-0.85) at known false-positive cost — they under-resolve cross-file CALLS. Test fixtures under `testdata/` and `__fixtures__/` are post-filtered out — they have no test runners but aren't real code either.",
+		Description: "**Find unreachable internal functions/methods** — symbols with zero inbound edges (CALLS/READS/WRITES/REFERENCES/IMPORTS) that aren't exported, aren't entry points, and aren't tests. The inverse of `architecture` hotspots. Defaults bias toward precision via `min_confidence=0.95`, which floors to AST-tier extractors (Go and Python at 1.0; JSON/YAML/HCL/TOML parser-backed at 1.0). `language` defaults to empty (all languages above the confidence floor). `kinds` defaults to `Function,Method`. Lower `min_confidence` to include regex-tier languages (TS/JS/Rust/Java/Ruby/PHP/C#/Kotlin/Swift/Lua/Zig/Elixir/Scala/Dart/R at 0.70-0.85) at known false-positive cost — they under-resolve cross-file CALLS. Test fixtures under `testdata/` and `__fixtures__/` are post-filtered out — they have no test runners but aren't real code either. Methods whose case-folded name matches a project interface method, and symbols extracted below AST-tier confidence, carry a per-row `evidence` entry plus a `_meta.warnings_v2` `dispatch_blind` advisory — interface dispatch and under-resolved regex-tier calls produce no CALLS edges, so zero inbound edges is not proof of death there.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
@@ -4628,7 +4628,7 @@ func (s *Server) registerTools() {
 	// low (depth-1 caller — resolver bug, file rather than delete).
 	s.addTool(&mcp.Tool{
 		Name:        "audit_unused",
-		Description: "**Use to find safe-to-delete dead code with per-candidate confirmation.** Runs the existing `dead_code` SQL path then, per candidate, fires a scoped inbound CALLS trace at `confirm_depth` (default 2). Classifies each candidate by what the deep trace surfaced: `high` (zero callers — safe to delete), `medium` (deeper callers — likely a dynamic path the static call graph missed, read before deleting), `low` (depth-1 caller — almost always a resolver bug, file an issue rather than delete). Returns `{candidates, summary}` where summary counts the three classification buckets. Replaces the N+1 round trips of `dead_code` + per-candidate `trace direction=in depth=2/4` confirmations. Read-only; safe to call repeatedly.",
+		Description: "**Use to find safe-to-delete dead code with per-candidate confirmation.** Runs the existing `dead_code` SQL path then, per candidate, fires a scoped inbound CALLS trace at `confirm_depth` (default 2). Classifies each candidate by what the deep trace surfaced: `high` (zero callers — safe to delete), `medium` (deeper callers — likely a dynamic path the static call graph missed, read before deleting), `low` (depth-1 caller — almost always a resolver bug, file an issue rather than delete). Returns `{candidates, summary}` where summary counts the three classification buckets. Verdicts where the static graph is dispatch-blind — Methods whose case-folded name matches a project interface method (interface dispatch produces no CALLS edges) or candidates extracted below AST-tier confidence (<0.95, under-resolved cross-file calls) — are capped at `medium` with evidence `interface_dispatch_possible` and a `_meta.warnings_v2` code `dispatch_blind`. Replaces the N+1 round trips of `dead_code` + per-candidate `trace direction=in depth=2/4` confirmations. Read-only; safe to call repeatedly.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
@@ -9530,6 +9530,23 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 	// real code) or known-dead noise the developer doesn't need
 	// told. SQL can't filter these without a path-pattern column;
 	// LIMIT*2 from SQL + trim in Go is cheaper than a new column.
+	//
+	// Dispatch-blindness flags (feat/dispatch-blind-verdicts; heuristic
+	// documented on interfaceMethodNamesFolded in audit_unused.go): a
+	// Method whose case-folded name matches a project interface method,
+	// or any symbol extracted below AST-tier confidence, may have
+	// callers the static graph cannot see (interface dispatch /
+	// under-resolved regex-tier cross-file calls). Such rows carry an
+	// `evidence` entry and the response a warnings_v2 dispatch_blind
+	// advisory — zero inbound edges there is not proof of death.
+	var deadIfaceMethodNames map[string]bool
+	for _, sym := range rawDead {
+		if sym.Kind == "Method" {
+			deadIfaceMethodNames = s.interfaceMethodNamesFolded(projectID)
+			break
+		}
+	}
+	deadIfaceFlagged, deadRegexFlagged := 0, 0
 	dead := []map[string]any{}
 	for _, sym := range rawDead {
 		if isDeveloperScratchPath(sym.FilePath) || isTestFixturePath(sym.FilePath) {
@@ -9538,7 +9555,7 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 		if isRuntimeInvokedGoSymbol(sym.Language, sym.Name) {
 			continue
 		}
-		dead = append(dead, map[string]any{
+		row := map[string]any{
 			"id":         sym.ID,
 			"name":       sym.Name,
 			"kind":       sym.Kind,
@@ -9546,7 +9563,21 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 			"file_path":  sym.FilePath,
 			"start_line": sym.StartLine,
 			"complexity": sym.Complexity,
-		})
+		}
+		ifaceHit, regexTier := dispatchBlindFlags(sym.Kind, sym.Name, sym.ExtractionConfidence, deadIfaceMethodNames)
+		if ifaceHit || regexTier {
+			ev := []string{}
+			if ifaceHit {
+				ev = append(ev, evidenceInterfaceDispatchPossible)
+				deadIfaceFlagged++
+			}
+			if regexTier {
+				ev = append(ev, evidenceRegexTierUnderResolved)
+				deadRegexFlagged++
+			}
+			row["evidence"] = ev
+		}
+		dead = append(dead, row)
 		if len(dead) >= limit {
 			break
 		}
@@ -9733,6 +9764,17 @@ func (s *Server) handleDeadCode(ctx context.Context, req *mcp.CallToolRequest) (
 		if m, ok := data["_meta"].(map[string]any); ok {
 			m["warnings"] = kindWarnings
 		}
+	}
+
+	// Dispatch-blindness advisory — attached after the branches above
+	// settle data["_meta"] so it can't be clobbered by a fresh map.
+	if deadIfaceFlagged > 0 || deadRegexFlagged > 0 {
+		attachWarningStructured(data, "dispatch_blind", WarningSeverityWarning,
+			dispatchBlindWarningMessage(deadIfaceFlagged, deadRegexFlagged),
+			map[string]any{
+				"interface_dispatch_candidates": deadIfaceFlagged,
+				"regex_tier_candidates":         deadRegexFlagged,
+			})
 	}
 
 	responseJSON, _ := json.Marshal(dead)
