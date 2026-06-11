@@ -1,0 +1,1 @@
+`pincher init --target=claude` now bakes `--data-dir` into the installed hook command when PINCHER_DATA_DIR is set — a bare `pincher hook-check` resolved the platform-default data dir, found no indexed projects, and passed everything through

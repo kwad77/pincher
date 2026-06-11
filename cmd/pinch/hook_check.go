@@ -101,6 +101,12 @@ func matchIndexedFile(store *db.Store, absPath string) (relPath string, fileByte
 //   - redirect when pattern is a single CamelCase / dotted identifier
 //     on an indexed project
 //   - pass through on regex / quoted phrase / multi-file glob shapes
+//
+// Decision logic for Glob:
+//   - advisory hint when the glob targets code files inside an
+//     indexed project (suggests onboard_module / search)
+//   - pass through when path is absent, outside every indexed
+//     project, or the pattern isn't code-shaped
 func runHookCheckCLI(args []string) {
 	fs := flag.NewFlagSet("hook-check", flag.ExitOnError)
 	dataDir := fs.String("data-dir", "", "Override data directory (default: platform-appropriate)")
@@ -258,6 +264,8 @@ func decideHook(store *db.Store, in hookCheckInput, debug bool) hookDecision {
 		return decideReadHook(store, in, debug)
 	case "Grep":
 		return decideGrepHook(store, in, debug)
+	case "Glob":
+		return decideGlobHook(store, in, debug)
 	default:
 		return hookDecision{Continue: true, Decision: "pass_through"}
 	}
@@ -462,6 +470,86 @@ func decideGrepHook(store *db.Store, in hookCheckInput, debug bool) hookDecision
 		SystemMessage: msg,
 		Decision:      "redirect_advisory",
 		SuggestedTool: "search",
+		SuggestedArgs: args,
+	}
+}
+
+// codeGlobExtensions are the file extensions for which a Glob pattern
+// counts as "hunting for code" — the case where pincher's structural
+// tools beat raw file listing. Conservative: an absent or unknown
+// extension passes through.
+var codeGlobExtensions = map[string]bool{
+	".go": true, ".py": true, ".rs": true, ".rb": true,
+	".ts": true, ".tsx": true, ".js": true, ".jsx": true,
+	".java": true, ".kt": true, ".swift": true, ".cs": true,
+	".php": true, ".c": true, ".h": true,
+	".cpp": true, ".hpp": true, ".cc": true, ".hh": true,
+}
+
+// globTargetsCode reports whether a glob pattern's extension names a
+// code file pincher indexes (`**/*.go`, `src/**/*.ts`, ...).
+func globTargetsCode(pattern string) bool {
+	return codeGlobExtensions[strings.ToLower(filepath.Ext(pattern))]
+}
+
+// matchIndexedDir resolves a directory to the indexed project that
+// contains it — longest path prefix wins, mirroring matchIndexedFile's
+// routing rule, but without requiring a file_hashes row (globs name
+// directories, not indexed files). ok=false when the dir is outside
+// every indexed project.
+func matchIndexedDir(store *db.Store, dir string) (projectID string, ok bool) {
+	clean := filepath.Clean(dir)
+	projects, err := store.ListProjects()
+	if err != nil {
+		return "", false
+	}
+	bestLen := -1
+	for _, p := range projects {
+		base := filepath.Clean(p.Path)
+		if clean != base && !strings.HasPrefix(clean, base+string(filepath.Separator)) {
+			continue
+		}
+		if len(base) > bestLen {
+			projectID, bestLen = p.ID, len(base)
+		}
+	}
+	return projectID, bestLen >= 0
+}
+
+// decideGlobHook handles Glob PreToolUse calls. Glob is a
+// file-discovery tool, so the pincher equivalent is structural —
+// onboard_module for orientation, search for symbol lookup — rather
+// than a byte-level redirect. Advisory-only, matching the v0.86
+// Read/Grep posture (#1654/#1656): never block, hint when the glob
+// targets code files inside an indexed project. A Glob with no `path`
+// passes through silently: the hook doesn't know the agent's cwd, so
+// it can't tell whether the glob lands in an indexed project.
+func decideGlobHook(store *db.Store, in hookCheckInput, debug bool) hookDecision {
+	pattern, _ := in.ToolInput["pattern"].(string)
+	if pattern == "" {
+		return debugPass(debug, "no glob pattern", hookDecision{})
+	}
+	dir, _ := in.ToolInput["path"].(string)
+	if dir == "" {
+		return debugPass(debug, "no path on glob (cwd unknown to hook)", hookDecision{})
+	}
+	if !globTargetsCode(pattern) {
+		return debugPass(debug, "glob pattern not code-shaped", hookDecision{})
+	}
+	if _, ok := matchIndexedDir(store, dir); !ok {
+		return debugPass(debug, "glob path not in any indexed project", hookDecision{})
+	}
+
+	args := fmt.Sprintf(`{"directory":"%s"}`, dir)
+	msg := fmt.Sprintf(
+		"Pincher hint: %s is indexed — `onboard_module directory=\"%s\"` maps entry points, exports and consumers in one envelope, and `search` finds symbols by name with BM25 ranking. (Hook is advisory — Glob passes through.)",
+		dir, dir,
+	)
+	return hookDecision{
+		Continue:      true,
+		SystemMessage: msg,
+		Decision:      "redirect_advisory",
+		SuggestedTool: "onboard_module",
 		SuggestedArgs: args,
 	}
 }

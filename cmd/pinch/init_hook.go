@@ -12,12 +12,13 @@ import (
 
 // installClaudeHook writes (or merges into) the project's
 // .claude/settings.json hooks so that `pincher hook-check` fires on
-// Read/Grep tool calls (PreToolUse, #627) and on context compaction
-// (PreCompact, precompact-hook — the ledger-aware compaction
-// advisory). One install — `pincher init --target=claude` — wires
-// both the MCP server registration AND the hook interception. Without
-// this, agents running with the policy in CLAUDE.md still default to
-// Read/Grep on hot paths; the runtime hook is what closes the gap.
+// Read/Grep/Glob tool calls (PreToolUse, #627) and on context
+// compaction (PreCompact, precompact-hook — the ledger-aware
+// compaction advisory). One install — `pincher init --target=claude` —
+// wires both the MCP server registration AND the hook interception.
+// Without this, agents running with the policy in CLAUDE.md still
+// default to Read/Grep on hot paths; the runtime hook is what closes
+// the gap.
 //
 // Idempotent: if `pincher hook-check` entries are already present for
 // both events, the file is left untouched. Otherwise the missing
@@ -36,7 +37,7 @@ func installClaudeHook(out io.Writer, projectDir string, dryRun bool) error {
 		return fmt.Errorf("read %s: %w", settingsPath, err)
 	}
 
-	updated, action, err := mergePincherHook(existing)
+	updated, action, err := mergePincherHook(existing, hookCheckCommand())
 	if err != nil {
 		return err
 	}
@@ -67,15 +68,31 @@ func installClaudeHook(out io.Writer, projectDir string, dryRun bool) error {
 	return nil
 }
 
+// hookCheckCommand builds the command line baked into the installed
+// hook entry. When the install itself runs with PINCHER_DATA_DIR set,
+// the hook must carry the same data dir explicitly: the hook's
+// execution environment is not guaranteed to include the user's shell
+// env, so a bare `pincher hook-check` would resolve the platform
+// default dir, find no indexed projects there, and silently pass
+// everything through — the hook looks installed but never fires.
+func hookCheckCommand() string {
+	if dir := os.Getenv("PINCHER_DATA_DIR"); dir != "" {
+		return fmt.Sprintf("pincher hook-check --data-dir %q", dir)
+	}
+	return "pincher hook-check"
+}
+
 // mergePincherHook returns the updated settings JSON-shape and an
 // action label ("created" for a fresh PreToolUse block, "added" for
 // inserting into an existing PreToolUse list OR for additively
 // registering the PreCompact event on an install that predates it, or
 // "noop" when both entries are already present). Pure function — no
-// I/O.
+// I/O; the hook command line is injected by the caller (see
+// hookCheckCommand — it bakes --data-dir in when PINCHER_DATA_DIR is
+// set at install time).
 //
 // Two entries are managed (precompact-hook):
-//   - PreToolUse matcher=Read|Grep → `pincher hook-check` (#627)
+//   - PreToolUse matcher=Read|Grep|Glob → `pincher hook-check` (#627)
 //   - PreCompact (no matcher — fires on manual AND auto compaction)
 //     → the same `pincher hook-check` command; event routing happens
 //     inside the CLI via hook_event_name
@@ -83,7 +100,7 @@ func installClaudeHook(out io.Writer, projectDir string, dryRun bool) error {
 // Each leg is independently idempotent: any existing entry under the
 // event whose hook command contains "pincher hook-check" is treated as
 // ours and left alone, even if the user tweaked matcher / shell args.
-func mergePincherHook(settings map[string]any) (map[string]any, string, error) {
+func mergePincherHook(settings map[string]any, command string) (map[string]any, string, error) {
 	if settings == nil {
 		settings = map[string]any{}
 	}
@@ -95,18 +112,18 @@ func mergePincherHook(settings map[string]any) (map[string]any, string, error) {
 	changed := false
 	action := "added"
 
-	// Leg 1: PreToolUse (Read|Grep redirect advisories, #627).
+	// Leg 1: PreToolUse (Read|Grep|Glob redirect advisories, #627).
 	preToolUse, _ := hooks["PreToolUse"].([]any)
 	if !hasPincherHookEntry(preToolUse) {
 		if len(preToolUse) == 0 {
 			action = "created"
 		}
 		preToolUse = append(preToolUse, map[string]any{
-			"matcher": "Read|Grep",
+			"matcher": "Read|Grep|Glob",
 			"hooks": []any{
 				map[string]any{
 					"type":    "command",
-					"command": "pincher hook-check",
+					"command": command,
 				},
 			},
 		})
@@ -117,14 +134,15 @@ func mergePincherHook(settings map[string]any) (map[string]any, string, error) {
 	// Leg 2: PreCompact (ledger-aware compaction advisories,
 	// precompact-hook). No matcher — PreCompact matchers select the
 	// compaction trigger ("manual"/"auto") and the advisory applies to
-	// both.
+	// both. Carries the same injected command line, so a
+	// PINCHER_DATA_DIR install routes both legs at the right store.
 	preCompact, _ := hooks["PreCompact"].([]any)
 	if !hasPincherHookEntry(preCompact) {
 		preCompact = append(preCompact, map[string]any{
 			"hooks": []any{
 				map[string]any{
 					"type":    "command",
-					"command": "pincher hook-check",
+					"command": command,
 				},
 			},
 		})
