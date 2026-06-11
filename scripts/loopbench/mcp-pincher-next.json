@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "pincher-next": {
+      "type": "stdio",
+      "command": "/tmp/pincher-loop-bin",
+      "args": ["--data-dir", "/tmp/loopbench-pincher-data"]
+    }
+  }
+}

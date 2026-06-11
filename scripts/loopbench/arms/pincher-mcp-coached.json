@@ -1,0 +1,8 @@
+{
+  "name": "pincher-mcp-coached",
+  "description": "pincher-next MCP server plus the phase-aware usage policy (smallest-call-per-phase coaching). The 'pincher used well' arm.",
+  "mcp_config": "mcp-pincher-next.json",
+  "coaching": "coaching/phase-aware.md",
+  "disallowed_tools": [],
+  "allowed_tools": ["mcp__pincher-next", "Bash(grep:*)", "Bash(rg:*)", "Bash(find:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)", "Bash(sed -n:*)", "Bash(cat:*)"]
+}
