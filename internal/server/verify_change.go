@@ -25,7 +25,8 @@ import (
 //
 //  1. The changes analysis — the same diff → changed-symbols →
 //     blast-radius → tests_to_run core handleChanges uses, extracted
-//     into analyzeChanges (below) so the two tools share one
+//     into AnalyzeChanges (changes_analysis.go, also shared by the
+//     `pincher test-impacted` CLI) so the consumers share one
 //     implementation instead of one calling the other (mirrors how
 //     plan_change composes store primitives, not handlers).
 //  2. tests_to_run, ranked by overlap — produced by the same core.
@@ -46,181 +47,6 @@ import (
 //   - No internal MCP round-trips.
 //   - Single envelope, single _meta block.
 //   - Idempotent: read-only.
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Shared changes-analysis core (extracted from handleChanges)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// changesTestRow is one entry in the ranked tests_to_run list. Shared
-// by handleChanges and handleVerifyChange; JSON shape is unchanged
-// from the handler-local struct it replaced (#247 #4).
-type changesTestRow struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	FilePath string `json:"file_path"`
-	Overlap  int    `json:"overlap"`
-}
-
-// changesAnalysis is the uncapped result of one diff → blast-radius
-// pass. Both consumers apply their own response-shaped caps on top.
-type changesAnalysis struct {
-	changedFiles   []string
-	changedSymbols []db.Symbol
-	// impacted rows are {id,name,kind,file_path,risk,changed_by} —
-	// exactly the shape handleChanges has always emitted.
-	impacted []map[string]any
-	// directCallers maps changed file → set of depth-1 inbound caller
-	// ids. verify_change's plan comparison consumes this (the plan
-	// cache stores depth-1 predictions, so actual must be depth-1 too
-	// or the diff would be apples-vs-orchard); handleChanges ignores it.
-	directCallers map[string]map[string]bool
-	// testsToRun is sorted by overlap descending, then id ascending.
-	testsToRun []changesTestRow
-}
-
-// analyzeChanges is the shared core of handleChanges and
-// handleVerifyChange (loop-substrate PR-10): git diff → changed files →
-// hunk-intersected changed symbols → inbound BFS blast radius → ranked
-// tests_to_run. Returns an error only for the git-diff failure case;
-// everything past that is best-effort, mirroring the handler behaviour
-// the code was extracted from.
-func (s *Server) analyzeChanges(ctx context.Context, projectID, root, scope string, depth int) (*changesAnalysis, error) {
-	// Run git diff
-	diffOutput, diffErr := runGitDiff(root, scope)
-	if diffErr != nil {
-		return nil, diffErr
-	}
-
-	// Parse changed files from diff
-	changedFiles := parseGitDiffFiles(diffOutput)
-
-	// #502: also fetch the unified diff so per-file hunk ranges can
-	// intersect each symbol's [StartLine, EndLine]. Pre-fix, every
-	// symbol in any changed file was treated as "changed" — adding
-	// one function to a 6000-line file expanded the blast radius BFS
-	// to half the codebase. The hunk fetch is best-effort: on error
-	// we fall back to the pre-#502 behaviour (all symbols in changed
-	// files) so the tool stays usable when git options change shape.
-	hunkDiff, hunkErr := runGitDiffHunks(root, scope)
-	var hunksByFile map[string][][2]int
-	if hunkErr == nil {
-		hunksByFile = parseGitDiffHunks(hunkDiff)
-	}
-
-	// Find symbols in changed files. When we have hunks for a file,
-	// keep only symbols whose line range overlaps an actual edit.
-	// When hunks aren't available for a file (untracked content,
-	// rename without content change, parse miss), fall back to
-	// "all symbols in file" — better to over-report than under-report
-	// for the safety-check use case.
-	var changedSymbols []db.Symbol
-	for _, f := range changedFiles {
-		syms, err := s.store.GetSymbolsForFile(projectID, f)
-		if err != nil {
-			continue
-		}
-		hunks, hasHunks := hunksByFile[f]
-		if !hasHunks || len(hunks) == 0 {
-			changedSymbols = append(changedSymbols, syms...)
-			continue
-		}
-		for _, sym := range syms {
-			if symbolOverlapsHunks(sym.StartLine, sym.EndLine, hunks) {
-				changedSymbols = append(changedSymbols, sym)
-			}
-		}
-	}
-
-	// BFS trace for blast radius. Use TraceByID so a changed `Run` /
-	// `Handler` / `Open` resolves to the *exact* symbol that changed,
-	// not whichever same-named symbol the name-based lookup picks first
-	// (#5). The previous Trace(name, ...) path computed blast radius
-	// from a sibling symbol when one name had multiple definitions.
-	//
-	// #247 #4: alongside the impacted-symbol collection, track which
-	// test symbols reach each changed symbol — separately from the
-	// `seen` dedupe so a test reached via multiple changed symbols gets
-	// its overlap counted, not collapsed into the first path. Used to
-	// produce the tests_to_run array sorted by overlap descending.
-	// #330: pre-allocate as zero-len so the JSON field is always [], never
-	// null. A nil slice marshals to null, forcing every consumer to
-	// null-check; same fix shape as #328 on health.extraction_coverage.
-	impacted := []map[string]any{}
-	seen := make(map[string]bool)
-	testHits := make(map[string]map[string]bool) // test sym ID → set of changed sym IDs that reach it
-	testSyms := make(map[string]db.Symbol)       // test sym ID → the symbol (for output projection)
-	directCallers := make(map[string]map[string]bool)
-	for _, sym := range changedSymbols {
-		hops, err := s.indexer.TraceByID(ctx, projectID, sym.ID, "inbound", depth, true)
-		if err != nil {
-			continue
-		}
-		for _, h := range hops {
-			// PR-10: record depth-1 callers per changed FILE so
-			// verify_change can compare against a plan's depth-1
-			// prediction. Tracked outside `seen` — a caller reached
-			// at depth 1 via this symbol but already seen at depth 2
-			// via another must still count as a direct caller.
-			if h.Depth == 1 {
-				set := directCallers[sym.FilePath]
-				if set == nil {
-					set = make(map[string]bool)
-					directCallers[sym.FilePath] = set
-				}
-				set[h.Symbol.ID] = true
-			}
-			if h.Symbol.IsTest {
-				if _, ok := testHits[h.Symbol.ID]; !ok {
-					testHits[h.Symbol.ID] = make(map[string]bool)
-					testSyms[h.Symbol.ID] = h.Symbol
-				}
-				testHits[h.Symbol.ID][sym.ID] = true
-			}
-			if seen[h.Symbol.ID] {
-				continue
-			}
-			seen[h.Symbol.ID] = true
-			impacted = append(impacted, map[string]any{
-				"id":         h.Symbol.ID,
-				"name":       h.Symbol.Name,
-				"kind":       h.Symbol.Kind,
-				"file_path":  h.Symbol.FilePath,
-				"risk":       h.Risk,
-				"changed_by": sym.Name,
-			})
-		}
-	}
-
-	// Build tests_to_run sorted by overlap descending (then test ID
-	// ascending for stable output). Overlap = how many distinct
-	// changed symbols this test reaches; higher overlap = more bang
-	// per re-run. Deterministic ordering keeps any future snapshot
-	// test on this surface stable.
-	testsToRun := make([]changesTestRow, 0, len(testHits))
-	for testID, hits := range testHits {
-		sym := testSyms[testID]
-		testsToRun = append(testsToRun, changesTestRow{
-			ID:       testID,
-			Name:     sym.Name,
-			FilePath: sym.FilePath,
-			Overlap:  len(hits),
-		})
-	}
-	sort.Slice(testsToRun, func(i, j int) bool {
-		if testsToRun[i].Overlap != testsToRun[j].Overlap {
-			return testsToRun[i].Overlap > testsToRun[j].Overlap
-		}
-		return testsToRun[i].ID < testsToRun[j].ID
-	})
-
-	return &changesAnalysis{
-		changedFiles:   changedFiles,
-		changedSymbols: changedSymbols,
-		impacted:       impacted,
-		directCallers:  directCallers,
-		testsToRun:     testsToRun,
-	}, nil
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Plan cache (written by plan_change, read by verify_change)
@@ -302,7 +128,7 @@ func (s *Server) handleVerifyChange(ctx context.Context, req *mcp.CallToolReques
 	budget := maxTokensArg(args)
 
 	// ── 1+2. Changes analysis: blast radius + ranked tests ──────────────
-	analysis, diffErr := s.analyzeChanges(ctx, projectID, root, scope, 3)
+	analysis, diffErr := AnalyzeChanges(ctx, s.store, s.indexer, projectID, root, scope, 3)
 	if diffErr != nil {
 		return s.errResultRich(
 			fmt.Sprintf("git diff failed: %v", diffErr),
@@ -363,7 +189,7 @@ func (s *Server) handleVerifyChange(ctx context.Context, req *mcp.CallToolReques
 				// the changed symbols in the plan's file. Depth-1 on
 				// both sides keeps the comparison apples-to-apples —
 				// the plan stashed depth-1 predictions.
-				actualSet := analysis.directCallers[entry.file]
+				actualSet := analysis.DirectCallers[entry.file]
 				actual := make([]string, 0, len(actualSet))
 				predictedSet := make(map[string]bool, len(predicted))
 				for _, id := range predicted {
@@ -413,8 +239,8 @@ func (s *Server) handleVerifyChange(ctx context.Context, req *mcp.CallToolReques
 	// means it.
 	possiblyOrphaned := []map[string]any{}
 	orphanTotal := 0
-	if len(analysis.changedFiles) > 0 {
-		orphans, oErr := s.store.GetDeadCodeForFiles(projectID, analysis.changedFiles, []string{"Function"}, 0.95, verifyMaxOrphans+1)
+	if len(analysis.ChangedFiles) > 0 {
+		orphans, oErr := s.store.GetDeadCodeForFiles(projectID, analysis.ChangedFiles, []string{"Function"}, 0.95, verifyMaxOrphans+1)
 		if oErr == nil {
 			orphanTotal = len(orphans)
 			for _, sym := range orphans {
@@ -433,16 +259,14 @@ func (s *Server) handleVerifyChange(ctx context.Context, req *mcp.CallToolReques
 	}
 
 	// ── Envelope assembly ────────────────────────────────────────────────
-	impacted := analysis.impacted
+	impacted := analysis.Impacted
 	riskCounts := map[string]int{"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
 	for _, item := range impacted {
-		if r, ok := item["risk"].(string); ok {
-			riskCounts[r]++
-		}
+		riskCounts[item.Risk]++
 	}
 
 	changedSymRows := []map[string]any{}
-	for _, sym := range analysis.changedSymbols {
+	for _, sym := range analysis.ChangedSymbols {
 		if len(changedSymRows) >= changesMaxList {
 			break
 		}
@@ -450,7 +274,7 @@ func (s *Server) handleVerifyChange(ctx context.Context, req *mcp.CallToolReques
 			"id": sym.ID, "name": sym.Name, "kind": sym.Kind, "file_path": sym.FilePath,
 		})
 	}
-	testsToRun := analysis.testsToRun
+	testsToRun := analysis.TestsToRun
 	if len(testsToRun) > changesMaxList {
 		testsToRun = testsToRun[:changesMaxList]
 	}
@@ -471,17 +295,17 @@ func (s *Server) handleVerifyChange(ctx context.Context, req *mcp.CallToolReques
 	})
 	meta["next_steps"] = nextSteps
 
-	if len(analysis.changedFiles) == 0 {
+	if len(analysis.ChangedFiles) == 0 {
 		stampEmpty(meta, EmptyReasonNoResultsInCorpus, fmt.Sprintf(
 			"scope=%q has no changed files — nothing to verify. If you just committed, use scope=\"base:<branch>\"; if you staged, use scope=\"staged\".", scope))
 	}
 
 	data := map[string]any{
 		"summary": map[string]any{
-			"changed_files":     len(analysis.changedFiles),
-			"changed_symbols":   len(analysis.changedSymbols),
+			"changed_files":     len(analysis.ChangedFiles),
+			"changed_symbols":   len(analysis.ChangedSymbols),
 			"total_impacted":    len(impacted),
-			"tests_to_run":      len(analysis.testsToRun),
+			"tests_to_run":      len(analysis.TestsToRun),
 			"critical":          riskCounts["CRITICAL"],
 			"high":              riskCounts["HIGH"],
 			"possibly_orphaned": orphanTotal,
@@ -583,15 +407,15 @@ func (s *Server) handleVerifyChange(ctx context.Context, req *mcp.CallToolReques
 	// alternative was re-reading every changed file plus every impacted
 	// symbol's file after the edit.
 	responseJSON, _ := json.Marshal(data)
-	paths := make([]string, 0, len(analysis.changedSymbols)+len(impacted))
-	for _, sym := range analysis.changedSymbols {
+	paths := make([]string, 0, len(analysis.ChangedSymbols)+len(impacted))
+	for _, sym := range analysis.ChangedSymbols {
 		if sym.FilePath != "" {
 			paths = append(paths, sym.FilePath)
 		}
 	}
 	for _, item := range impacted {
-		if fp, ok := item["file_path"].(string); ok && fp != "" {
-			paths = append(paths, fp)
+		if item.FilePath != "" {
+			paths = append(paths, item.FilePath)
 		}
 	}
 	return s.jsonResultWithMeta(data, start, tool, args, s.savedVsFileSizesSession(projectID, root, paths, responseJSON)), nil

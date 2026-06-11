@@ -9309,19 +9309,24 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 		return errResult(err.Error()), nil
 	}
 
-	// loop-substrate PR-10: the diff → changed-symbols → blast-radius →
-	// tests_to_run core is shared with verify_change via analyzeChanges
-	// (see verify_change.go — the moved code keeps its #502/#247/#330
-	// commentary there). The handler keeps everything response-shaped:
-	// caps, summary, warnings, empty-state diagnosis.
-	analysis, diffErr := s.analyzeChanges(ctx, projectID, root, scope, depth)
-	if diffErr != nil {
+	// Diff → changed symbols → blast radius → impacted tests. The
+	// pipeline lives in AnalyzeChanges (changes_analysis.go — the moved
+	// code keeps its #502/#247/#330 commentary there), shared three
+	// ways: this handler, verify_change (loop-substrate PR-10, which
+	// also consumes the depth-1 DirectCallers for its plan comparison),
+	// and the `pincher test-impacted` CLI — all run the exact same
+	// analysis instead of forking the logic. The only error it returns
+	// is a git-diff failure; everything downstream is best-effort. The
+	// handler keeps everything response-shaped: caps, summary, warnings,
+	// empty-state diagnosis.
+	analysis, analysisErr := AnalyzeChanges(ctx, s.store, s.indexer, projectID, root, scope, depth)
+	if analysisErr != nil {
 		// Rich envelope so the agent learns the valid scopes instead of
 		// staring at a bare "git diff failed". Most common cause is a
 		// base-branch typo (`base:mian`) or a non-existent branch — the
 		// next_steps lead them at the supported shapes.
 		return s.errResultRich(
-			fmt.Sprintf("git diff failed: %v", diffErr),
+			fmt.Sprintf("git diff failed: %v", analysisErr),
 			[]map[string]string{
 				{"tool": "changes", "args": `{"scope":"unstaged"}`,
 					"why": "default: working-tree changes not yet staged"},
@@ -9333,10 +9338,25 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 					"why": "committed-only diff vs master's merge-base — preview a PR's blast radius. Use the actual base branch name (master/main/develop/…)"},
 			}), nil
 	}
-	changedFiles := analysis.changedFiles
-	changedSymbols := analysis.changedSymbols
-	impacted := analysis.impacted
-	testsToRun := analysis.testsToRun
+	changedFiles := analysis.ChangedFiles
+	changedSymbols := analysis.ChangedSymbols
+	testsToRun := analysis.TestsToRun
+
+	// Project the impacted set into the response map shape. #330:
+	// pre-allocate as zero-len so the JSON field is always [], never
+	// null. A nil slice marshals to null, forcing every consumer to
+	// null-check; same fix shape as #328 on health.extraction_coverage.
+	impacted := make([]map[string]any, 0, len(analysis.Impacted))
+	for _, item := range analysis.Impacted {
+		impacted = append(impacted, map[string]any{
+			"id":         item.ID,
+			"name":       item.Name,
+			"kind":       item.Kind,
+			"file_path":  item.FilePath,
+			"risk":       item.Risk,
+			"changed_by": item.ChangedBy,
+		})
+	}
 
 	// Build risk summary — count the FULL impacted set before any trim.
 	riskCounts := map[string]int{"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}

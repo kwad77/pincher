@@ -277,6 +277,22 @@ pincher verify --data-dir /x                      # override data directory
 
 Stoa-family precedent: `stoa verify` hashes manifests as the integrity-check leg of the verify/doctor/probe trinity. Pincher's `doctor` is the doctor leg already; `verify` adds the integrity leg. Exit codes: `0` no drift, `1` drift detected (caller re-indexes), `2` couldn't open the database.
 
+### `pincher test-impacted`
+
+Computes the current diff's blast radius — the **same** diff → changed-symbols → impacted-tests analysis the `changes` MCP tool runs (shared core, not a fork) — and executes exactly the Go tests it implicates, grouped into one `go test <pkg> -run '^(TestA|TestB)$' -count=1` invocation per package. Output is conclusion-dense: one `ok`/`FAIL` line per package, failing test names plus the output tail only on failure, and a final `IMPACTED: P packages, T tests — PASS|FAIL` summary.
+
+```bash
+pincher test-impacted                             # run tests implicated by unstaged changes
+pincher test-impacted --scope staged              # pre-commit: what `git add`ed changes implicate
+pincher test-impacted --scope base:master         # PR view: committed diff vs master's merge-base
+pincher test-impacted --dry-run                   # print the per-package go test commands, run nothing
+pincher test-impacted --max-tests 10              # cap to the 10 highest-overlap tests
+pincher test-impacted --timeout 5m                # total execution budget (default 10m)
+pincher test-impacted --json                      # structured per-package results
+```
+
+Run it from the indexed repo root (the index provides the call graph — it names `pincher index` if the project isn't indexed). Impacted tests that aren't Go `Test*` functions (e.g. `*.spec.ts` suites, benchmarks) are listed under "not runnable by this command" instead of silently dropped. A clean tree, or a diff that no indexed test reaches, exits `0` with an explanatory line; any failing test exits `1`.
+
 ### `pincher savings`
 
 Generates falsifiable savings reports from persisted per-call `_meta` evidence. The report exposes raw token inputs, the exact formulas, all-time and recent-window aggregates, baseline-method buckets, and schema-gap counters. It refuses aggregate savings claims when rows are missing `tokens_saved`, missing `tokens_saved_pct`, use `baseline_method=none`, or the requested recent window has no rows.
