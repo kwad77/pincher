@@ -7,6 +7,7 @@ A task set is a single markdown file passed verbatim as the `claude -p` prompt b
 |---|---|---|
 | `investigate-5q.md` | 5 mixed investigation questions | The original manual-round task: config caps, callers, test coverage, wire formats, feature archaeology. |
 | `graph-12q.md` | 12 who-calls / what-calls / blast-radius questions | Call-graph-heavy — pincher's home turf (`trace` answers most of them in one call each). |
+| `messy-10q.md` | 10 questions on the **messy corpus** (not this repo) | Polyglot/generated-code terrain where naive grep degrades: dispatch indirection, same-named twins, dead code, a config knob buried in generated noise. Build the corpus first (`fixtures/build-messy-corpus.sh`), pass its path as `repo_dir`, and grade against `messy-10q.answers.md` (the key lives here, out of the arms' sight). |
 | `smoke-modpath.md` | 1 trivial question | Harness smoke only; not a benchmark. |
 | `smoke-health.md` | 1 trivial MCP call | MCP-wiring smoke only; not a benchmark. |
 
