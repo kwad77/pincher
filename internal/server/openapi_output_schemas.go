@@ -103,9 +103,11 @@ var outputSchemas = map[string]string{
 
 	// 5. search — BM25-ranked. v0.25 #532: pagination via limit/offset
 	// with total/has_more in the response envelope.
+	// `results` is required unless format=text was passed, in which
+	// case `results_text` replaces it — so neither is in `required`.
 	"search": `{
 		"type":"object",
-		"required":["query","count","results","total","has_more","offset","limit","_meta"],
+		"required":["query","count","total","has_more","offset","limit","_meta"],
 		"properties":{
 			"query":{"type":"string"},
 			"count":{"type":"integer","description":"Number of results in this page (len(results))."},
@@ -132,6 +134,7 @@ var outputSchemas = map[string]string{
 					"extraction_confidence":{"type":"number"}
 				}
 			}},
+			"results_text":{"type":"string","description":"format=text rendering: TSV block replacing the results array — header row, then one line per hit (id<TAB>kind<TAB>file:line<TAB>signature-or-name)."},
 			"_meta":` + metaRef + `
 		}
 	}`,
@@ -150,13 +153,16 @@ var outputSchemas = map[string]string{
 	}`,
 
 	// 7. trace — graph BFS.
+	// `hops` is required unless format=text was passed, in which case
+	// `results_text` replaces it — so neither is in `required`.
 	"trace": `{
 		"type":"object",
-		"required":["root","direction","hops","total","_meta"],
+		"required":["root","direction","total","_meta"],
 		"properties":{
 			"root":{"type":"string"},
 			"direction":{"type":"string","enum":["inbound","outbound","both"]},
 			"hops":{"type":"array","items":{"type":"object"}},
+			"results_text":{"type":"string","description":"format=text rendering: TSV block replacing the hops array — header row, then one line per hop (depth<TAB>risk<TAB>id)."},
 			"total":{"type":"integer"},
 			"risk_summary":{"type":"object","properties":{
 				"CRITICAL":{"type":"integer"},

@@ -71,6 +71,7 @@ Responses compress ~65% with `Accept-Encoding: gzip`. Tested clients: curl, Pyth
 | Env var | Default | Effect |
 |---|---|---|
 | `PINCHER_META_CAPABILITIES` | `on` | Set to `off` (or `false`/`0`/`none`/`no`) at server start to drop the per-call `_meta.capabilities` stamp. Saves ~50 tokens/call (#1087). Use the `/v1/capabilities` endpoint to query the slice once. Default-on preserves back-compat. |
+| `PINCHER_META_DELTA` | `on` | Session-delta `_meta`: only the **first** success response of a session carries the `_meta.capabilities` array (~74 tokens); subsequent responses omit it and stamp `_meta.meta_delta: true` so consumers can tell intentional omission from accident. The array is re-emitted in full whenever the capability set actually changes (e.g. streamable-HTTP enabled mid-process); `PINCHER_META_CAPABILITIES` is read once at start and cannot toggle mid-process. Per-tool fields (`complexity_tier`, `baseline_method`) and error envelopes are never delta'd. Set to `0` (or `off`/`false`/`none`/`no`) to restore the legacy every-call emission. |
 | `PINCHER_TOOL_DESCRIPTIONS` | (unset) | Set to `short` at server start to swap the 5 longest tool descriptions (trace / search / neighborhood / query / changes) for one-sentence variants. Trims ~3 KB / ~750 tokens off every session-start `tools/list` handshake. Long-form pedagogical content stays available via the per-tool sections in [`docs/reference/tools.md`](tools.md) (#1088). |
 | `PINCHER_TOKEN_ACCOUNTING` | `cheap` | Per-call `_meta.tokens_used` / `tokens_saved_pct` are computed with a char/4 heuristic by default (#1320, v0.69 perf hardening). Set to `exact` (or `bpe` / `1`) at server start to restore cl100k_base BPE counts — useful for operators benchmarking real token consumption or validating savings reporting. The cheap default cut 60% of per-call allocations on the authenticated handler path; per-call envelopes shift by ~5-15% under cheap mode, the session-flush aggregator is unaffected. |
 
@@ -87,7 +88,7 @@ pincher exposes four standard observability surfaces a production router or SRE 
 | **Events** (index lifecycle, binary drift) | `GET /v1/events` (Server-Sent Events) | Always on | `event_stream_sse` |
 | **Correlation IDs** | `X-Request-ID` header + `_meta.request_id` | Always on | `request_id_correlation` |
 
-Capability tags appear in every tool response's `_meta.capabilities` array so a router can detect what this binary supports without parsing version strings or scraping a config file.
+Capability tags appear in the **first** tool response of a session's `_meta.capabilities` array so a router can detect what this binary supports without parsing version strings or scraping a config file. Subsequent responses omit the array and stamp `_meta.meta_delta: true` (session-delta, default on); it is re-emitted in full when the capability set changes. Set `PINCHER_META_DELTA=0` to restore the per-call stamp, or query `GET /v1/capabilities` at any time.
 
 #### Standard metrics (`/v1/metrics`)
 
