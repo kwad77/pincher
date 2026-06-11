@@ -4109,20 +4109,21 @@ func (s *Server) addTool(tool *mcp.Tool, handler mcp.ToolHandler) {
 	// transform — first-sentence tool description, first-sentence arg
 	// descriptions capped at leanArgDescMax chars. Applied before the
 	// SDK sees the tool so tools/list, HTTP OpenAPI and the golden all
-	// observe the same (transformed) literal. No-op under the default
-	// rich style, so the tool-contract golden is byte-identical when
-	// the env is unset.
+	// observe the same (transformed) literal. Default style is lean
+	// since v1.6 (#2005); the tool-contract golden pins the FULL/rich
+	// surface by setting the env explicitly (the contract documents
+	// the complete surface, independent of the shipped default).
 	if s.schemaStyle == schemaStyleLean {
 		tool.Description = leanToolDescription(tool.Description)
 		if raw, err := json.Marshal(tool.InputSchema); err == nil {
 			tool.InputSchema = leanInputSchema(raw)
 		}
 	}
-	// Schema diet (#2003), toolset mode: under PINCHER_TOOLSET=core only
-	// the loop-essential coreToolset is advertised over MCP tools/list.
-	// s.handlers and s.tools are ALWAYS populated regardless — the HTTP
-	// /v1/<tool> routes, the OpenAPI spec and `batch` sub-query dispatch
-	// keep the full surface in both modes.
+	// Schema diet (#2003), toolset mode: under core (the default since
+	// v1.6, #2005) only the loop-essential coreToolset is advertised
+	// over MCP tools/list. s.handlers and s.tools are ALWAYS populated
+	// regardless — the HTTP /v1/<tool> routes, the OpenAPI spec and
+	// `batch` sub-query dispatch keep the full surface in both modes.
 	if s.toolset != toolsetCore || coreToolset[tool.Name] {
 		s.mcp.AddTool(tool, wrapped)
 		s.mcpVisible[tool.Name] = true

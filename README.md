@@ -262,7 +262,7 @@ The boundary is deliberate: no default LLM extraction pipeline, no dashboard-fir
 
 ## Tool surface
 
-Pincher currently exposes 34 MCP tools. The high-frequency set:
+Pincher currently exposes 34 MCP tools (10 advertised over `tools/list` by default — see the schema-diet note below; all 34 stay reachable over HTTP and `batch`). The high-frequency set:
 
 - `guide` — choose the next Pincher call from a task description
 - `search` — BM25 symbol/config/docs search
@@ -276,7 +276,7 @@ Pincher currently exposes 34 MCP tools. The high-frequency set:
 
 The CLI also includes `pincher report`, a source-grounded architecture report artifact built from the same index.
 
-**Schema diet (#2003):** the full 34-tool `tools/list` advertisement weighs ~18.4k approx tokens, re-read by the host every turn. Two opt-in knobs cut it: `PINCHER_TOOLSET=core` (or `--toolset core`) advertises only the 10 loop-essential tools (~8.7k) while keeping every tool reachable over HTTP `/v1/<tool>` and as `batch` sub-queries; `PINCHER_SCHEMA_STYLE=lean` applies a deterministic first-sentence transform to all descriptions (full surface ~6.9k; combined core+lean ~3.0k, gate-tested). Defaults stay `full`/`rich` this release — recommended for long agent loops: both. Details in [`docs/reference/http-api.md`](docs/reference/http-api.md).
+**Schema diet (#2003, default since v1.6):** the full 34-tool `tools/list` advertisement weighs ~18.4k approx tokens, re-read by the host every turn. By default pincher now advertises the 10 loop-essential tools with lean first-sentence descriptions (combined core+lean ~3.0k, gate-tested) while keeping every tool reachable over HTTP `/v1/<tool>` and as `batch` sub-queries. The flip is measured (PR #2005, 10x-scale loopbench): full/rich burned 1.44M total tokens vs 475k for core+lean at identical accuracy — 3.0x waste. Restore the full advertisement with `PINCHER_TOOLSET=full` (or `--toolset full`) and `PINCHER_SCHEMA_STYLE=rich`. Details in [`docs/reference/http-api.md`](docs/reference/http-api.md).
 
 Full reference: [`docs/reference/tools.md`](docs/reference/tools.md). HTTP shape: [`docs/reference/http-api.md`](docs/reference/http-api.md).
 

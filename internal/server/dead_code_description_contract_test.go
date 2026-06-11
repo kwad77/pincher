@@ -33,7 +33,7 @@ import (
 // at the spot the drift was introduced.
 func findDeadCodeToolDescription(t *testing.T) string {
 	t.Helper()
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	tool := srv.tools["dead_code"]
 	if tool == nil {
 		t.Fatal("dead_code tool not registered")
@@ -45,7 +45,7 @@ func findDeadCodeToolDescription(t *testing.T) string {
 // decoded map so per-field "description" text can be asserted.
 func findDeadCodeToolSchema(t *testing.T) map[string]any {
 	t.Helper()
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	tool := srv.tools["dead_code"]
 	if tool == nil {
 		t.Fatal("dead_code tool not registered")

@@ -354,8 +354,7 @@ func TestHandleSearch_ExplicitMinConfidenceOverridesDefault(t *testing.T) {
 // query-aware behavior. Otherwise callers passing 0.0 explicitly think
 // they're changing behavior when they're not.
 func TestSearchToolSchema_DocumentsQueryAwareDefault(t *testing.T) {
-	t.Parallel()
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	tool, ok := srv.tools["search"]
 	if !ok {
 		t.Fatal("search tool not registered")

@@ -27,7 +27,7 @@ import (
 //     vs runtime parity.
 
 func TestDoctorDescription_NamesAllResponseFields(t *testing.T) {
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	tool := srv.tools["doctor"]
 	if tool == nil {
 		t.Fatal("doctor tool not registered")
@@ -52,7 +52,7 @@ func TestDoctorDescription_NamesAllResponseFields(t *testing.T) {
 // got silently clamped, with the clamp warning only available
 // _after_ the call.
 func TestDoctorSchema_TopDescribesCeiling(t *testing.T) {
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	tool := srv.tools["doctor"]
 	if tool == nil {
 		t.Fatal("doctor tool not registered")

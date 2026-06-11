@@ -34,7 +34,7 @@ import (
 
 func findArchitectureToolDescription(t *testing.T) string {
 	t.Helper()
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	tool := srv.tools["architecture"]
 	if tool == nil {
 		t.Fatal("architecture tool not registered")

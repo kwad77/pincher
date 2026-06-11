@@ -29,7 +29,7 @@ import (
 
 func findSearchToolSchema(t *testing.T) map[string]any {
 	t.Helper()
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	tool := srv.tools["search"]
 	if tool == nil {
 		t.Fatal("search tool not registered")

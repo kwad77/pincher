@@ -29,7 +29,7 @@ import (
 //     a recorded rename succeeds (end-to-end the feature works).
 
 func TestSymbolDescription_MentionsRenameResilience(t *testing.T) {
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	tool := srv.tools["symbol"]
 	if tool == nil {
 		t.Fatal("symbol tool not registered")
