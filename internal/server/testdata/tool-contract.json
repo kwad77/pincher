@@ -274,7 +274,7 @@
   },
   {
     "name": "guide",
-    "description": "**Call first when you don't know which tool to use.** Takes a free-form task description (\"fix login retry bug\", \"refactor the auth middleware\", \"understand how indexing works\") and returns 2-3 recommended pincher tool calls with reasoning. A starter tool — eliminates the decision friction of choosing between search/context/trace/changes from scratch.",
+    "description": "**Call first when you don't know which tool to use.** Takes a free-form task description (\"fix login retry bug\", \"refactor the auth middleware\", \"understand how indexing works\") and returns 2-3 recommended pincher tool calls with reasoning. Phase-aware: a pasted stack trace routes to `investigate_failure`, a directory-shaped task (\"onboard internal/server/\") to `onboard_module`, pre-edit intent (\"what breaks if I change X\") to `plan_change`, caller questions (\"who calls X\") to `trace`, resumption (\"continue where I left off\") to the loop ledger or `adr` list, and multi-question tasks to `batch` when registered. Recommendations are ordered by this process's measured next_steps followed-rate once a tool has ≥10 emissions (not persisted across restarts). A starter tool — eliminates the decision friction of choosing between search/context/trace/changes from scratch.",
     "input_schema": {
       "properties": {
         "project": {

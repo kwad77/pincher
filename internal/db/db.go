@@ -760,6 +760,43 @@ func (s *Store) ConfigureFTSMergePolicy() error {
 	return nil
 }
 
+// LoopLedgerNonEmpty reports whether the loop-checkpoint ledger
+// (`loop_checkpoints`, schema v40) exists AND holds at least one row.
+// Used by guide's resumption routing (guide-coaching PR-15/17): a
+// "continue / resume / where was I" task only earns a loop-resume
+// recommendation when there is actually a checkpoint to resume from.
+//
+// Defensive on purpose: v40 may not be migrated in this binary's data
+// dir (the table is created by a later schema migration), so absence
+// of the table is a normal "no" — not an error. The project-scoped
+// probe falls back to an unscoped EXISTS when the column shape
+// doesn't match (pre-v40-final schemas), preferring a cheap honest
+// answer over a hard dependency on a migration this branch doesn't
+// own.
+func (s *Store) LoopLedgerNonEmpty(projectID string) bool {
+	var one int
+	err := s.ro.QueryRow(
+		`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'loop_checkpoints'`,
+	).Scan(&one)
+	if err != nil {
+		return false // table absent (sql.ErrNoRows) or store unreadable
+	}
+	if projectID != "" {
+		var n int
+		if err := s.ro.QueryRow(
+			`SELECT EXISTS(SELECT 1 FROM loop_checkpoints WHERE project_id = ?)`, projectID,
+		).Scan(&n); err == nil {
+			return n == 1
+		}
+		// Column shape unknown — fall through to the unscoped probe.
+	}
+	var n int
+	if err := s.ro.QueryRow(`SELECT EXISTS(SELECT 1 FROM loop_checkpoints)`).Scan(&n); err != nil {
+		return false
+	}
+	return n == 1
+}
+
 // FTS5Fragmentation returns per-corpus fragmentation stats for the
 // three per-corpus FTS5 virtual tables (`symbols_code_fts`,
 // `symbols_config_fts`, `symbols_docs_fts`). Reader-routed; uses the
