@@ -1,5 +1,3 @@
-//go:build treesitter_experimental
-
 // SPDX-License-Identifier: MIT
 
 // Experimental real-tree-sitter Rust extractor (ADR-0008 / #1957). NOT wired
@@ -11,7 +9,7 @@ package ast
 
 import (
 	"context"
-	"path/filepath"
+	"strings"
 
 	"github.com/kwad77/pincher/internal/tsbridge"
 )
@@ -21,6 +19,11 @@ type rustTSExtractor struct {
 	lang tsbridge.Language
 	p    tsbridge.Parser
 	ctx  context.Context
+	// allocated tracks every node-struct WASM allocation made during the
+	// current extraction so they can be bulk-freed at the end. Reused
+	// (reset, not reallocated) across extractions to keep Go allocation
+	// flat. The instance is single-threaded (pool checkout), so no lock.
+	allocated []tsbridge.Node
 }
 
 func newRustTSExtractor(ctx context.Context) (*rustTSExtractor, error) {
@@ -49,6 +52,7 @@ func (r *rustTSExtractor) ncount(n tsbridge.Node) int {
 }
 func (r *rustTSExtractor) nchild(n tsbridge.Node, i int) tsbridge.Node {
 	c, _ := n.NamedChild(r.ctx, uint64(i))
+	r.allocated = append(r.allocated, c)
 	return c
 }
 func (r *rustTSExtractor) text(n tsbridge.Node, src []byte) string {
@@ -58,6 +62,33 @@ func (r *rustTSExtractor) text(n tsbridge.Node, src []byte) string {
 		return string(src[s:e])
 	}
 	return ""
+}
+
+// span returns the byte and 1-indexed line range of a node, clamped to src.
+func (r *rustTSExtractor) span(n tsbridge.Node, src []byte) (sb, eb, sl, el int) {
+	s, _ := n.StartByte(r.ctx)
+	e, _ := n.EndByte(r.ctx)
+	sb, eb = int(s), int(e)
+	if eb > len(src) {
+		eb = len(src)
+	}
+	if sb > eb {
+		sb = eb
+	}
+	sl = 1 + strings.Count(string(src[:sb]), "\n")
+	el = 1 + strings.Count(string(src[:eb]), "\n")
+	return
+}
+
+// addSym appends a symbol with its node's byte/line span and AST-tier
+// confidence.
+func (r *rustTSExtractor) addSym(fr *FileResult, name, kind, qn, parent string, n tsbridge.Node, src []byte) {
+	sb, eb, sl, el := r.span(n, src)
+	fr.Symbols = append(fr.Symbols, ExtractedSymbol{
+		Name: name, Kind: kind, QualifiedName: qn, Parent: parent,
+		StartByte: sb, EndByte: eb, StartLine: sl, EndLine: el,
+		ExtractionConfidence: 1.0,
+	})
 }
 
 // nameOfType returns the text of the first named child whose node kind is one
@@ -87,88 +118,147 @@ func joinQN(a, b string) string {
 }
 
 func (r *rustTSExtractor) extract(source []byte, relPath string) *FileResult {
-	mod := filepath.ToSlash(filepath.Dir(relPath))
-	if mod == "." {
-		mod = ""
-	}
-	tree, err := r.p.ParseString(r.ctx, string(source))
-	if err != nil {
-		return &FileResult{Module: mod}
-	}
-	root, err := tree.RootNode(r.ctx)
-	if err != nil {
-		return &FileResult{Module: mod}
-	}
-	fr := &FileResult{Module: mod}
-	r.walk(root, source, mod, "", fr)
+	fr, _ := r.extractChecked(source, relPath)
 	return fr
 }
 
-func (r *rustTSExtractor) walk(n tsbridge.Node, src []byte, mod, parentType string, fr *FileResult) {
+// extractChecked runs the tree-sitter pass and reports whether the parse was
+// clean (no ERROR node anywhere in the tree). The dispatcher uses the bool
+// for all-or-nothing semantics: a clean parse yields AST-tier symbols
+// (ConfidenceOverride 1.0); any parse error returns ok=false so the caller
+// falls back to the regex tier rather than emitting a partial/degraded tree.
+func (r *rustTSExtractor) extractChecked(source []byte, relPath string) (*FileResult, bool) {
+	// Match the regex tier's module convention exactly (moduleQN: strip
+	// extension, path separators → "::") so AST-tier QNs/IDs stay identical
+	// to the regex tier for the common cases — minimizing the symbol-ID churn
+	// on the upgrade re-index. (Rust `mod`-block-aware qualification is a
+	// separate, deliberately-churning enhancement for a later cycle.)
+	mod := moduleQN(relPath, "::")
+	tree, err := r.p.ParseString(r.ctx, string(source))
+	if err != nil {
+		return &FileResult{Module: mod}, false
+	}
+	// Free everything allocated for this parse: the tree (ts_tree_delete) and
+	// every node-struct scratch allocation. Without this, reusing a pooled
+	// instance across many files grows the WASM heap unbounded (#1957).
+	r.allocated = r.allocated[:0]
+	defer func() {
+		for i := range r.allocated {
+			_ = r.allocated[i].Free(r.ctx)
+		}
+		r.allocated = r.allocated[:0]
+		_ = tree.Close(r.ctx)
+	}()
+	root, err := tree.RootNode(r.ctx)
+	if err != nil {
+		return &FileResult{Module: mod}, false
+	}
+	r.allocated = append(r.allocated, root)
+	fr := &FileResult{Module: mod}
+	hadErr := r.walk(root, source, rustWalkCtx{scope: mod}, fr)
+	if hadErr {
+		// Discard the partial tree-sitter result; the dispatcher falls back
+		// to the regex tier for an all-or-nothing-per-file guarantee.
+		return &FileResult{Module: mod}, false
+	}
+	fr.ConfidenceOverride = 1.0
+	return fr, true
+}
+
+// walk descends the tree emitting symbols/edges and returns whether any node
+// in the subtree is an ERROR node. scope is the qualified module path of the
+// current context (file directory + nested `mod` blocks); typeParent is the
+// fully-qualified enclosing type for methods (e.g. "geo::Point"), or "" when
+// not inside an impl/trait — matching the regex tier's QN/Parent convention.
+// rustWalkCtx carries the scope state threaded through the walk, matching the
+// regex tier's QN/Parent/CALLS conventions so AST-tier symbol IDs and edges
+// stay stable.
+type rustWalkCtx struct {
+	scope      string // module path (moduleQN of the file)
+	typeParent string // scope::Type — the Parent field for methods (no trait)
+	qnPrefix   string // scope::Type[::Trait] — QN prefix for methods (#1783)
+	caller     string // enclosing function/method QN — FromQN for CALLS edges
+}
+
+func (r *rustTSExtractor) walk(n tsbridge.Node, src []byte, c rustWalkCtx, fr *FileResult) bool {
+	hadErr := false
+	if e, _ := n.IsError(r.ctx); e {
+		hadErr = true
+	}
+	child := c
 	switch r.kind(n) {
 	case "function_item":
-		name := r.nameOfType(n, src, "identifier")
-		if name != "" {
-			if parentType != "" {
-				fr.Symbols = append(fr.Symbols, ExtractedSymbol{
-					Name: name, Kind: "Method", Parent: parentType,
-					QualifiedName: joinQN(joinQN(mod, parentType), name), ExtractionConfidence: 1.0,
-				})
+		if name := r.nameOfType(n, src, "identifier"); name != "" {
+			var qn string
+			if c.typeParent != "" {
+				qn = joinQN(c.qnPrefix, name)
+				r.addSym(fr, name, "Method", qn, c.typeParent, n, src)
 			} else {
-				fr.Symbols = append(fr.Symbols, ExtractedSymbol{
-					Name: name, Kind: "Function",
-					QualifiedName: joinQN(mod, name), ExtractionConfidence: 1.0,
-				})
+				qn = joinQN(c.scope, name)
+				r.addSym(fr, name, "Function", qn, "", n, src)
 			}
+			// Calls in this body attribute to this function; nested items are
+			// not methods of the enclosing type.
+			child.caller = qn
+			child.typeParent, child.qnPrefix = "", ""
 		}
 	case "struct_item":
 		if name := r.nameOfType(n, src, "type_identifier"); name != "" {
-			fr.Symbols = append(fr.Symbols, ExtractedSymbol{Name: name, Kind: "Class", QualifiedName: joinQN(mod, name), ExtractionConfidence: 1.0})
+			r.addSym(fr, name, "Class", joinQN(c.scope, name), "", n, src)
 		}
 	case "enum_item":
 		if name := r.nameOfType(n, src, "type_identifier"); name != "" {
-			fr.Symbols = append(fr.Symbols, ExtractedSymbol{Name: name, Kind: "Enum", QualifiedName: joinQN(mod, name), ExtractionConfidence: 1.0})
+			r.addSym(fr, name, "Enum", joinQN(c.scope, name), "", n, src)
 		}
 	case "trait_item":
 		if name := r.nameOfType(n, src, "type_identifier"); name != "" {
-			fr.Symbols = append(fr.Symbols, ExtractedSymbol{Name: name, Kind: "Interface", QualifiedName: joinQN(mod, name), ExtractionConfidence: 1.0})
+			r.addSym(fr, name, "Interface", joinQN(c.scope, name), "", n, src)
+			child.typeParent = joinQN(c.scope, name)
+			child.qnPrefix = child.typeParent
+		}
+	case "impl_item":
+		// impl [Trait for] Type — one type name (inherent) or two (trait first,
+		// receiver after `for`). Parent = scope::Type; method QN prefix =
+		// scope::Type[::Trait] so Debug/Display fmt methods don't collide (#1783).
+		var names []string
+		for i := 0; i < r.ncount(n); i++ {
+			cc := r.nchild(n, i)
+			if r.kind(cc) == "declaration_list" {
+				break
+			}
+			if k := r.kind(cc); k == "type_identifier" || k == "generic_type" || k == "scoped_type_identifier" {
+				names = append(names, baseTypeName(r.text(cc, src)))
+			}
+		}
+		switch {
+		case len(names) >= 2:
+			child.typeParent = joinQN(c.scope, names[len(names)-1])
+			child.qnPrefix = joinQN(child.typeParent, names[0])
+		case len(names) == 1:
+			child.typeParent = joinQN(c.scope, names[0])
+			child.qnPrefix = child.typeParent
 		}
 	case "use_declaration":
 		for _, t := range r.useTargets(n, src) {
-			fr.Edges = append(fr.Edges, ExtractedEdge{FromQN: mod, ToName: t, Kind: "IMPORTS", Confidence: 1.0})
+			fr.Edges = append(fr.Edges, ExtractedEdge{FromQN: c.scope, ToName: t, Kind: "IMPORTS", Confidence: 1.0})
 		}
 	case "call_expression":
 		if callee := r.calleeName(n, src); callee != "" {
-			fr.Edges = append(fr.Edges, ExtractedEdge{FromQN: joinQN(mod, parentType), ToName: callee, Kind: "CALLS", Confidence: 1.0})
-		}
-	}
-
-	childParent := parentType
-	switch r.kind(n) {
-	case "impl_item":
-		// impl [Trait for] Type — the receiver Type is the last type_identifier
-		// before the declaration_list body.
-		var last string
-		for i := 0; i < r.ncount(n); i++ {
-			c := r.nchild(n, i)
-			if r.kind(c) == "declaration_list" {
-				break
+			from := c.caller
+			if from == "" {
+				from = c.scope
 			}
-			if k := r.kind(c); k == "type_identifier" || k == "generic_type" || k == "scoped_type_identifier" {
-				last = r.text(c, src)
-			}
-		}
-		if last != "" {
-			childParent = last
-		}
-	case "trait_item":
-		if name := r.nameOfType(n, src, "type_identifier"); name != "" {
-			childParent = name
+			// Per-file CALLS candidates are regex-tier confidence (0.6) — the
+			// resolver upgrades them; the AST gain is in the symbols (1.0).
+			fr.Edges = append(fr.Edges, ExtractedEdge{FromQN: from, ToName: callee, Kind: "CALLS", Confidence: 0.6})
 		}
 	}
 	for i := 0; i < r.ncount(n); i++ {
-		r.walk(r.nchild(n, i), src, mod, childParent, fr)
+		if r.walk(r.nchild(n, i), src, child, fr) {
+			hadErr = true
+		}
 	}
+	return hadErr
 }
 
 // useTargets enumerates the concrete imported leaf names of a use_declaration
@@ -221,6 +311,16 @@ func (r *rustTSExtractor) calleeName(n tsbridge.Node, src []byte) string {
 		return lastSeg(r.text(fn, src))
 	}
 	return lastSeg(r.text(fn, src))
+}
+
+// baseTypeName strips generic args and the path prefix from a type expression
+// so it matches the regex tier's bare-identifier capture: "Vec<T>" → "Vec",
+// "fmt::Debug" → "Debug".
+func baseTypeName(s string) string {
+	if i := strings.IndexByte(s, '<'); i >= 0 {
+		s = s[:i]
+	}
+	return lastSeg(strings.TrimSpace(s))
 }
 
 func lastSeg(s string) string {

@@ -26,6 +26,19 @@ func (t TreeSitter) allocateNode(ctx context.Context) (uint64, error) {
 	return nodePtr[0], nil
 }
 
+// Free releases the 24-byte WASM scratch allocation backing this node (the
+// binding mallocs one per Child/NamedChild/RootNode to hold the by-value
+// TSNode struct). Callers that walk many nodes while reusing an instance must
+// free each node, or the WASM heap grows unbounded. Safe to call once per
+// node; do not use the node afterwards.
+func (n Node) Free(ctx context.Context) error {
+	_, err := n.t.free.Call(ctx, n.n)
+	if err != nil {
+		return fmt.Errorf("freeing node: %w", err)
+	}
+	return nil
+}
+
 func (n Node) Kind(ctx context.Context) (string, error) {
 	nodeTypeStrPtr, err := n.t.nodeType.Call(ctx, n.n)
 	if err != nil {

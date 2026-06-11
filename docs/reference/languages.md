@@ -14,7 +14,7 @@
 | Python | Regex → CPython AST (dispatcher upgrades when `python` is on PATH) | 0.85 → 1.0 | Functions, Classes, Methods |
 | TypeScript / TSX | Regex | 0.85 | Functions, Classes, Interfaces, Methods |
 | JavaScript / JSX | Regex → AST (dispatcher, default-on since v0.20) | 0.85 → 1.0 | Functions, Classes, Methods |
-| Rust | Regex | 0.85 | Functions, Structs, Traits, Impls |
+| Rust | Regex → tree-sitter AST (dispatcher, ADR-0008) | 0.85 → 1.0 | Functions, Structs, Traits, Impls, Enums |
 | Java | Regex | 0.85 | Classes, Methods, Interfaces |
 | Makefile | Regex | 0.85 | Rule targets → Function (`.PHONY` → `IsExported=true`), variable assignments → Setting. Detected by basename (`Makefile`, `GNUmakefile`, lowercase `makefile`) + extension (`.mk`, `.mak`). |
 | SQL | Regex | 0.85 | `CREATE TABLE`/`VIEW` → Class; `CREATE FUNCTION`/`PROCEDURE`/`TRIGGER` → Function (handles `IF NOT EXISTS`). Schema prefix split into `qualified_name` (`auth.users`) with bare `name` (`users`). Dialect-aware quoting (backticks/quotes/brackets). Comment-aware. Covers `.sql`, `.ddl`. |
@@ -43,7 +43,7 @@ The 9-axis honest breakdown. `✅` = supported, `⚠️` = partial / language-ti
 | Jinja2 | `.j2/.jinja/.jinja2` | ✅ Function (macro) / Block / Setting | ✅ `extends/include/import/from` | n/a | n/a | n/a | n/a | n/a | AST 1.0 |
 | TypeScript / TSX | `.ts/.tsx` | ✅ Function/Class/Interface/Method | ✅ | ✅ ([#1158](https://github.com/kwad77/pincher/pull/1158)) | ❌ (tracked: [#1177](https://github.com/kwad77/pincher/issues/1177)) | ❌ | ❌ | ✅ `*.test.ts/*.spec.ts` | Regex 0.85 |
 | JavaScript / JSX | `.js/.jsx/.mjs/.cjs` | ✅ Function/Class/Method | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ `*.test.js/*.spec.js` | AST 1.0 (dispatcher) |
-| Rust | `.rs` | ✅ Function/Struct/Trait/Impl | ⚠️ partial | ✅ (v0.62 [#1159](https://github.com/kwad77/pincher/pull/1159)) | ❌ (tracked: [#1182](https://github.com/kwad77/pincher/issues/1182)) | ❌ | ❌ | ⚠️ `#[cfg(test)]` blocks | Regex 0.85 |
+| Rust | `.rs` | ✅ Function/Struct/Trait/Impl | ⚠️ partial | ✅ (v0.62 [#1159](https://github.com/kwad77/pincher/pull/1159)) | ❌ (tracked: [#1182](https://github.com/kwad77/pincher/issues/1182)) | ❌ | ❌ | ⚠️ `#[cfg(test)]` blocks | AST 1.0 (tree-sitter dispatcher) |
 | Java | `.java` | ✅ Class/Method/Interface | ⚠️ partial | ✅ (v0.62) | ❌ (tracked: [#1183](https://github.com/kwad77/pincher/issues/1183)) | ❌ | ⚠️ Javadoc partial | ✅ `*Test.java` | Regex 0.85 |
 | Makefile | `Makefile/.mk` | ✅ Function (rule target) / Setting | ❌ | ❌ | ❌ | n/a | ❌ | ❌ | Regex 0.85 |
 | SQL | `.sql/.ddl` | ✅ Function/Class (table/view) | ❌ | ❌ | ❌ | n/a | ❌ | ❌ | Regex 0.85 |
@@ -90,7 +90,7 @@ For v1.0, each language gets one of four explicit support statuses. Pincher will
 | Jinja2 | AST 1.0 | **promised** | 2-second parse timeout on truncated input (gonja lexer hang guard) |
 | JavaScript / JSX | AST 1.0 (dispatcher since #1328 v0.71) | **promised** | Type resolution absent; cross-file calls per #1177 |
 | TypeScript / TSX | Regex 0.85 | **supported** | Cross-file calls absent (#1177); type/receiver resolution absent |
-| Rust | Regex 0.85 | **supported** | Cross-file calls absent (#1182 v0.87); receiver type resolution absent |
+| Rust | AST 1.0 (tree-sitter, ADR-0008) | **promised** | Real tree-sitter via WASM (clean parse → 1.0, else regex fallback). Cross-file calls absent (#1182); receiver type resolution absent |
 | Java | Regex 0.85 | **supported** | Cross-file calls absent (#1183 v0.87); Javadoc partial |
 | C# | Regex 0.85 | **supported** | Cross-file calls absent; receiver type resolution absent |
 | PHP | Regex 0.85 | **supported** | Cross-file calls absent; namespaces partial |
