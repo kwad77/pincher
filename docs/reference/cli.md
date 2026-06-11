@@ -183,6 +183,24 @@ Each hook carries the `pincher.io/managed` marker so future runs can safely repl
 
 §2b (schema `branch` column for branch-aware queries — `search`/`query` filterable by branch dimension) deferred to its own follow-up issue.
 
+### `pincher init --dco-hook`
+
+```bash
+pincher init --dco-hook                   # install a prepare-commit-msg DCO sign-off hook
+pincher init --dco-hook --dry-run         # preview what would be written
+```
+
+Installs a `prepare-commit-msg` hook into `.git/hooks/` that appends a DCO `Signed-off-by: Name <email>` trailer (from `git config user.name` / `user.email`) whenever the commit message doesn't already carry yours. Projects that enforce per-commit DCO sign-off fail a PR on a single unsigned commit, and `git config format.signoff true` does **not** cover plain `git commit` — the hook closes that gap at the only layer that sees every commit.
+
+Behavior of the installed hook (standard `prepare-commit-msg` semantics):
+
+- **Merge and squash messages are left untouched** — their content is git-generated.
+- **The trailer is appended only when absent**, so re-edits and `--amend` never duplicate it.
+- **Existing trailers are never removed or rewritten** — a cherry-picked commit keeps the original author's `Signed-off-by:` lines and gains yours (the DCO chain-of-custody model).
+- If `user.name` / `user.email` are unset, the hook exits silently — it never breaks a commit.
+
+Install-time safety: like `--git-hooks`, the install is **opt-in**, per-repo, skipped silently on non-git directories, and idempotent on re-runs. Unlike `--git-hooks`, an existing non-pincher `prepare-commit-msg` hook is **never overwritten — not even with `--force`** (sign-off is a legal attestation; replacing a user's own message-policy hook silently is never acceptable). Pincher-managed hooks (the `pincher.io/managed` marker) are refreshed in place when a newer pincher ships an updated body.
+
 ### `pincher project`
 
 Surface the HTTP `DELETE /v1/projects` and the `list` MCP tool as CLI verbs so users on the stdio binary don't need a SQL or curl one-liner.

@@ -152,6 +152,7 @@ func runInitCLI(args []string) {
 	targetFlag := fs.String("target", "", "Editor/agent target: "+strings.Join(pinit.TargetNames(), ", ")+". Default: auto-detect the host pincher is running under (env signal) then editor marker files; refuses rather than guessing when neither is conclusive.")
 	noHook := fs.Bool("no-hook", false, "(claude/goose targets only) Skip writing runtime hook config. Default false — the hook is what closes the Read/Grep → pincher gap at runtime.")
 	gitHooks := fs.Bool("git-hooks", false, "Install post-checkout / post-merge / post-rewrite git hooks into .git/hooks so branch switches and rebases trigger an eager reindex (#1261). Pincher-managed hooks carry a marker comment; pre-existing non-pincher hooks are skipped unless --force is set.")
+	dcoHook := fs.Bool("dco-hook", false, "Install a prepare-commit-msg git hook into .git/hooks that appends a DCO Signed-off-by trailer (from git config user.name/user.email) when the commit message lacks one. Skips merge/squash messages; never duplicates a trailer; an existing non-pincher hook is never overwritten (not even with --force).")
 	quiet := fs.Bool("quiet", false, "Suppress the per-language extraction-tier profile printed after the wiring step (#631). The wiring itself still runs.")
 	skillsWrite := fs.Bool("write", false, "(claude-skills target only) Apply the skills install. claude-skills previews by default — it writes a tree of files into the global ~/.claude/skills/, so mutation is opt-in, mirroring the MCP init tool's write=true contract.")
 	fs.Usage = func() {
@@ -242,6 +243,16 @@ func runInitCLI(args []string) {
 	if *gitHooks && !*global {
 		if err := installGitHooks(out, cwd, *dryRun, *force); err != nil {
 			fmt.Fprintf(os.Stderr, "pincher init: git-hooks install: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	// DCO sign-off hook: like --git-hooks it is opt-in, per-repo
+	// (.git/hooks/), and independent of which rules-file target was
+	// written. --global skips it for the same reason as --git-hooks.
+	if *dcoHook && !*global {
+		if err := installDCOHook(out, cwd, *dryRun); err != nil {
+			fmt.Fprintf(os.Stderr, "pincher init: dco-hook install: %v\n", err)
 			os.Exit(1)
 		}
 	}
