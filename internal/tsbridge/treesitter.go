@@ -56,6 +56,7 @@ type TreeSitter struct {
 	languageC    api.Function
 	languageCpp  api.Function
 	languageRust api.Function
+	languageJava api.Function
 }
 
 func New(ctx context.Context) (TreeSitter, error) {
@@ -110,6 +111,7 @@ func New(ctx context.Context) (TreeSitter, error) {
 		languageC:           mod.ExportedFunction("tree_sitter_c"),
 		languageCpp:         mod.ExportedFunction("tree_sitter_cpp"),
 		languageRust:        mod.ExportedFunction("tree_sitter_rust"),
+		languageJava:        mod.ExportedFunction("tree_sitter_java"),
 	}, nil
 }
 
