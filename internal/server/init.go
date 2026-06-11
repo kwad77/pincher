@@ -107,6 +107,21 @@ func (s *Server) handleInit(_ context.Context, req *mcp.CallToolRequest) (*mcp.C
 		target = res.Target
 	}
 
+	// Hard-reject claude-skills, same family as continue below: its
+	// destination is always-global (~/.claude/skills/), so an
+	// MCP-driven write would silently escape project_path — and it
+	// writes a multi-file tree the per-target plan shape can't
+	// preview honestly. The CLI keeps it (preview by default; --write
+	// to install).
+	if target == pinit.SkillsTargetName {
+		return s.errResultRich(
+			"init: target=claude-skills is not available via MCP — it installs the shipped methodology skills into the always-global ~/.claude/skills/ and would escape project_path. Use the `pincher init --target=claude-skills` CLI (preview by default; add --write to install).",
+			[]map[string]string{
+				{"tool": "init", "args": initArgsJSON("detect", absProjectPath),
+					"why": "let pincher auto-pick a per-project target instead of the always-global skills install"},
+			}), nil
+	}
+
 	// Hard-reject continue: it's always-global, path lives in the
 	// user's home directory, and an MCP-driven write would silently
 	// escape project_path. The CLI keeps the broader semantic.
@@ -133,6 +148,8 @@ func (s *Server) handleInit(_ context.Context, req *mcp.CallToolRequest) (*mcp.C
 		// MCP context so the error stays truthful.
 		msg := fmt.Sprintf("init: %v", err)
 		msg = strings.ReplaceAll(msg, ", continue,", ",")
+		// Same truthfulness rule for claude-skills (rejected above).
+		msg = strings.ReplaceAll(msg, ", claude-skills,", ",")
 		return s.errResultRich(
 			msg,
 			[]map[string]string{
