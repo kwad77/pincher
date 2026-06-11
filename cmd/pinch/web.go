@@ -67,17 +67,11 @@ func runWebCLI(args []string) {
 	}
 	fs.Parse(args)
 
-	dir := *dataDir
-	if dir == "" {
-		var err error
-		dir, err = db.DataDir()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "pincher web: data dir: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
-	store, err := db.Open(dir)
+	// #1975: `web` only READS the sessions table to find a live HTTP
+	// server — open read-only so it keeps working while another pincher
+	// process holds the writer (a long index used to kill this path with
+	// the #1784 locked-DB error instead of serving the dashboard URL).
+	store, _, err := openStoreReadOnlyOrCreate(*dataDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pincher web: open db: %v\n", err)
 		os.Exit(1)

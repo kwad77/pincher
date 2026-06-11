@@ -981,6 +981,11 @@ func TestExtractionFailure_ProjectScopeIsolated(t *testing.T) {
 }
 
 func TestMigrate_UpgradeFromV1(t *testing.T) {
+	// #1974: upward migration of an existing store is consent-gated; this
+	// test exercises the migration mechanics themselves, so opt in. The
+	// gate's own behavior is covered in migration_gate_1974_test.go.
+	t.Setenv(MigrationConsentEnv, "1")
+
 	// Simulate a pre-versioning database that is at schema v1 (baseline only,
 	// no extraction_confidence column, no symbol_moves table).
 	dir := t.TempDir()

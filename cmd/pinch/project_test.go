@@ -122,6 +122,9 @@ func TestOpenStoreReadOnlyOrCreate_MigratesStaleSchema(t *testing.T) {
 	if db.CurrentSchemaVersion() < 36 {
 		t.Skip("v36 project index-state migration not present")
 	}
+	// #1974: the stale-schema fallback write-open is now consent-gated;
+	// this test exercises the migration mechanics, so opt in.
+	t.Setenv(db.MigrationConsentEnv, "1")
 	dir := t.TempDir()
 	store, err := db.Open(dir)
 	if err != nil {

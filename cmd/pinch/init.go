@@ -307,7 +307,10 @@ func printNextSteps(out io.Writer, dataDirOverride string) {
 			return
 		}
 	}
-	store, err := db.Open(dir)
+	// #1975: pure read (sessions lookup) on a best-effort footer — never
+	// create or migrate a store, never contend for the writer. A missing
+	// DB just means there's no live dashboard to advertise.
+	store, err := db.OpenReadOnly(dir)
 	if err != nil {
 		return
 	}
