@@ -417,6 +417,64 @@
     }
   },
   {
+    "name": "loop",
+    "description": "**Durable work-state for multi-iteration agent loops.** Actions: `start` (open a named loop with its framing claim), `checkpoint` (append one iteration's {claim, decision, confidence, reopen_trigger, evidence} — the capture step of an evidence-gated loop), `list` (loops, or one loop's checkpoints), `resume` (ONE bounded brief — recent checkpoints + open reopen_triggers + ADR keys + whether the index changed since the last checkpoint — so a fresh session or a different model picks up mid-flight work in a single call instead of re-reading transcripts). Checkpoints stamp the index watermark at write time; `resume` warns via warnings_v2 code=index_moved_since_checkpoint when the graph moved. Pass max_tokens to bound the brief (default ~800).",
+    "input_schema": {
+      "properties": {
+        "action": {
+          "description": "start=open a named loop; checkpoint=append an iteration record; list=loops or one loop's checkpoints; resume=bounded brief to continue mid-flight work.",
+          "enum": [
+            "start",
+            "checkpoint",
+            "list",
+            "resume"
+          ],
+          "type": "string"
+        },
+        "claim": {
+          "description": "The falsifiable claim this iteration works toward (start/checkpoint).",
+          "type": "string"
+        },
+        "confidence": {
+          "description": "Confidence label for the decision: measured | inferred | assumed (checkpoint).",
+          "type": "string"
+        },
+        "decision": {
+          "description": "The iteration's terminating decision: Accept / Defer-with-trigger / Reject, plus a clause of why (checkpoint).",
+          "type": "string"
+        },
+        "evidence": {
+          "description": "Pointers to evidence — symbol IDs, test names, benchmark numbers. Keep it pointer-shaped; the ledger is a map, not the territory (checkpoint).",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max rows for list (default: 20 loops / 10 checkpoints).",
+          "type": "integer"
+        },
+        "max_tokens": {
+          "description": "Budget for the resume brief in approximate tokens (default 800). Older checkpoints drop first; omitted_checkpoints reports the cut.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Loop name (e.g. 'rust-ast-rollout'). Required for start/checkpoint; optional for list (omit to enumerate loops) and resume (omit to resume the most recently touched loop).",
+          "type": "string"
+        },
+        "project": {
+          "description": "Project name or ID. Defaults to session project.",
+          "type": "string"
+        },
+        "reopen_trigger": {
+          "description": "For deferred decisions: the explicit condition that reopens this item. Surfaced by every future resume until addressed (checkpoint).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "neighborhood",
     "description": "**Returns same-file symbols, NOT graph adjacency.** Despite the name (#498), this tool answers \"what other symbols live in the same file as the seed?\" — useful for in-file refactor planning. For graph adjacency (callers / callees / readers / writers), use `trace direction=both` instead. Given a seed symbol ID, returns every symbol in the same file (signatures + line ranges) ordered by source position. One round-trip vs N `symbol` calls or one whole-file `Read`. Paginated: defaults to 50 neighbors per call (limit/offset), with the next page surfaced in `_meta.next_steps` when the file has more. Default response excludes `source`; pass `include_source=true` to also fetch each neighbor's body.",
     "input_schema": {

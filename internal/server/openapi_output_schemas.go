@@ -290,6 +290,26 @@ var outputSchemas = map[string]string{
 		}
 	}`,
 
+	// 13b. loop — ledger ops return {loop, seq, watermark}; list returns
+	// {loops} or {loop, checkpoints}; resume returns the bounded brief.
+	"loop": `{
+		"type":"object",
+		"properties":{
+			"loop":{"type":"string"},
+			"seq":{"type":"integer"},
+			"watermark":{"type":"string"},
+			"loops":{"type":"array","items":{"type":"object"}},
+			"checkpoints":{"type":"array","items":{"type":"object"}},
+			"brief":{"type":"array","items":{"type":"object"}},
+			"open_triggers":{"type":"array","items":{"type":"object"}},
+			"adr_keys":{"type":"array","items":{"type":"string"}},
+			"watermark_now":{"type":"string"},
+			"index_changed_since_last_checkpoint":{"type":"boolean"},
+			"omitted_checkpoints":{"type":"integer"},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
 	// 14. health — extraction quality + drift.
 	"health": `{
 		"type":"object",

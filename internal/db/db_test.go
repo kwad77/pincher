@@ -613,6 +613,8 @@ var readerRoutedStoreMethods = map[string]bool{
 	"ProjectsContainingPath":         true,
 	"GetADR":                         true,
 	"ListADRs":                       true,
+	"ListLoopCheckpoints":            true, // PR-8/9 loop ledger reads
+	"ListLoops":                      true, // PR-8/9 loop ledger reads
 	"GetFileHash":                    true,
 	"ListFilesForProject":            true,
 	"ListFilesWithHashesForProject":  true,
@@ -715,6 +717,7 @@ var writerRoutedStoreMethods = map[string]bool{
 	"DeleteFileHash":                             true,
 	"ClearFileHashesByLanguage":                  true,
 	"SetADR":                                     true,
+	"AppendLoopCheckpoint":                       true, // PR-8/9 loop ledger append (writer handle for read-back too)
 	"DeleteADR":                                  true,
 	"RecordSession":                              true,
 	"RecordSessionWithMetrics":                   true,

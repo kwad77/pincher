@@ -3698,6 +3698,7 @@ var toolComplexityTiers = map[string]string{
 	"list":        "lite",
 	"doctor":      "lite",
 	"adr":         "lite",
+	"loop":        "lite", // PR-8/9 loop-substrate: ledger append/list are trivial; resume composes from rows already written
 	"index":       "lite",
 	"rebuild_fts": "lite",
 	"init":        "lite",
@@ -3779,6 +3780,7 @@ var toolIdempotent = map[string]bool{
 	"rebuild_fts": false, // rebuilds storage
 	"init":        false, // writes editor config files (write=true path)
 	"adr":         false, // mixed: get/list idempotent, set/delete not — declare conservatively
+	"loop":        false, // mixed: list/resume idempotent, start/checkpoint append — same conservative stance as adr
 }
 
 // toolIsIdempotent returns the registered idempotency declaration for
@@ -4101,7 +4103,8 @@ var toolMetadata = map[string]toolMetadataEntry{
 	// ADR — action-dependent. Classified as write because the conservative
 	// case (set/delete) mutates; get/list paths still benefit from the
 	// idempotency hint.
-	"adr": {Title: "Project decision store", Annotations: annotationsWrite},
+	"adr":  {Title: "Project decision store", Annotations: annotationsWrite},
+	"loop": {Title: "Loop ledger + resume brief", Annotations: annotationsWrite}, // PR-8/9 loop-substrate
 
 	// External-world: fetches HTTP content, repeat calls may return
 	// different bytes.
@@ -4442,6 +4445,27 @@ func (s *Server) registerTools() {
 			}
 		}`),
 	}, s.handleADR)
+
+	// 13b. loop — the loop ledger + resume brief (loop-substrate
+	// PR-8/9). ADR holds conventions; the ledger holds in-flight work.
+	s.addTool(&mcp.Tool{
+		Name:        "loop",
+		Description: "**Durable work-state for multi-iteration agent loops.** Actions: `start` (open a named loop with its framing claim), `checkpoint` (append one iteration's {claim, decision, confidence, reopen_trigger, evidence} — the capture step of an evidence-gated loop), `list` (loops, or one loop's checkpoints), `resume` (ONE bounded brief — recent checkpoints + open reopen_triggers + ADR keys + whether the index changed since the last checkpoint — so a fresh session or a different model picks up mid-flight work in a single call instead of re-reading transcripts). Checkpoints stamp the index watermark at write time; `resume` warns via warnings_v2 code=index_moved_since_checkpoint when the graph moved. Pass max_tokens to bound the brief (default ~800).",
+		InputSchema: json.RawMessage(`{
+			"type":"object","required":["action"],"properties":{
+				"action":{"type":"string","enum":["start","checkpoint","list","resume"],"description":"start=open a named loop; checkpoint=append an iteration record; list=loops or one loop's checkpoints; resume=bounded brief to continue mid-flight work."},
+				"name":{"type":"string","description":"Loop name (e.g. 'rust-ast-rollout'). Required for start/checkpoint; optional for list (omit to enumerate loops) and resume (omit to resume the most recently touched loop)."},
+				"claim":{"type":"string","description":"The falsifiable claim this iteration works toward (start/checkpoint)."},
+				"decision":{"type":"string","description":"The iteration's terminating decision: Accept / Defer-with-trigger / Reject, plus a clause of why (checkpoint)."},
+				"confidence":{"type":"string","description":"Confidence label for the decision: measured | inferred | assumed (checkpoint)."},
+				"reopen_trigger":{"type":"string","description":"For deferred decisions: the explicit condition that reopens this item. Surfaced by every future resume until addressed (checkpoint)."},
+				"evidence":{"type":"string","description":"Pointers to evidence — symbol IDs, test names, benchmark numbers. Keep it pointer-shaped; the ledger is a map, not the territory (checkpoint)."},
+				"limit":{"type":"integer","description":"Max rows for list (default: 20 loops / 10 checkpoints)."},
+				"max_tokens":{"type":"integer","description":"Budget for the resume brief in approximate tokens (default 800). Older checkpoints drop first; omitted_checkpoints reports the cut."},
+				"project":{"type":"string","description":"Project name or ID. Defaults to session project."}
+			}
+		}`),
+	}, s.handleLoop)
 
 	// 13. health — drift signals + extraction coverage. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
@@ -13323,6 +13347,7 @@ var baselineMethodForTool = map[string]string{
 	"schema":         baselineMethodNone,
 	"list":           baselineMethodNone,
 	"adr":            baselineMethodNone,
+	"loop":           baselineMethodNone, // PR-8/9: ledger/state tool — no Read/Grep alternative exists to measure against
 	"health":         baselineMethodNone,
 	"stats":          baselineMethodNone,
 	"fetch":          baselineMethodNone, // ingests external URL — not a Read replacement

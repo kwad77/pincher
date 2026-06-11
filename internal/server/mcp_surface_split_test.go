@@ -23,41 +23,42 @@ import (
 // Tools that were operator-only between v0.35 and v0.51.1 are noted.
 var expectedMCPTools = map[string]bool{
 	// Working set since v0.35 (always MCP-visible)
-	"search":           true,
-	"symbol":           true,
-	"symbols":          true,
-	"context":          true,
+	"search":              true,
+	"symbol":              true,
+	"symbols":             true,
+	"context":             true,
 	"context_for_task":    true, // #1259 v0.67 composite-context tool
 	"investigate_failure": true, // #1391 v0.81 Phase 4 composite — bug-hunt from stack trace
 	"plan_change":         true, // #1391 v0.82 Phase 4 composite — pre-edit blast radius
 	"audit_unused":        true, // #1391 v0.83 Phase 4 composite — dead-code + deep-trace confirmation
 	"onboard_module":      true, // #1391 v0.84 Phase 4 composite — new-contributor orientation
 	"why_empty":           true, // #1391 v0.85 Phase 4 composite — empty-result recovery (stateless catalog)
-	"trace":            true,
-	"query":   true,
-	"guide":   true,
-	"changes": true,
-	"fetch":   true,
+	"trace":               true,
+	"query":               true,
+	"guide":               true,
+	"changes":             true,
+	"fetch":               true,
 
 	// Restored v0.51 (#645) — core agent tools that v0.35 mistakenly hid
 	"index": true,
 	"adr":   true,
+	"loop":  true, // PR-8/9 loop-substrate — loop ledger + resume brief
 
 	// Restored v0.52 (full reversal of #624) — agent-callable under
 	// aggregator-shaped deployment for "user opens new repo via Cursor +
 	// zelos → agent fires init/index/architecture" workflows
-	"architecture": true,
+	"architecture":   true,
 	"branch_overlap": true, // #1856 v1.1 — merge-order risk between two branches
-	"dead_code":    true,
-	"neighborhood": true,
-	"health":       true,
-	"stats":        true,
-	"schema":       true,
-	"list":         true,
-	"doctor":       true,
-	"rebuild_fts":  true,
-	"init":         true,
-	"self_test":    true,
+	"dead_code":      true,
+	"neighborhood":   true,
+	"health":         true,
+	"stats":          true,
+	"schema":         true,
+	"list":           true,
+	"doctor":         true,
+	"rebuild_fts":    true,
+	"init":           true,
+	"self_test":      true,
 }
 
 func TestMCPSurface_AllRegisteredToolsAgentCallable(t *testing.T) {

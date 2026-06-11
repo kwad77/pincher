@@ -1,4 +1,4 @@
-# The 29 MCP tools
+# The 30 MCP tools
 
 [Back to reference index](README.md)
 
@@ -115,6 +115,12 @@ Tested latency: 1 ms.
 ### `adr` {#tool-adr}
 
 Persistent key/value store per project. Survives context resets and binary upgrades. Actions: `get`, `set`, `list`, `delete`.
+
+Tested latency: <1 ms.
+
+### `loop` {#tool-loop}
+
+Durable work-state for multi-iteration agent loops (loop-substrate PR-8/9). Actions: `start` (open a named loop), `checkpoint` (append one iteration's claim/decision/confidence/reopen_trigger/evidence, stamped with the index watermark), `list`, and `resume` — one bounded brief (default ~800 tokens, `max_tokens` to adjust) with the checkpoint tail, open reopen-triggers, ADR keys, and whether the index changed since the last checkpoint. ADR holds conventions; the loop ledger holds in-flight work.
 
 Tested latency: <1 ms.
 
