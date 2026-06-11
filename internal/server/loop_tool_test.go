@@ -155,3 +155,25 @@ func TestLoop_Resume_NoLoops_RichError(t *testing.T) {
 		t.Fatal("resume with no loops must be a rich error, not a success envelope")
 	}
 }
+
+// Eviction receipt: checkpoint responses carry a one-line pointer a
+// summarizer keeps while dropping the payload.
+func TestLoop_Checkpoint_EvictionReceipt(t *testing.T) {
+	t.Parallel()
+	srv, _, projectID := setupComposeTestServer(t)
+	b := loopCall(t, srv, map[string]any{
+		"action": "checkpoint", "name": "receipt-loop", "project": projectID,
+		"claim": "the benchmark flips after the batch tool lands",
+	})
+	r, _ := b["receipt"].(string)
+	if !strings.Contains(r, "receipt-loop#1") || !strings.Contains(r, "loop resume") {
+		t.Errorf("receipt must carry the canonical pointer and the recovery affordance, got %q", r)
+	}
+	long := strings.Repeat("x", 200)
+	b2 := loopCall(t, srv, map[string]any{
+		"action": "checkpoint", "name": "receipt-loop", "project": projectID, "claim": long,
+	})
+	if r2, _ := b2["receipt"].(string); strings.Contains(r2, long) {
+		t.Error("receipt label must be truncated, not carry the full payload")
+	}
+}
