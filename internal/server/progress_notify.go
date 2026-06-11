@@ -5,11 +5,29 @@ package server
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// countingReader wraps r and adds every Read's size to n. Used by fetch
+// (#1950) to expose download progress to runWithProgress's poller; n is
+// atomic because the notifier goroutine reads it concurrently with Read.
+type countingReader struct {
+	r io.Reader
+	n *atomic.Int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if n > 0 {
+		c.n.Add(int64(n))
+	}
+	return n, err
+}
 
 // progressNotifyInterval is the cadence at which the progress-notifier
 // goroutine polls the indexer and emits a notifications/progress event.

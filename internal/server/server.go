@@ -11343,8 +11343,27 @@ func (s *Server) handleFetch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		), nil
 	}
 
-	rawBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchBytes))
-	if err != nil {
+	// #1950: emit notifications/progress during the body download when
+	// the client supplied a progressToken. Content-Length gives a real
+	// total when present (capped at maxFetchBytes since we never read
+	// past the cap); absent/unknown leaves total=0, which the MCP
+	// progress shape treats as indeterminate — the client still sees
+	// the bytes-downloaded counter tick.
+	var bytesRead atomic.Int64
+	var dlTotal int64
+	if resp.ContentLength > 0 {
+		dlTotal = min(resp.ContentLength, maxFetchBytes)
+	}
+	var rawBytes []byte
+	if err := s.runWithProgress(ctx, req,
+		func() (int64, int64, bool) { return bytesRead.Load(), dlTotal, true },
+		"fetch: bytes",
+		func() error {
+			var rerr error
+			rawBytes, rerr = io.ReadAll(io.LimitReader(&countingReader{r: resp.Body, n: &bytesRead}, maxFetchBytes))
+			return rerr
+		},
+	); err != nil {
 		return errResult(fmt.Sprintf("read error: %v", err)), nil
 	}
 
