@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kwad77/pincher/internal/db"
+	"github.com/zeebo/xxh3"
 )
 
 // matchIndexedFile resolves an absolute path to (relPath, fileBytes,
@@ -87,9 +88,14 @@ func matchIndexedFile(store *db.Store, absPath string) (relPath string, fileByte
 // Decision logic for Read:
 //   - pass through if path not indexed
 //   - pass through if file size below expected-savings threshold
-//   - pass through if offset/limit already used (agent narrowed)
+//   - pass through if offset already used (agent narrowed to a position
+//     context can't reproduce)
 //   - pass through if symbol count < 5 (config blobs)
-//   - otherwise redirect to `context id=<best> lite=true`
+//   - otherwise redirect to `context id=<best> lite=true max_tokens=N`
+//     where N is a budget derived from the Read call's own limit param
+//     when present (limit lines × ~12 tokens/line, floor 400) or from
+//     Read's implicit 2000-line page otherwise — a redirected giant
+//     file can't blow the window any harder than the Read it replaced
 //
 // Decision logic for Grep (#630):
 //   - redirect when pattern is a single CamelCase / dotted identifier
@@ -151,6 +157,13 @@ type hookDecision struct {
 	SuggestedArgs  string
 	FilePathParsed string
 	FileBytes      int64
+	// EstTokensServed / BaselineTokens (hook-redirect-v2) feed the
+	// per-redirect savings telemetry: estimated cost of the suggested
+	// `context lite=true` call vs the estimated cost of the Read it
+	// replaces (stat-ed file size, capped by the Read's own limit).
+	// Zero on pass-through.
+	EstTokensServed int64
+	BaselineTokens  int64
 }
 
 // envelopeEstimate is the floor cost of a pincher response post-#622/#623.
@@ -166,6 +179,52 @@ const envelopeEstimate = 400
 // case. Tuned against the v0.86 dogfood session where Read on
 // every non-trivial file generated a hint with no user benefit.
 const minExpectedSavingsBytes = 16384
+
+// Budgeted-redirect tuning (hook-redirect-v2). When the hook suggests
+// `context lite=true`, it attaches a max_tokens cap so the redirect can
+// never cost more window than the Read it replaces:
+//
+//   - tokensPerLineHeuristic: ~12 tokens per source line. Derived from
+//     the benchmark corpus average (≈48 bytes/line ÷ 4 bytes/token).
+//   - budgetFloorTokens: never cap below 400 — under that, the lite
+//     envelope itself dominates and the truncation marker eats the
+//     payload.
+//   - readDefaultLimitLines: native Read truncates at 2000 lines when
+//     no limit is passed; the default budget mirrors that implicit page
+//     so an uncapped redirect matches Read's own worst case.
+const (
+	tokensPerLineHeuristic = 12
+	budgetFloorTokens      = 400
+	readDefaultLimitLines  = 2000
+)
+
+// repeatReadHashMaxBytes bounds the repeat-read content check: hashing
+// requires reading the whole file, and the hook has a <50ms latency
+// budget. Files above 4 MiB skip the unchanged-content line rather
+// than risk a slow decision.
+const repeatReadHashMaxBytes = 4 << 20
+
+// approxTokensFromBytes mirrors db.ApproxTokens's fast path (bytes/4)
+// without needing the string in memory.
+func approxTokensFromBytes(n int64) int64 {
+	return (n + 3) / 4
+}
+
+// hookIntArg coerces a JSON tool-input value to a positive int.
+// Claude Code sends numbers as float64; tests may pass int.
+func hookIntArg(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		if n > 0 {
+			return int(n), true
+		}
+	case int:
+		if n > 0 {
+			return n, true
+		}
+	}
+	return 0, false
+}
 
 // identifierPattern matches single CamelCase / camelCase / dotted /
 // :: -qualified identifiers. Used for Grep redirect detection (#630):
@@ -193,12 +252,24 @@ func decideReadHook(store *db.Store, in hookCheckInput, debug bool) hookDecision
 	if path == "" {
 		return debugPass(debug, "no file_path", hookDecision{FilePathParsed: ""})
 	}
-	// Offset/limit already used → agent narrowed; don't override.
+	// Offset already used → agent narrowed to a byte position that
+	// `context` can't reproduce; don't override.
 	if _, hasOffset := in.ToolInput["offset"]; hasOffset {
 		return debugPass(debug, "offset already set", hookDecision{FilePathParsed: path})
 	}
-	if _, hasLimit := in.ToolInput["limit"]; hasLimit {
-		return debugPass(debug, "limit already set", hookDecision{FilePathParsed: path})
+	// limit (without offset) no longer forces pass-through
+	// (hook-redirect-v2): the agent capped its own read from the top of
+	// the file, which `context lite=true` can honor via max_tokens. The
+	// limit instead derives the redirect's token budget below.
+	limitLines := 0
+	if v, hasLimit := in.ToolInput["limit"]; hasLimit {
+		if n, ok := hookIntArg(v); ok {
+			limitLines = n
+		} else {
+			// Unparseable limit — preserve the legacy narrowing
+			// pass-through rather than guess at the agent's intent.
+			return debugPass(debug, "limit set but not a positive number", hookDecision{FilePathParsed: path})
+		}
 	}
 
 	// #1646 v0.86: test files pass through. Test files are commonly
@@ -246,13 +317,41 @@ func decideReadHook(store *db.Store, in hookCheckInput, debug bool) hookDecision
 
 	// Best-fit symbol: largest by source span. The agent likely wants
 	// the file's main entry point.
-	bestID, err := store.LargestSymbolInFile(projectID, relPath)
+	bestID, bestSpan, err := store.LargestSymbolInFile(projectID, relPath)
 	if err != nil || bestID == "" {
 		return debugPass(debug, "no resolvable symbol id",
 			hookDecision{FilePathParsed: path, FileBytes: fileBytes})
 	}
 
-	args := fmt.Sprintf(`{"id":"%s","lite":true}`, bestID)
+	// Budgeted redirect (hook-redirect-v2): cap the suggested context
+	// call so it can't blow the window any harder than the Read it
+	// replaces. With an explicit limit: limit × ~12 tokens/line, floor
+	// 400. Without: mirror Read's implicit 2000-line page.
+	budget := readDefaultLimitLines * tokensPerLineHeuristic
+	if limitLines > 0 {
+		budget = limitLines * tokensPerLineHeuristic
+		if budget < budgetFloorTokens {
+			budget = budgetFloorTokens
+		}
+	}
+
+	// Savings telemetry: estimated cost of the suggested lite call
+	// (largest-symbol span + envelope, never over budget) vs the
+	// realistic baseline — what the Read would actually have returned
+	// (stat-ed file size, capped by the Read's own limit; the 400-token
+	// floor deliberately does NOT apply to the baseline).
+	estServed := approxTokensFromBytes(bestSpan) + envelopeEstimate
+	if estServed > int64(budget) {
+		estServed = int64(budget)
+	}
+	baseline := approxTokensFromBytes(fileBytes)
+	if limitLines > 0 {
+		if maxRead := int64(limitLines * tokensPerLineHeuristic); baseline > maxRead {
+			baseline = maxRead
+		}
+	}
+
+	args := fmt.Sprintf(`{"id":"%s","lite":true,"max_tokens":%d}`, bestID, budget)
 	// #1654 v0.86: advisory-only mode. Blocking the Read breaks
 	// Edit-prep workflows (Edit requires a prior Read) and prose
 	// reads where `context lite=true` returns nothing useful. The
@@ -263,18 +362,48 @@ func decideReadHook(store *db.Store, in hookCheckInput, debug bool) hookDecision
 	// telemetry counter so we can still measure how often the
 	// hook would have fired.
 	msg := fmt.Sprintf(
-		"Pincher hint: this file is indexed (%d bytes). For navigation, `context id=%s lite=true` is ~80%% cheaper. (Hook is advisory since v0.86 — Read passes through to support Edit-prep workflows.)",
-		fileBytes, bestID,
+		"Pincher hint: this file is indexed (%d bytes). For navigation, `context id=%s lite=true max_tokens=%d` is ~80%% cheaper and capped at the budget. (Hook is advisory since v0.86 — Read passes through to support Edit-prep workflows.)",
+		fileBytes, bestID, budget,
 	)
-	return hookDecision{
-		Continue:       true,
-		SystemMessage:  msg,
-		Decision:       "redirect_advisory",
-		SuggestedTool:  "context",
-		SuggestedArgs:  args,
-		FilePathParsed: path,
-		FileBytes:      fileBytes,
+	// Repeat-read awareness (hook-redirect-v2): if this exact file was
+	// already served this session and its content hash still matches
+	// what the index recorded, one short line teaches the agent that a
+	// re-read returns identical bytes (and that the #655 diff-context
+	// path — opt-in via PINCHER_DIFF_CONTEXT=1 — answers it for ~0
+	// tokens). Best-effort: any miss in the chain just omits the line.
+	if in.SessionID != "" &&
+		store.HookFileSeenInSession(in.SessionID, path) &&
+		fileBytes <= repeatReadHashMaxBytes &&
+		hookFileUnchanged(store, projectID, relPath, path) {
+		msg += " Repeat read: already served this session, content unchanged — a re-read returns identical bytes."
 	}
+	return hookDecision{
+		Continue:        true,
+		SystemMessage:   msg,
+		Decision:        "redirect_advisory",
+		SuggestedTool:   "context",
+		SuggestedArgs:   args,
+		FilePathParsed:  path,
+		FileBytes:       fileBytes,
+		EstTokensServed: estServed,
+		BaselineTokens:  baseline,
+	}
+}
+
+// hookFileUnchanged reports whether the on-disk content of absPath
+// still matches the hash the indexer recorded for (projectID, relPath).
+// Same hash format the indexer writes: fmt.Sprintf("%x", xxh3.Hash(b)).
+// Best-effort: unreadable file or missing stored hash → false.
+func hookFileUnchanged(store *db.Store, projectID, relPath, absPath string) bool {
+	stored := store.GetFileHash(projectID, relPath)
+	if stored == "" {
+		return false
+	}
+	b, err := os.ReadFile(absPath)
+	if err != nil {
+		return false
+	}
+	return fmt.Sprintf("%x", xxh3.Hash(b)) == stored
 }
 
 func decideGrepHook(store *db.Store, in hookCheckInput, debug bool) hookDecision {
@@ -493,13 +622,15 @@ func debugPass(debug bool, reason string, d hookDecision) hookDecision {
 func logHookDecision(store *db.Store, in hookCheckInput, d hookDecision) {
 	// Best-effort. Don't block the hook decision on a failed insert.
 	_ = store.LogHookInvocation(db.HookInvocation{
-		TS:            time.Now().UnixNano(),
-		SessionID:     in.SessionID,
-		ToolName:      in.ToolName,
-		FilePath:      d.FilePathParsed,
-		FileBytes:     d.FileBytes,
-		Decision:      d.Decision,
-		SuggestedTool: d.SuggestedTool,
-		SuggestedArgs: d.SuggestedArgs,
+		TS:              time.Now().UnixNano(),
+		SessionID:       in.SessionID,
+		ToolName:        in.ToolName,
+		FilePath:        d.FilePathParsed,
+		FileBytes:       d.FileBytes,
+		Decision:        d.Decision,
+		SuggestedTool:   d.SuggestedTool,
+		SuggestedArgs:   d.SuggestedArgs,
+		EstTokensServed: d.EstTokensServed,
+		BaselineTokens:  d.BaselineTokens,
 	})
 }

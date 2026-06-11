@@ -2120,15 +2120,32 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if byTool == nil {
 			byTool = map[string]map[string]int{}
 		}
+		// hook-redirect-v2: honest savings vs realistic baseline.
+		// est_tokens_served = estimated cost of the suggested context
+		// lite calls; baseline_tokens = what the intercepted Reads
+		// would actually have returned (stat-ed size capped by the
+		// Read's own limit). Best-effort — a query failure zeroes the
+		// fields rather than failing the whole endpoint.
+		estServed, baselineTok, savErr := s.store.HookSavings7d()
+		if savErr != nil {
+			estServed, baselineTok = 0, 0
+		}
+		var savedPct float64
+		if baselineTok > 0 {
+			savedPct = float64(baselineTok-estServed) / float64(baselineTok) * 100
+		}
 		json.NewEncoder(w).Encode(map[string]any{
-			"window":         "7d",
-			"redirects":      redirects,
-			"taken":          taken,
-			"conversion_pct": pct,
-			"resolved":       resolved,
-			"overrides":      overrides,
-			"override_pct":   overridePct,
-			"by_tool":        byTool,
+			"window":               "7d",
+			"redirects":            redirects,
+			"taken":                taken,
+			"conversion_pct":       pct,
+			"resolved":             resolved,
+			"overrides":            overrides,
+			"override_pct":         overridePct,
+			"by_tool":              byTool,
+			"est_tokens_served":    estServed,
+			"baseline_tokens":      baselineTok,
+			"est_tokens_saved_pct": savedPct,
 		})
 		return
 	}
@@ -4303,7 +4320,7 @@ func (s *Server) registerTools() {
 				"fields":{"type":"string","description":"Comma-separated top-level keys to include, e.g. 'symbol,callees' to drop imports. Omit for all. _meta is preserved unconditionally."},
 				"lite":{"type":"boolean","description":"When true, return only {id, source} — no imports, no callees, no next_steps. Used by PreToolUse hook to land on minimum-envelope shape when redirecting a Read call. Default false."},
 				"cross_project":{"type":"boolean","description":"#1232 opt-in: when the requested ID isn't in the session project but exists in another indexed project, default behavior is to error (rich-error with next_steps) instead of silently returning the other project's data — including its callees + imports, which would also belong to the wrong tree. Pass cross_project=true to opt back into the legacy silent-fallback-with-warning behavior. Default false. Has no effect when project= is set explicitly."},
-				"max_tokens":{"type":"integer","description":"Per-call response budget in approximate tokens (same chars/4 heuristic as _meta.tokens_used). 0/omitted = unlimited — exact legacy shape. Deterministic degradation order: the primary symbol source is cut at a line boundary first; then callees, then imports return metadata-only entries with source_omitted:true (span-estimate gate — omitted entries skip the disk read). When the cap fires, _meta.warnings_v2 carries code=budget_truncated with per-section counts so you can fetch the omitted bodies selectively via symbols. Composes with fields= and lite=true. Loop-substrate PR-5: lets an agent hard-bound every probe so one giant function can never blow the context window."}
+				"max_tokens":{"type":"integer","description":"Per-call response budget in approximate tokens (same chars/4 heuristic as _meta.tokens_used). 0/omitted = unlimited — exact legacy shape. Deterministic degradation order: the primary symbol source is cut at a line boundary first; then callees, then imports return metadata-only entries with source_omitted:true (span-estimate gate — omitted entries skip the disk read). When the cap fires, _meta.warnings_v2 carries code=budget_truncated with per-section counts so you can fetch the omitted bodies selectively via symbols. Composes with fields= and lite=true — the PreToolUse hook redirect (hook-redirect-v2) derives it from the intercepted Read call's own limit param so a redirected giant symbol can't cost more window than the Read it replaced. Loop-substrate PR-5: lets an agent hard-bound every probe so one giant function can never blow the context window."}
 			}
 		}`),
 	}, s.handleContext)
@@ -5894,6 +5911,15 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// byte-offset precision. Skips the IMPORTS/CALLS edge walks that
 	// account for most of context's per-call latency on big symbols.
 	if lite, _ := args["lite"].(bool); lite {
+		// max_tokens budget on the lite path. hook-redirect-v2's
+		// PreToolUse hook derives it from the intercepted Read call's
+		// own limit param so a redirected giant symbol can't blow the
+		// agent's window any harder than the Read it replaced.
+		// Integrated with loop-substrate PR-5: truncation goes through
+		// the shared line-boundary truncateSourceToTokens and is always
+		// announced (truncated flag + budget_truncated warning) — a
+		// silent cut would be the confidently-wrong shape this codebase
+		// keeps stamping out.
 		liteSource := source
 		liteDropped := 0
 		liteTruncated := false
@@ -5908,6 +5934,9 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 			attachWarningStructured(liteData, "budget_truncated", WarningSeverityWarning,
 				fmt.Sprintf("source cut at a line boundary to fit max_tokens=%d (-%d lines) — raise max_tokens for the full body", maxTokens, liteDropped),
 				map[string]any{"max_tokens": maxTokens, "source_lines_dropped": liteDropped})
+		}
+		if liteTruncated {
+			liteData["truncated"] = true
 		}
 		// Apply field projection if requested — keeps the contract
 		// consistent (callers already use `fields=` patterns elsewhere).

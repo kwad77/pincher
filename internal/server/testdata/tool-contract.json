@@ -206,7 +206,7 @@
           "type": "boolean"
         },
         "max_tokens": {
-          "description": "Per-call response budget in approximate tokens (same chars/4 heuristic as _meta.tokens_used). 0/omitted = unlimited — exact legacy shape. Deterministic degradation order: the primary symbol source is cut at a line boundary first; then callees, then imports return metadata-only entries with source_omitted:true (span-estimate gate — omitted entries skip the disk read). When the cap fires, _meta.warnings_v2 carries code=budget_truncated with per-section counts so you can fetch the omitted bodies selectively via symbols. Composes with fields= and lite=true. Loop-substrate PR-5: lets an agent hard-bound every probe so one giant function can never blow the context window.",
+          "description": "Per-call response budget in approximate tokens (same chars/4 heuristic as _meta.tokens_used). 0/omitted = unlimited — exact legacy shape. Deterministic degradation order: the primary symbol source is cut at a line boundary first; then callees, then imports return metadata-only entries with source_omitted:true (span-estimate gate — omitted entries skip the disk read). When the cap fires, _meta.warnings_v2 carries code=budget_truncated with per-section counts so you can fetch the omitted bodies selectively via symbols. Composes with fields= and lite=true — the PreToolUse hook redirect (hook-redirect-v2) derives it from the intercepted Read call's own limit param so a redirected giant symbol can't cost more window than the Read it replaced. Loop-substrate PR-5: lets an agent hard-bound every probe so one giant function can never blow the context window.",
           "type": "integer"
         },
         "project": {

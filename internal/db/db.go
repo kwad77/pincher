@@ -1857,6 +1857,21 @@ END;`,
 		watermark TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX IF NOT EXISTS idx_loop_ckpt_proj_loop_seq ON loop_checkpoints(project_id, loop_name, seq);`,
+
+	// v40 → v41: hook redirect savings telemetry (hook-redirect-v2).
+	// (Authored as v39 → v40 on its feature branch; renumbered to v41
+	// during the loop-substrate integration because loop_checkpoints
+	// landed first as v40.)
+	// est_tokens_served = estimated tokens of the suggested `context
+	// lite=true` response (largest-symbol span / 4 + envelope, capped by
+	// the redirect's max_tokens budget). baseline_tokens = estimated
+	// tokens the intercepted Read would have returned (stat-ed file
+	// size / 4, capped by the Read call's own limit when present).
+	// Together they back the honest "savings vs realistic baseline"
+	// number in hook-stats. Telemetry only; pre-migration rows hold
+	// NULL on both and are excluded from savings sums.
+	`ALTER TABLE hook_invocations ADD COLUMN est_tokens_served INTEGER;
+	 ALTER TABLE hook_invocations ADD COLUMN baseline_tokens INTEGER;`,
 }
 
 // schemaMigrationInvalidates classifies each migration in schemaMigrations
@@ -1942,6 +1957,7 @@ var schemaMigrationInvalidates = []MigrationInvalidates{
 	invalidatesNothing, // [36] v37→v38: trace endpoint planner indexes (pure DDL; no extracted data changes)
 	invalidatesNothing, // [37] v38→v39: edges.provenance_tier DEFAULT 'EXTRACTED' (pure additive DDL; existing edge data remains valid)
 	invalidatesNothing, // [38] v39→v40: CREATE TABLE loop_checkpoints (new empty table; populated only by the loop tool)
+	invalidatesNothing, // [39] v40→v41: hook_invocations.est_tokens_served + baseline_tokens (telemetry only; pre-migration rows hold NULL)
 }
 
 func init() {
@@ -6686,6 +6702,14 @@ type HookInvocation struct {
 	SuggestedArgs      string // JSON blob; null/empty on pass_through
 	NextToolWithin3    string
 	TookRecommendation *bool // nullable; nil until joiner runs
+	// EstTokensServed / BaselineTokens (v41, hook-redirect-v2) back the
+	// honest "savings vs realistic baseline" hook-stats number.
+	// EstTokensServed estimates the suggested `context lite=true`
+	// response cost; BaselineTokens estimates what the intercepted Read
+	// would actually have returned (stat-ed file size, capped by the
+	// Read call's own limit). Zero on pass-through rows.
+	EstTokensServed int64
+	BaselineTokens  int64
 }
 
 // LogHookInvocation writes one hook decision into the telemetry table.
@@ -6695,10 +6719,12 @@ func (s *Store) LogHookInvocation(inv HookInvocation) error {
 	_, err := s.db.Exec(
 		`INSERT INTO hook_invocations(
 			ts, session_id, tool_name, file_path, file_bytes,
-			decision, suggested_tool, suggested_args
-		) VALUES (?,?,?,?,?,?,?,?)`,
+			decision, suggested_tool, suggested_args,
+			est_tokens_served, baseline_tokens
+		) VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		inv.TS, inv.SessionID, inv.ToolName, inv.FilePath, inv.FileBytes,
 		inv.Decision, inv.SuggestedTool, inv.SuggestedArgs,
+		inv.EstTokensServed, inv.BaselineTokens,
 	)
 	return err
 }
@@ -6817,30 +6843,32 @@ func (s *Store) CountSymbolsInFile(projectID, filePath string) (int, error) {
 	return n, err
 }
 
-// LargestSymbolInFile returns the ID of the symbol with the widest
-// byte span in (projectID, filePath). Used by the PreToolUse hook
-// to pick a sensible default for the `context id=...` redirect —
-// the file's main entry point is usually the largest symbol.
-// Returns empty string when the file has no indexed symbols.
+// LargestSymbolInFile returns the ID and byte span of the symbol with
+// the widest byte span in (projectID, filePath). Used by the PreToolUse
+// hook to pick a sensible default for the `context id=...` redirect —
+// the file's main entry point is usually the largest symbol. The span
+// feeds the hook's est_tokens_served telemetry (hook-redirect-v2).
+// Returns ("", 0) when the file has no indexed symbols.
 // Reader-routed.
-func (s *Store) LargestSymbolInFile(projectID, filePath string) (string, error) {
+func (s *Store) LargestSymbolInFile(projectID, filePath string) (string, int64, error) {
 	var id string
+	var span int64
 	err := s.ro.QueryRow(
-		`SELECT id FROM symbols
+		`SELECT id, (end_byte - start_byte) FROM symbols
 		  WHERE project_id = ? AND file_path = ?
 		  ORDER BY (end_byte - start_byte) DESC
 		  LIMIT 1`,
 		projectID, filePath,
-	).Scan(&id)
+	).Scan(&id, &span)
 	if err != nil {
 		// Treat \"no rows\" as empty string + no error (caller wants
 		// best-effort, not a hard fail).
 		if err == sql.ErrNoRows {
-			return "", nil
+			return "", 0, nil
 		}
-		return "", err
+		return "", 0, err
 	}
-	return id, nil
+	return id, span, nil
 }
 
 // HookConversionRate7d returns the conversion rate over the trailing
@@ -6926,6 +6954,55 @@ func (s *Store) HookCountsByTool7d() (map[string]map[string]int, error) {
 		out[tool] = map[string]int{"redirects": redirects, "taken": taken}
 	}
 	return out, rows.Err()
+}
+
+// HookFileSeenInSession reports whether the PreToolUse hook already
+// logged an invocation for (sessionID, filePath) — i.e. the agent has
+// Read (or been redirected on) this exact file earlier in the same
+// session. Backs the hook's repeat-read awareness line
+// (hook-redirect-v2): when the file content is also unchanged, the
+// hint tells the agent a re-read returns identical bytes. Cheap point
+// query on idx_hook_session. Reader-routed; best-effort (false on
+// error — the hint is supplementary, never load-bearing).
+func (s *Store) HookFileSeenInSession(sessionID, filePath string) bool {
+	if sessionID == "" || filePath == "" {
+		return false
+	}
+	var n int
+	if err := s.ro.QueryRow(
+		`SELECT COUNT(1) FROM hook_invocations
+		  WHERE session_id = ? AND file_path = ?`,
+		sessionID, filePath,
+	).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
+}
+
+// HookSavings7d sums the v41 per-redirect savings telemetry over the
+// trailing 7 days: estServed = estimated tokens of the suggested
+// `context lite=true` responses, baseline = estimated tokens the
+// intercepted Reads would actually have returned (stat-ed file size
+// capped by the Read call's own limit). Only redirect rows with a
+// recorded baseline contribute — pre-v41 rows hold NULL and are
+// excluded, so the ratio never mixes measured and unmeasured eras.
+// This is the honest "savings vs realistic baseline" number that
+// hook-stats headlines. Reader-routed.
+func (s *Store) HookSavings7d() (estServed, baseline int64, err error) {
+	row := s.ro.QueryRow(
+		`SELECT
+		    COALESCE(SUM(est_tokens_served), 0),
+		    COALESCE(SUM(baseline_tokens), 0)
+		   FROM hook_invocations
+		  WHERE decision IN ('redirect','redirect_advisory')
+		    AND baseline_tokens IS NOT NULL AND baseline_tokens > 0
+		    AND ts > ?`,
+		time.Now().Add(-7*24*time.Hour).UnixNano(),
+	)
+	if err := row.Scan(&estServed, &baseline); err != nil {
+		return 0, 0, err
+	}
+	return estServed, baseline, nil
 }
 
 // FormatSize formats a byte count as a human-readable string.

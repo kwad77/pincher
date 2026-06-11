@@ -111,7 +111,22 @@ type StatsReport struct {
 	DataDir  string         `json:"data_dir"`
 	DBSizeKB int64          `json:"db_size_kb"`
 	AllTime  AllTimeSavings `json:"all_time"`
-	Projects []ProjectStats `json:"projects"`
+	// Hook7d (hook-redirect-v2) is the trailing-7d PreToolUse hook
+	// savings block — the honest "savings vs realistic baseline"
+	// number: estimated tokens of the suggested context-lite calls vs
+	// the stat-ed size of what the intercepted Reads would actually
+	// have returned. Nil (omitted) when no redirect carries the v41
+	// telemetry yet, so pre-upgrade output is byte-identical.
+	Hook7d   *HookSavingsReport `json:"hook_7d,omitempty"`
+	Projects []ProjectStats     `json:"projects"`
+}
+
+// HookSavingsReport backs the HOOK 7D section of `pincher stats`.
+type HookSavingsReport struct {
+	Redirects       int     `json:"redirects"`
+	EstTokensServed int64   `json:"est_tokens_served"`
+	BaselineTokens  int64   `json:"baseline_tokens"`
+	EstSavedPct     float64 `json:"est_saved_pct"`
 }
 
 // AllTimeSavings is the sum across every persisted session row.
@@ -245,6 +260,24 @@ func buildStatsReport(store *db.Store, dir string) (*StatsReport, error) {
 		baselineMethods = map[string]BaselineMethodStats{}
 	}
 
+	// Hook savings (hook-redirect-v2) is best-effort like the other
+	// diagnostics: only rendered when at least one redirect carries the
+	// v41 baseline telemetry, so the section never shows a meaningless
+	// all-zero box on fresh or pre-upgrade installs.
+	var hook7d *HookSavingsReport
+	if estServed, baselineTok, err := store.HookSavings7d(); err == nil && baselineTok > 0 {
+		_, redirects, _, convErr := store.HookConversionRate7d()
+		if convErr != nil {
+			redirects = 0
+		}
+		hook7d = &HookSavingsReport{
+			Redirects:       redirects,
+			EstTokensServed: estServed,
+			BaselineTokens:  baselineTok,
+			EstSavedPct:     float64(baselineTok-estServed) / float64(baselineTok) * 100,
+		}
+	}
+
 	projects, err := store.ListProjects()
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
@@ -299,6 +332,7 @@ func buildStatsReport(store *db.Store, dir string) (*StatsReport, error) {
 				ZeroUnexpectedRate:      zeroUnexpectedRate,
 			},
 		},
+		Hook7d:   hook7d,
 		Projects: projOut,
 	}, nil
 }
@@ -480,6 +514,19 @@ func formatStatsText(r *StatsReport) string {
 	}
 	retriesEnd := len(rows)
 
+	// HOOK 7D rows (hook-redirect-v2): only emitted when redirect rows
+	// carry the v41 savings telemetry — fresh / pre-upgrade installs
+	// render exactly as before.
+	if r.Hook7d != nil {
+		rows = append(rows,
+			row{"Redirects (7d):", commify(int64(r.Hook7d.Redirects))},
+			row{"Est. served:", "~" + commify(r.Hook7d.EstTokensServed)},
+			row{"Read baseline:", "~" + commify(r.Hook7d.BaselineTokens)},
+			row{"Est. saved:", fmt.Sprintf("%.1f%%", r.Hook7d.EstSavedPct)},
+		)
+	}
+	hookEnd := len(rows)
+
 	for _, p := range r.Projects {
 		// Two-line project rendering: name on line 1, count value on line 2.
 		// Both contribute to width independently.
@@ -591,10 +638,18 @@ func formatStatsText(r *StatsReport) string {
 		}
 	}
 
+	if retriesEnd < hookEnd {
+		b.WriteString(sep)
+		b.WriteString(header("HOOK 7D"))
+		for i := retriesEnd; i < hookEnd; i++ {
+			b.WriteString(line(rows[i].label, rows[i].value))
+		}
+	}
+
 	if len(r.Projects) > 0 {
 		b.WriteString(sep)
 		b.WriteString(header("PROJECTS"))
-		for i := retriesEnd; i < len(rows); i++ {
+		for i := hookEnd; i < len(rows); i++ {
 			b.WriteString(line(rows[i].label, rows[i].value))
 		}
 	}
