@@ -3,6 +3,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -168,6 +169,11 @@ func TestSchemaWeight_Report(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v\n  Run `go test ./internal/server/ -run TestSchemaWeight_Report -update-schema-weight` to create it.", goldenPath, err)
 	}
+	// Normalize CRLF → LF: git on Windows checks files out with CRLF
+	// (autocrlf=true) but we emit LF — same fix as the tool-contract
+	// golden. Logical equality, not byte-identical.
+	got = bytes.ReplaceAll(got, []byte("\r\n"), []byte("\n"))
+	want = bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))
 	if string(got) != string(want) {
 		t.Errorf("schema weight diverged from %s — tool schemas changed size.\n"+
 			"If intentional, regenerate with:\n"+
