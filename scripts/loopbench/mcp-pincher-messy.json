@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "pincher-next": {
+      "type": "stdio",
+      "command": "/home/kwad77/.local/bin/pincher",
+      "args": ["--data-dir", "/tmp/loopbench-messy-data"]
+    }
+  }
+}

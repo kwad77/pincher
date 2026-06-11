@@ -1,0 +1,8 @@
+{
+  "name": "orderflow-web",
+  "version": "0.4.2",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --minify --outfile=dist/bundle.min.js"
+  }
+}

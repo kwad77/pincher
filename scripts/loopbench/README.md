@@ -61,6 +61,32 @@ paths in arm specs resolve against `scripts/loopbench/`. Outputs per arm:
 | `pincher-mcp` | pincher-next (stdio) | `prefer-pincher.md` (one line) | realistic usage — built-ins NOT disallowed; measures what an agent spends with pincher merely *available* |
 | `pincher-mcp-coached` | pincher-next (stdio) | `phase-aware.md` | the phase-aware usage policy (smallest call per phase) |
 | `pincher-curl` | none | `pincher-curl.md` | **DEPRECATED** — curl against `http://127.0.0.1:7878/v1/<tool>`; kept only to quantify the harness tax vs. the MCP arms; needs the :7878 server running |
+| `pincher-mcp-messy` (file `arms/pincher-mcp-messy.json`, arm name `pincher-mcp`) | `mcp-pincher-messy.json` (release binary, stdio) | `prefer-pincher.md` | the pincher-mcp arm wired for the **messy corpus**: `~/.local/bin/pincher --data-dir /tmp/loopbench-messy-data`; pre-index the corpus before running (see below) |
+
+## The messy corpus (hostile-terrain benchmark)
+
+`fixtures/messy-corpus/` is a committed polyglot fixture app (Go service + Python
+workers + TS storefront with real cross-language call relationships, registry/dispatch
+indirection, three same-named `ProcessOrder`/`process_order`/`processOrder` twins plus
+dead duplicates). `fixtures/build-messy-corpus.sh [target]` materializes a runnable
+repo (default `/tmp/messy-corpus-repo`): it copies the tree, deterministically
+generates ~1.3 MB of grep-chaff (a protobuf-gen-style `.go`, a one-line 500 KB
+minified bundle, machine-generated JSON fixtures — deliberately not committed here),
+and creates a 4-commit git history. The corpus has its own `go.mod`, so the parent
+module's `go test ./...` never sees it; `go build ./...` inside the corpus passes.
+
+```sh
+fixtures/build-messy-corpus.sh /tmp/messy-corpus-repo
+pincher index /tmp/messy-corpus-repo --data-dir /tmp/loopbench-messy-data
+OUT=out/messy-$(date +%Y%m%d)
+for a in arms/native-naive.json arms/native-coached.json arms/pincher-mcp-messy.json; do
+  ./run-arm.sh "$a" tasks/messy-10q.md "$OUT" /tmp/messy-corpus-repo
+done
+./score.sh "$OUT"
+# then grade each <arm>-answer.md against tasks/messy-10q.answers.md
+```
+
+First run results + grading: `out/messy-20260611/RESULTS.md`.
 
 ## MCP config: stdio is the default (and why)
 
