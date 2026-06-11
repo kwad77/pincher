@@ -214,6 +214,17 @@ func (c *csharpTSExtractor) walk(n tsbridge.Node, src []byte, ctx csharpWalkCtx,
 			}
 			fr.Edges = append(fr.Edges, ExtractedEdge{FromQN: from, ToName: callee, Kind: "CALLS", Confidence: 0.6})
 		}
+	case "object_creation_expression":
+		// `new Foo()` is a constructor invocation — emit a CALLS edge to the
+		// constructed type so "who instantiates Foo" stays in the graph (the
+		// regex `name(` scan counted these; #1958).
+		if t := c.ctorTypeName(n, src); t != "" {
+			from := ctx.caller
+			if from == "" {
+				from = ctx.scope
+			}
+			fr.Edges = append(fr.Edges, ExtractedEdge{FromQN: from, ToName: t, Kind: "CALLS", Confidence: 0.6})
+		}
 	}
 	for i := 0; i < c.ncount(n); i++ {
 		if c.walk(c.nchild(n, i), src, child, fr) {
@@ -276,6 +287,19 @@ func (c *csharpTSExtractor) calleeName(n tsbridge.Node, src []byte) string {
 		return name
 	case "generic_name":
 		return c.typeName(fn, src)
+	}
+	return ""
+}
+
+// ctorTypeName returns the bare type name constructed by an
+// object_creation_expression (`new Foo()` → "Foo", `new a.b.Foo<T>()` → "Foo").
+func (c *csharpTSExtractor) ctorTypeName(n tsbridge.Node, src []byte) string {
+	for i := 0; i < c.ncount(n); i++ {
+		ch := c.nchild(n, i)
+		switch c.kind(ch) {
+		case "identifier", "qualified_name", "generic_name":
+			return baseTypeName(c.text(ch, src))
+		}
 	}
 	return ""
 }
