@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/kwad77/pincher/internal/db"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -59,6 +60,43 @@ var batchAllowedSubTools = map[string]bool{
 	"query":        true,
 	"neighborhood": true,
 	"changes":      true,
+}
+
+// batchDefaultFields are the conclusion-density field projections
+// injected into sub-queries that don't name their own (payload diet,
+// 2026-06). Measured motivation: across three trust-tax loopbench
+// sessions, batch sub-results totalled ~121 KB; `symbol` sub-queries
+// carried the full 17-field standalone shape on 38 of 39 real calls
+// (nobody asked for byte offsets, extraction confidence, or
+// qualified_name — together ~17% of symbol row bytes), and coached
+// agents hand-passed `fields:"id,name,file_path"` on 51 of 52 search
+// sub-queries to dodge the default per-row snippet. Inside a batch the
+// caller is asking several questions at once and synthesizing — the
+// per-row default should be locator + answer, not the full standalone
+// record.
+//
+// Graceful degradation contract: explicit caller args ALWAYS win.
+//   - caller sets `fields`        → honored verbatim, no injection
+//   - caller sets `fields:"*"`    → full standalone payload (the arg is
+//     dropped before dispatch, so the sub-tool's own nil-set = all-fields
+//     path runs, with no unknown-field warning)
+//   - search caller sets `snippet_lines` → no injection (asking to size
+//     snippets is asking for snippets)
+// Standalone (non-batch) tool behavior is byte-identical to before.
+//
+// Sub-tools deliberately absent: `symbols` already defaults to its own
+// compact set (compactSymbolsFieldSet), `trace` rows are already lean,
+// `context`/`query`/`neighborhood`/`changes` use top-level (not per-row)
+// fields semantics where an injected projection could drop whole answer
+// sections.
+var batchDefaultFields = map[string]string{
+	// Locator shape: enough to cite (file+name+kind) and to chain
+	// (id feeds from:{select:"top_id"|"ids"}, file_path feeds "files").
+	"search": "id,name,kind,file_path",
+	// Answer shape: the body the caller asked for (source, with its
+	// docstring and signature) plus the citation fields — minus the
+	// byte-offset / confidence / export chrome.
+	"symbol": "id,name,kind,file_path,start_line,end_line,signature,docstring,source",
 }
 
 // batchSlimMetaKeys are the only sub-`_meta` fields that survive into
@@ -389,6 +427,24 @@ func (s *Server) handleBatch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		if project != "" {
 			if _, ok := subArgs["project"]; !ok {
 				subArgs["project"] = project
+			}
+		}
+		// Conclusion-density defaults (payload diet): inject the lean
+		// per-row projection unless the caller named their own. See
+		// batchDefaultFields for the contract; `fields:"*"` is the
+		// explicit full-payload escape (dropped here so the sub-tool's
+		// nil-set = all-fields path runs without an unknown-field
+		// warning).
+		if df, ok := batchDefaultFields[subTool]; ok {
+			if raw, has := subArgs["fields"]; has {
+				if fs, _ := raw.(string); strings.TrimSpace(fs) == "*" {
+					delete(subArgs, "fields")
+				}
+			} else {
+				_, sizedSnippets := subArgs["snippet_lines"]
+				if !(subTool == "search" && sizedSnippets) {
+					subArgs["fields"] = df
+				}
 			}
 		}
 		// _nested marks the sub-call so jsonResultWithMeta skips session

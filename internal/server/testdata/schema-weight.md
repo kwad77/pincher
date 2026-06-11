@@ -8,10 +8,10 @@ description + inputSchema + annotations), chars/4 heuristic.
 
 | toolset | style | tools | total tokens |
 |---|---|--:|--:|
-| full | rich | 34 | 18374 |
-| full | lean | 34 | 6898 |
-| core | rich | 10 | 8717 |
-| core | lean | 10 | 3014 |
+| full | rich | 34 | 18547 |
+| full | lean | 34 | 6910 |
+| core | rich | 10 | 8890 |
+| core | lean | 10 | 3026 |
 
 ## Per-tool weight, full/rich (heaviest first)
 
@@ -19,7 +19,7 @@ description + inputSchema + annotations), chars/4 heuristic.
 |---|--:|:--:|
 | search | 1523 | x |
 | trace | 1436 | x |
-| batch | 1137 | x |
+| batch | 1310 | x |
 | context | 1073 | x |
 | loop | 1020 | x |
 | neighborhood | 807 |  |
