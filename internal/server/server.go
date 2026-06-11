@@ -86,6 +86,18 @@ type Server struct {
 	// by the tool-contract golden-file test (#127) so any rename / removal
 	// of a tool surfaces as a deliberate, reviewable diff.
 	tools map[string]*mcp.Tool
+	// Schema diet (#2003). toolset gates which tools are advertised over
+	// MCP tools/list: "full" (default — every registered tool) or "core"
+	// (coreToolset only; everything else stays reachable via HTTP
+	// /v1/<tool> and as `batch` sub-queries). schemaStyle gates the
+	// registration-time description transform: "rich" (default) or
+	// "lean" (first-sentence descriptions + capped arg descriptions).
+	// mcpVisible records which tools were actually handed to the MCP
+	// SDK — the tools/list surface — for the surface gates and the
+	// schema-weight measurement.
+	toolset     string
+	schemaStyle string
+	mcpVisible  map[string]bool
 	// outputSchemas maps tool name → JSON Schema describing its 200
 	// response body (#581). Populated by addToolWithOutput at
 	// registerTools time; consumed by openAPISpec to render real
@@ -495,6 +507,9 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 		indexer:             indexer,
 		handlers:            make(map[string]mcp.ToolHandler),
 		tools:               make(map[string]*mcp.Tool),
+		mcpVisible:          make(map[string]bool),
+		toolset:             parseToolsetEnv(os.Getenv("PINCHER_TOOLSET")),
+		schemaStyle:         parseSchemaStyleEnv(os.Getenv("PINCHER_SCHEMA_STYLE")),
 		version:             version,
 		persistentSessionID: pickPersistentSessionID(now),
 		sessionStartedAt:    now,
@@ -4090,7 +4105,28 @@ func (s *Server) addTool(tool *mcp.Tool, handler mcp.ToolHandler) {
 			tool.Annotations = md.Annotations
 		}
 	}
-	s.mcp.AddTool(tool, wrapped)
+	// Schema diet (#2003), lean style: deterministic registration-time
+	// transform — first-sentence tool description, first-sentence arg
+	// descriptions capped at leanArgDescMax chars. Applied before the
+	// SDK sees the tool so tools/list, HTTP OpenAPI and the golden all
+	// observe the same (transformed) literal. No-op under the default
+	// rich style, so the tool-contract golden is byte-identical when
+	// the env is unset.
+	if s.schemaStyle == schemaStyleLean {
+		tool.Description = leanToolDescription(tool.Description)
+		if raw, err := json.Marshal(tool.InputSchema); err == nil {
+			tool.InputSchema = leanInputSchema(raw)
+		}
+	}
+	// Schema diet (#2003), toolset mode: under PINCHER_TOOLSET=core only
+	// the loop-essential coreToolset is advertised over MCP tools/list.
+	// s.handlers and s.tools are ALWAYS populated regardless — the HTTP
+	// /v1/<tool> routes, the OpenAPI spec and `batch` sub-query dispatch
+	// keep the full surface in both modes.
+	if s.toolset != toolsetCore || coreToolset[tool.Name] {
+		s.mcp.AddTool(tool, wrapped)
+		s.mcpVisible[tool.Name] = true
+	}
 	s.handlers[tool.Name] = wrapped
 	s.tools[tool.Name] = tool
 }
@@ -13486,6 +13522,27 @@ func (s *Server) computeGuide(task, projectArg string) (shape guideShape, hint s
 	// nextStepsAdherenceTracker; tools below adherenceRankMinEmitted
 	// emissions keep their shape-driven positions.
 	recommendations = s.rankRecommendationsByAdherence(recommendations)
+	// Schema diet (#2003): under PINCHER_TOOLSET=core, guide stays on
+	// the MCP surface precisely because it routes to everything else —
+	// so when a recommendation names a tool that is registered but NOT
+	// advertised over MCP in this mode, say so and name the escape
+	// hatches instead of letting the agent fire a call the host will
+	// reject as an unknown tool.
+	if s.toolset == toolsetCore {
+		for _, r := range recommendations {
+			name := r["tool"]
+			if name == "" || coreToolset[name] || !s.toolRegistered(name) {
+				continue
+			}
+			note := "NOTE: `" + name + "` is not on the core MCP toolset (PINCHER_TOOLSET=core) — "
+			if batchAllowedSubTools[name] {
+				note += "run it as a `batch` sub-query, restart the server with PINCHER_TOOLSET=full, or call HTTP POST /v1/" + name + "."
+			} else {
+				note += "restart the server with PINCHER_TOOLSET=full or call HTTP POST /v1/" + name + "."
+			}
+			r["why"] = r["why"] + " " + note
+		}
+	}
 	return shape, hint, recommendations, projectWarning
 }
 

@@ -166,6 +166,7 @@ func main() {
 		maxFileMB     = flag.Int("max-file-size-mb", int(index.DefaultMaxFileSize/(1024*1024)), "Per-file size cap during indexing (MB). Files larger than this are recorded as `file_too_large` failures and skipped without being read into memory (#111). 0 disables the cap. Falls back to $PINCHER_MAX_FILE_SIZE_MB.")
 		noStdio       = flag.Bool("no-stdio", false, "Don't run the MCP stdio loop. Used by `pincher web` when spawning a detached HTTP-only child on Windows, where the child has no inherited console and the stdio reader would error immediately and tear down the in-flight HTTP server (#232). Requires --http or the process has nothing to do.")
 		mcpHTTPPath   = flag.String("mcp-http-path", "", "Mount the MCP streamable-HTTP transport on the existing HTTP server at this path (e.g. /mcp). Empty disables — pincher serves MCP over stdio only. Requires --http. Routers (zelos/bifrost) deployed in k8s prefer this over per-backend stdio sub-process spawning. Falls back to $PINCHER_MCP_HTTP_PATH. (#651)")
+		toolset       = flag.String("toolset", "", "MCP toolset surface: 'full' (default — every tool on tools/list) or 'core' (only the 10 loop-essential tools: search, symbol, symbols, context, trace, changes, batch, loop, verify_change, guide). Every tool stays available over HTTP POST /v1/<tool> and as `batch` sub-queries in both modes. Falls back to $PINCHER_TOOLSET. Cuts the per-session tool-schema overhead; pair with PINCHER_SCHEMA_STYLE=lean for the full diet. (#2003)")
 	)
 	// Custom usage banner: subcommand summary + the standard flag list.
 	// Without this, `pincher --help` only shows flags — and a new user has
@@ -204,6 +205,13 @@ func main() {
 	}
 	if *mcpHTTPPath == "" {
 		*mcpHTTPPath = os.Getenv("PINCHER_MCP_HTTP_PATH")
+	}
+	// --toolset is the flag spelling of $PINCHER_TOOLSET (#2003). The
+	// server reads the env var once at construction (like the other
+	// PINCHER_* schema knobs), so the flag wins by writing through to
+	// the env before server.New runs.
+	if *toolset != "" {
+		os.Setenv("PINCHER_TOOLSET", *toolset)
 	}
 	*slowQueryMS = slowQueryThresholdWithEnv(*slowQueryMS, slowQueryFlagSet, os.Getenv)
 

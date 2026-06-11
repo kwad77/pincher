@@ -276,6 +276,8 @@ Pincher currently exposes 34 MCP tools. The high-frequency set:
 
 The CLI also includes `pincher report`, a source-grounded architecture report artifact built from the same index.
 
+**Schema diet (#2003):** the full 34-tool `tools/list` advertisement weighs ~18.4k approx tokens, re-read by the host every turn. Two opt-in knobs cut it: `PINCHER_TOOLSET=core` (or `--toolset core`) advertises only the 10 loop-essential tools (~8.7k) while keeping every tool reachable over HTTP `/v1/<tool>` and as `batch` sub-queries; `PINCHER_SCHEMA_STYLE=lean` applies a deterministic first-sentence transform to all descriptions (full surface ~6.9k; combined core+lean ~3.0k, gate-tested). Defaults stay `full`/`rich` this release — recommended for long agent loops: both. Details in [`docs/reference/http-api.md`](docs/reference/http-api.md).
+
 Full reference: [`docs/reference/tools.md`](docs/reference/tools.md). HTTP shape: [`docs/reference/http-api.md`](docs/reference/http-api.md).
 
 ---
