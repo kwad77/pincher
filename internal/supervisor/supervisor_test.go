@@ -554,7 +554,9 @@ func TestSupervisor_ProbeTimeoutKillsInner(t *testing.T) {
 }
 
 // TestSupervisor_CircuitBreakerTrips: when respawns happen faster than
-// MaxRestarts within RestartWindow, Run returns the breaker error.
+// MaxRestarts within RestartWindow and ExitOnGiveUp is set, Run returns
+// the breaker error. (The default since #1901 is to degrade instead —
+// see degraded_test.go.)
 func TestSupervisor_CircuitBreakerTrips(t *testing.T) {
 	clientStdinR, _ := io.Pipe()
 	var clientStdout syncBuffer
@@ -573,6 +575,7 @@ func TestSupervisor_CircuitBreakerTrips(t *testing.T) {
 		ProbeInterval: 24 * time.Hour,
 		MaxRestarts:   2,
 		RestartWindow: 10 * time.Second,
+		ExitOnGiveUp:  true,
 		spawnFn: func() (*innerProc, error) {
 			spawnMu.Lock()
 			defer spawnMu.Unlock()

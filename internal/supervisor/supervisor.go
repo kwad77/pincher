@@ -84,6 +84,14 @@ const (
 	defaultRespawnAttempts   = 10
 	defaultRespawnRetryDelay = 250 * time.Millisecond
 
+	// defaultDegradedRetryInterval is how often a degraded supervisor
+	// (respawn exhausted or circuit breaker tripped, #1901) retries
+	// spawning the inner. Slow on purpose: the fast-retry budget was
+	// already spent by respawnWithRetry, and the typical blocker — a
+	// binary still being swapped on disk — clears on the order of
+	// seconds, not milliseconds.
+	defaultDegradedRetryInterval = 15 * time.Second
+
 	// defaultRespawnQuietWindow is the post-respawn window during which
 	// server-initiated notifications from the new inner (e.g.
 	// `notifications/tools/list_changed`, `notifications/initialized`
@@ -153,6 +161,20 @@ type Supervisor struct {
 	// failures during respawn. Zero values mean "use the defaults".
 	RespawnAttempts   int
 	RespawnRetryDelay time.Duration
+
+	// DegradedRetryInterval tunes how often a degraded supervisor
+	// retries spawning the inner (#1901). Zero means "use the
+	// default".
+	DegradedRetryInterval time.Duration
+
+	// ExitOnGiveUp restores the pre-#1901 give-up behavior: when
+	// respawn attempts are exhausted or the circuit breaker trips,
+	// Run returns an error — and `pincher supervised` exits, closing
+	// the host's MCP transport for good. Default false: enter
+	// degraded mode instead — keep the transport open, answer
+	// requests with JSON-RPC errors, and keep retrying the spawn on
+	// a slow cadence.
+	ExitOnGiveUp bool
 
 	mu    sync.RWMutex
 	inner *innerProc
@@ -237,6 +259,17 @@ type Supervisor struct {
 	// probe deciding the inner was hung.
 	nextRestartReasonMu sync.Mutex
 	nextRestartReason   string
+
+	// degraded is set while the supervisor has no usable inner and is
+	// retrying the spawn on a slow cadence (#1901). While set, the
+	// client→inner pump answers id-bearing requests with a JSON-RPC
+	// error instead of dropping them — the host transport stays open.
+	degraded atomic.Bool
+
+	// degradedReason / degradedSince describe the active degraded
+	// window for the status tool. Updated under restartHistoryMu.
+	degradedReason string
+	degradedSince  time.Time
 }
 
 // SupervisorStatus is the response payload of the
@@ -262,6 +295,14 @@ type SupervisorStatus struct {
 	ToolsListChangedEmitted    int64  `json:"tools_list_changed_emitted"`
 	ToolsListChangedEmitFailed int64  `json:"tools_list_changed_emit_failed,omitempty"`
 	LastToolsListChangedEmitAt string `json:"last_tools_list_changed_emit_at,omitempty"`
+
+	// #1901: degraded-mode surface. Degraded=true means the inner is
+	// unavailable (respawn exhausted or circuit breaker tripped) and
+	// the supervisor is retrying on a slow cadence; client requests
+	// get JSON-RPC errors instead of a closed transport.
+	Degraded       bool   `json:"degraded"`
+	DegradedReason string `json:"degraded_reason,omitempty"`
+	DegradedSince  string `json:"degraded_since,omitempty"`
 }
 
 // probeState is the pendingProbe payload — the time the probe went
@@ -425,6 +466,15 @@ func (s *Supervisor) pumpClientToInner(ctx context.Context) error {
 			if s.handleStatusToolCall(line) {
 				continue
 			}
+			// #1901: while degraded there is no inner to forward to.
+			// Silence here looks like a hung server and makes hosts
+			// declare the transport dead — answer id-bearing requests
+			// with a JSON-RPC error instead so the session survives
+			// until the background retry recovers.
+			if s.degraded.Load() {
+				s.replyInnerUnavailable(line)
+				continue
+			}
 			if writeErr := s.writeToInner(line); writeErr != nil {
 				slog.Debug("supervisor.client_to_inner.write_err",
 					"err", writeErr.Error(), "loss_window", "respawn")
@@ -504,16 +554,30 @@ func (s *Supervisor) pumpInnerToClient(ctx context.Context) error {
 		s.restartHistoryMu.Unlock()
 
 		if err := s.respawnWithRetry(ctx); err != nil {
-			return fmt.Errorf("respawn after inner exit: %w", err)
+			if s.ExitOnGiveUp {
+				return fmt.Errorf("respawn after inner exit: %w", err)
+			}
+			if degradedErr := s.runDegraded(ctx, fmt.Sprintf("respawn exhausted: %v", err)); degradedErr != nil {
+				return nil // context cancelled while degraded
+			}
+			continue
 		}
 		s.Restarts.Add(1)
 		// S2 circuit breaker: if we've respawned too many times in a
-		// short window, stop trying. The inner is in a bad state we
-		// can't recover from by restarting (corrupt DB, missing
-		// dependency, persistent crash). Surfacing as a Run() error
-		// is more useful than a hot loop.
+		// short window, stop the hot loop. The inner is in a bad state
+		// we can't recover from by fast restarting (corrupt DB, missing
+		// dependency, persistent crash). ExitOnGiveUp surfaces it as a
+		// Run() error; the default falls back to slow-cadence degraded
+		// retries so the host transport survives (#1901).
 		if err := s.recordRestart(); err != nil {
-			return err
+			if s.ExitOnGiveUp {
+				return err
+			}
+			s.shutdownInner() // stop the flapping inner before slow retries
+			if degradedErr := s.runDegraded(ctx, err.Error()); degradedErr != nil {
+				return nil
+			}
+			continue
 		}
 	}
 }
@@ -785,6 +849,93 @@ func (s *Supervisor) recordRestart() error {
 	return nil
 }
 
+// runDegraded keeps the supervisor alive after the respawn path has
+// given up (#1901). Pre-#1901 behavior was to return an error from the
+// inner pump, which made Run exit and `pincher supervised` close the
+// host's MCP transport — unrecoverable without a host restart, even
+// after the underlying problem (typically a binary-swap window or a
+// crash-looping inner) cleared. Instead: mark the session degraded,
+// answer client requests with JSON-RPC errors (replyInnerUnavailable),
+// and retry the spawn every DegradedRetryInterval. Returns nil once a
+// spawn succeeds (the caller resumes pumping) or ctx.Err() on shutdown.
+func (s *Supervisor) runDegraded(ctx context.Context, reason string) error {
+	interval := s.DegradedRetryInterval
+	if interval == 0 {
+		interval = defaultDegradedRetryInterval
+	}
+
+	s.restartHistoryMu.Lock()
+	s.degradedReason = reason
+	s.degradedSince = time.Now()
+	s.lastRestartReason = "degraded: " + reason
+	s.restartHistoryMu.Unlock()
+	s.degraded.Store(true)
+
+	slog.Warn("supervisor.degraded.enter",
+		"reason", reason,
+		"retry_interval", interval)
+
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+		}
+		if err := s.respawn(); err != nil {
+			slog.Warn("supervisor.degraded.retry_failed", "err", err)
+			continue
+		}
+		// Recovered. Reset the breaker history — the slow cadence
+		// already throttled us, and stale entries would re-trip the
+		// breaker on the next ordinary respawn.
+		s.restartHistoryMu.Lock()
+		s.restartHistory = s.restartHistory[:0]
+		s.lastRestartReason = "recovered from degraded mode (" + reason + ")"
+		s.degradedReason = ""
+		s.degradedSince = time.Time{}
+		s.restartHistoryMu.Unlock()
+		s.degraded.Store(false)
+		s.Restarts.Add(1)
+		slog.Info("supervisor.degraded.recovered")
+		return nil
+	}
+}
+
+// replyInnerUnavailable answers a client line with a JSON-RPC error
+// while the supervisor is degraded (#1901). Notifications (no id) are
+// dropped — JSON-RPC forbids replying to them.
+func (s *Supervisor) replyInnerUnavailable(line []byte) {
+	var msg struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(line, &msg); err != nil {
+		return
+	}
+	if len(msg.ID) == 0 || string(msg.ID) == "null" {
+		return
+	}
+
+	s.restartHistoryMu.Lock()
+	reason := s.degradedReason
+	s.restartHistoryMu.Unlock()
+
+	resp := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      msg.ID,
+		"error": map[string]any{
+			"code":    -32000,
+			"message": fmt.Sprintf("pincher inner unavailable (%s); the supervisor is retrying in the background — the transport stays open and tools recover automatically", reason),
+		},
+	}
+	out, _ := json.Marshal(resp)
+	out = append(out, '\n')
+	if _, err := s.Stdout.Write(out); err != nil {
+		slog.Warn("supervisor.degraded.reply_write_err", "err", err.Error())
+	}
+}
+
 // maybeCaptureInit parses just enough of an inbound JSON-RPC line to
 // detect an initialize request or notifications/initialized
 // notification, and stashes the params (for initialize) or the whole
@@ -952,7 +1103,14 @@ func (s *Supervisor) detectActionBinaryVersion() string {
 func (s *Supervisor) Status() SupervisorStatus {
 	s.restartHistoryMu.Lock()
 	reason := s.lastRestartReason
+	degradedReason := s.degradedReason
+	degradedSince := s.degradedSince
 	s.restartHistoryMu.Unlock()
+
+	var degradedSinceStr string
+	if !degradedSince.IsZero() {
+		degradedSinceStr = degradedSince.UTC().Format(time.RFC3339Nano)
+	}
 
 	uptime := int64(0)
 	if !s.startedAt.IsZero() {
@@ -987,6 +1145,9 @@ func (s *Supervisor) Status() SupervisorStatus {
 		ToolsListChangedEmitted:    s.ToolsListChangedEmitted.Load(),
 		ToolsListChangedEmitFailed: s.ToolsListChangedEmitFailed.Load(),
 		LastToolsListChangedEmitAt: lastEmitAt,
+		Degraded:                   s.degraded.Load(),
+		DegradedReason:             degradedReason,
+		DegradedSince:              degradedSinceStr,
 	}
 }
 
