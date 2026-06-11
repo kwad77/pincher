@@ -323,7 +323,12 @@ func init() {
 			".tsx": "TSX",
 		},
 		confidence: 0.85,
-		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+		fn: func(s []byte, lang, p string, _ ExtractOptions) *FileResult {
+			if tsASTEnabled() {
+				if r, ok := extractTypeScriptTreeSitter(s, p, lang); ok {
+					return r
+				}
+			}
 			return extractTypeScript(s, p)
 		},
 	})
