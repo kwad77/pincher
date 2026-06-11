@@ -2705,7 +2705,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	result, err := handler(r.Context(), req)
+	// v1.4.0 release-review hardening: REST callers have no per-connection
+	// identity (any number of bearer-key clients share this process), so
+	// the #655 diff-context cache must not assert "you already have these
+	// bytes" across them. The marker disables cache read AND write for
+	// this call (and any batch sub-calls sharing the ctx).
+	result, err := handler(withNoDiffContext(r.Context()), req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -4356,6 +4361,7 @@ func (s *Server) registerTools() {
 				"fields":{"type":"string","description":"Comma-separated top-level keys to include, e.g. 'symbol,callees' to drop imports. Omit for all. _meta is preserved unconditionally."},
 				"detail":{"type":"string","enum":["full","skeleton"],"description":"'full' (default) returns sources verbatim. 'skeleton' replaces EVERY source payload in the response — the primary symbol's and each import's/callee's — with a deterministic structural outline (signature + control-flow lines verbatim, other runs elided as '… N lines (calls: A, B)' using each symbol's CALLS edges). Marked _meta.skeleton:true. Note: skeleton mode bypasses the PINCHER_DIFF_CONTEXT diff cache — the cache only operates on detail=full so the two representations can't poison each other."},
 				"lite":{"type":"boolean","description":"When true, return only {id, source} — no imports, no callees, no next_steps. Used by PreToolUse hook to land on minimum-envelope shape when redirecting a Read call. Default false."},
+				"diff":{"type":"boolean","description":"Default true. Gates the #655 diff-encoded repeat-read cache: a repeat context(id) on an unchanged file short-circuits to {unchanged:true}; a changed file ships a line diff against what was last served on this connection. Pass diff=false to bypass the cache (no read, no write) and always receive the full body — the recovery path when you do NOT have the prior response in your context (fresh session against a long-lived server, subagent sharing a parent connection). The cache only engages on full-fidelity serves: max_tokens-budgeted, fields-projected, skeleton, and HTTP-REST calls never read or write it."},
 				"cross_project":{"type":"boolean","description":"#1232 opt-in: when the requested ID isn't in the session project but exists in another indexed project, default behavior is to error (rich-error with next_steps) instead of silently returning the other project's data — including its callees + imports, which would also belong to the wrong tree. Pass cross_project=true to opt back into the legacy silent-fallback-with-warning behavior. Default false. Has no effect when project= is set explicitly."},
 				"max_tokens":{"type":"integer","description":"Per-call response budget in approximate tokens (same chars/4 heuristic as _meta.tokens_used). 0/omitted = unlimited — exact legacy shape. Deterministic degradation order: the primary symbol source is cut at a line boundary first; then callees, then imports return metadata-only entries with source_omitted:true (span-estimate gate — omitted entries skip the disk read). When the cap fires, _meta.warnings_v2 carries code=budget_truncated with per-section counts so you can fetch the omitted bodies selectively via symbols. Composes with fields= and lite=true — the PreToolUse hook redirect (hook-redirect-v2) derives it from the intercepted Read call's own limit param so a redirected giant symbol can't cost more window than the Read it replaced. Loop-substrate PR-5: lets an agent hard-bound every probe so one giant function can never blow the context window."}
 			}
@@ -6134,8 +6140,45 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// full body the agent never saw). Simplest correct rule: the diff
 	// cache only operates on detail=full.
 	var diffMode, sinceHash string
-	if s.diffContext && root != "" && !detailSkeleton {
-		diffKey := sym.ProjectID + "|" + sym.ID
+	// v1.4.0 release-review hardening (adversarial findings #1/#2): the
+	// diff cache only operates on FULL-FIDELITY serves to an
+	// identifiable consumer. The cache's contract is "this caller's
+	// context window already holds these bytes" — these gates keep that
+	// assertion honest:
+	//
+	//  - `diff=false` (per-call escape hatch, additive arg): the
+	//    documented recovery path for a consumer that never saw the
+	//    prior serve — a fresh session against a long-lived server, or
+	//    a subagent sharing its parent's MCP connection. Bypasses the
+	//    cache entirely (no read, no write).
+	//  - max_tokens-budgeted and fields-projected calls never read or
+	//    write the cache: a truncated or bodiless serve must not
+	//    record "the caller has the body", or the natural follow-up
+	//    full fetch short-circuits to {unchanged:true} and the full
+	//    body becomes unobtainable without an env var MCP callers
+	//    can't set.
+	//  - Consumers without a stable connection identity bypass the
+	//    cache: the HTTP REST path (multiple bearer-key clients share
+	//    one process; see noDiffFromContext) and `batch` quiet
+	//    sub-queries (the body never reaches the caller at all; batch
+	//    injects diff=false). MCP sessions key by Session.ID() when
+	//    the transport provides one (streamable HTTP), else by the
+	//    process-singleton stdio connection.
+	diffConnKey := "local" // direct handler invocation (tests, internal callers)
+	if req.Session != nil {
+		if sid := req.Session.ID(); sid != "" {
+			diffConnKey = "mcp:" + sid
+		} else {
+			diffConnKey = "stdio" // stdio transport: one connection per process lifetime
+		}
+	}
+	diffEligible := s.diffContext && root != "" && !detailSkeleton &&
+		boolArgDefault(args, "diff", true) &&
+		maxTokens == 0 &&
+		(fieldSet == nil || fieldSet["symbol"]) &&
+		!noDiffFromContext(ctx)
+	if diffEligible {
+		diffKey := diffConnKey + "|" + sym.ProjectID + "|" + sym.ID
 		curHash, hashOK := fileHashOnDisk(filepath.Join(root, filepath.FromSlash(sym.FilePath)))
 		if hashOK {
 			if prevRaw, ok := s.contextDiffCache.Load(diffKey); ok {
@@ -6148,6 +6191,12 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 						"unchanged":  true,
 						"since_hash": prev.fileHash,
 					}
+					// Self-describing recovery: if this consumer does
+					// NOT hold the prior serve (fresh window on the
+					// same connection), the escape hatch is one call
+					// away — never silently unobtainable.
+					attachWarning(unchanged,
+						"unchanged since the last context(id) serve on this connection — re-call with diff=false if you do not have the prior response in your context")
 					return s.jsonResultWithMeta(unchanged, start, tool, args, db.ApproxTokens(prev.source)), nil
 				}
 				// File changed — ship the symbol body as a line diff

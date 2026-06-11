@@ -296,6 +296,10 @@
           ],
           "type": "string"
         },
+        "diff": {
+          "description": "Default true. Gates the #655 diff-encoded repeat-read cache: a repeat context(id) on an unchanged file short-circuits to {unchanged:true}; a changed file ships a line diff against what was last served on this connection. Pass diff=false to bypass the cache (no read, no write) and always receive the full body — the recovery path when you do NOT have the prior response in your context (fresh session against a long-lived server, subagent sharing a parent connection). The cache only engages on full-fidelity serves: max_tokens-budgeted, fields-projected, skeleton, and HTTP-REST calls never read or write it.",
+          "type": "boolean"
+        },
         "fields": {
           "description": "Comma-separated top-level keys to include, e.g. 'symbol,callees' to drop imports. Omit for all. _meta is preserved unconditionally.",
           "type": "string"

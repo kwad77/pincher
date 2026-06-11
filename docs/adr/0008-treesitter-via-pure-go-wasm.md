@@ -89,6 +89,14 @@ pincher indexes files in parallel goroutines; tree-sitter parsers and `wazero` i
 - **Fuzz the marshaler:** fuzz the WASM↔Go node/query boundary (malformed/huge/adversarial source) — this is `unsafe` pointer code; memory-safety bugs must fail in CI, not in users' graphs.
 - **Race detector** (already a release gate) over the parser pool — **plus** a measured throughput gate (no indexing-time regression vs regex) and an **RSS-ceiling gate** under concurrent indexing.
 - **Hermetic, bit-reproducible WASM build** verified in CI (rebuild → identical checksum) + pinned `zig`/grammar versions + grammar-C SBOM.
+  **Status as of v1.4.0 (release-review honesty note):** NOT yet shipped. The
+  in-repo gate today is a pinned SHA-256 of the embedded blob
+  (`internal/tsbridge/ts.wasm.sha256` + `TestTSWasm_MatchesPinnedChecksum`),
+  which makes any blob swap an explicit, reviewable two-file change — but it
+  does not prove the bytes were correctly produced from the claimed upstream
+  grammars. The rebuild-in-CI pipeline, pinned-toolchain manifest, and
+  grammar-C SBOM remain open follow-up work and are a precondition for
+  promoting further grammars beyond the v1.4.0 set.
 
 ## Non-goals / explicit caveats
 

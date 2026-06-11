@@ -63,7 +63,7 @@ Every `.X9` release publishes a sign-off doc as a comment on its hardening issue
 
 ## Reading the channel from a running pincher
 
-The `_meta.capabilities` field on the first tool response of a session (re-emitted whenever the capability set changes; `PINCHER_META_DELTA=0` restores per-call emission) includes a tag indicating the binary's source channel — currently `schema_v38` and friends advertise feature support, but a future release may add `release_channel` for symmetry with the install-time signal. For now, `pincher --version` plus the [Releases page](https://github.com/kwad77/pincher/releases) is the canonical signal.
+The `_meta.capabilities` field on the first tool response of a session (re-emitted whenever the capability set changes; `PINCHER_META_DELTA=0` restores per-call emission) includes a tag indicating the binary's source channel — currently `schema_v41` and friends advertise feature support, but a future release may add `release_channel` for symmetry with the install-time signal. For now, `pincher --version` plus the [Releases page](https://github.com/kwad77/pincher/releases) is the canonical signal.
 
 Routers and aggregators consuming pincher behind their own surface (zelos, bifrost, detour) can use the `_meta.capabilities` advertisement to decide whether to require the running pincher meets a minimum capability set, regardless of channel.
 

@@ -52,6 +52,8 @@ Token savings: same per symbol.
 
 Symbol + all direct callees in one call. The preferred tool for understanding a function. Supports `detail="skeleton"` ([Skeleton mode](#skeleton-mode)), applied to every source payload (symbol + imports + callees); skeleton mode bypasses the `PINCHER_DIFF_CONTEXT` diff cache so the two representations can't poison each other.
 
+Diff-encoded repeat reads (#655, default-on since v1.4): a repeat `context(id)` on an unchanged file short-circuits to `{unchanged:true}`; a changed file ships `symbol.diff` (a line diff against what was last served) + `since_hash` instead of `source`. The cache is per-connection and only engages on full-fidelity serves — `max_tokens`-budgeted, `fields`-projected, skeleton, HTTP-REST, and `batch quiet` calls never read or write it. Pass `diff=false` to bypass the cache and always receive the full body — the recovery path when the prior response is not in your context (fresh session against a long-lived server, subagent sharing a parent connection); the `{unchanged:true}` response names this escape hatch in `_meta.warnings`. `PINCHER_DIFF_CONTEXT=0` disables the feature process-wide.
+
 Token savings: ~90% vs reading files.
 
 ## Search & graph

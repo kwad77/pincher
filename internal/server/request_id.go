@@ -117,3 +117,21 @@ func injectRequestID(res *mcp.CallToolResult, id string) {
 	// compact, defeating the env flag for any HTTP-served request.
 	tc.Text = string(marshalMetaJSON(data))
 }
+
+// noDiffCtxKey marks a request context whose tool calls must bypass the
+// #655 diff-encoded-context cache (v1.4.0 release-review hardening).
+// Set by the HTTP REST dispatch (POST /v1/{tool}): REST clients share
+// one server process with no per-connection identity, so the cache's
+// "this caller already holds these bytes" assertion cannot be made for
+// them. The marker propagates into batch sub-queries automatically
+// because batch dispatches sub-handlers with the request's own ctx.
+type noDiffCtxKey struct{}
+
+func withNoDiffContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noDiffCtxKey{}, true)
+}
+
+func noDiffFromContext(ctx context.Context) bool {
+	v, _ := ctx.Value(noDiffCtxKey{}).(bool)
+	return v
+}

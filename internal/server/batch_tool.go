@@ -403,6 +403,17 @@ func (s *Server) handleBatch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 				subArgs["max_tokens"] = remaining
 			}
 		}
+		// v1.4.0 release-review hardening: a quiet sub-query's body
+		// never reaches the caller's context window, so it must not
+		// touch the #655 diff cache — neither recording "served" nor
+		// short-circuiting to {unchanged:true} (which would make the
+		// suppressed body silently unobtainable to the caller). The
+		// budget injection above already keeps budgeted context
+		// sub-calls out of the cache (full-fidelity gate); diff=false
+		// makes the quiet case explicit and future-proof.
+		if q, _ := qm["quiet"].(bool); q && subTool == "context" {
+			subArgs["diff"] = false
+		}
 
 		marshaled, err := json.Marshal(subArgs)
 		if err != nil {
@@ -415,6 +426,11 @@ func (s *Server) handleBatch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 			continue
 		}
 		subReq := &mcp.CallToolRequest{
+			// Carry the caller's session identity through to sub-handlers:
+			// a batch sub-result ships to the same context window as a
+			// direct call, so connection-keyed state (the #655 diff cache)
+			// must see the same identity, not an anonymous one.
+			Session: req.Session,
 			Params: &mcp.CallToolParamsRaw{
 				Name:      subTool,
 				Arguments: json.RawMessage(marshaled),

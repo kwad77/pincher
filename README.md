@@ -247,15 +247,13 @@ The result is an edit loop with fewer blind reads and better handoffs after cont
 
 ---
 
-## Report artifacts and v1.2 direction
+## Where Pincher is now (v1.4)
 
-Pincher v1.0 freezes the core tool/schema surface. The v1.2 direction is Pincher-native graph intelligence and routing leverage.
+Pincher v1.0 froze the core tool/schema surface; everything since has been additive. v1.2 shipped Pincher-native graph intelligence (`pincher report`, rationale symbols, hotspot risk scoring). v1.3 landed the substrate (edge provenance tiers, MCP progress + prompts). v1.4 is the **loop release**:
 
-The first slices are already landing:
-
-- `pincher report` generates a source-grounded architecture briefing from the existing index.
-- Rationale/design-intent comments are indexed as `Rationale` symbols and grouped in reports by attached symbol or explicit file-level fallback.
-- Hotspot risk scoring, surprising-connection triage, falsifiable work-impact reporting, and next-best-call guidance are the next planned pieces.
+- **Agent-loop substrate** — `loop` (a persistent EGDL checkpoint ledger), `batch` (server-side chained sub-queries), `verify_change` (plan-vs-actual blast radius in one call), `coach` (call-pattern adherence report), and `assert_graph`; every envelope carries a `_meta.watermark` so iteration N+1 never re-pays for what iteration N already read (diff-encoded `context` is now default-on).
+- **AST-tier language wave (ADR-0008)** — real upstream tree-sitter compiled to WASM (pure Go, no CGO): Rust, Java, C#, TypeScript/TSX, Swift, Kotlin, PHP, Ruby, and C++ all extract at confidence 1.0 with per-file graceful regex fallback.
+- **Shippable methodology** — five Claude Code skills travel with the binary (`pincher init --target=claude-skills`).
 
 The boundary is deliberate: no default LLM extraction pipeline, no dashboard-first claims without API/report provenance, and no unsupported savings multipliers. If a report names a symbol or file, it should come with source provenance or say the data is missing.
 
@@ -284,7 +282,7 @@ Full reference: [`docs/reference/tools.md`](docs/reference/tools.md). HTTP shape
 ## Known limitations
 
 - SQLite is local and single-user. Cross-process indexing is safe, but team-shared indexes need a server mode.
-- Some languages have richer graph resolution than others. Go, Python, and TypeScript/JavaScript have cross-file `CALLS`; other languages may have same-file calls or symbol extraction only.
+- Symbol extraction is AST-tier (confidence 1.0) for twelve code languages as of v1.4 (Go, Python, JavaScript, Rust, Java, C#, TypeScript, Swift, Kotlin, PHP, Ruby, C++ — see [language support](docs/reference/languages.md)), but cross-file `CALLS` resolution still varies: Go and Python resolve cross-file calls; JS/TS use heuristic unique-name binding; other languages have same-file calls only.
 - Haskell has no extractor today.
 - Sequence-like YAML/JSON arrays can produce unstable IDs when items are inserted before existing entries. Search by name instead of storing those IDs long term.
 - A binary/schema upgrade can require re-indexing. Pincher reports stale indexes rather than pretending old extraction data is current.

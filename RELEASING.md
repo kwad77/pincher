@@ -31,7 +31,7 @@ Once 1.0 is tagged, the SQLite schema becomes part of the public contract:
 
 ### Tool-contract policy (post-1.0)
 
-The 29 MCP tools documented in `docs/reference/tools.md` and their JSON Schemas
+The 34 MCP tools documented in `docs/reference/tools.md` and their JSON Schemas
 are pinned by golden-file tests in `internal/server/`. After 1.0:
 
 - **Adding** a new tool, or new fields on an existing tool's input or output,
