@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "pincher-next": {
+      "type": "stdio",
+      "command": "/tmp/pincher-scale-bin",
+      "args": ["--data-dir", "/tmp/loopbench-scale-data-cl"],
+      "env": {
+        "PINCHER_TOOLSET": "core",
+        "PINCHER_SCHEMA_STYLE": "lean"
+      }
+    }
+  }
+}

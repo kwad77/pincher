@@ -1,0 +1,8 @@
+{
+  "name": "pincher-mcp-core-lean",
+  "description": "The schema-diet treatment arm on the SCALED messy corpus: a master-built pincher binary (/tmp/pincher-scale-bin — schema diet postdates the v1.5.0 release) over stdio with PINCHER_TOOLSET=core + PINCHER_SCHEMA_STYLE=lean injected via the MCP config env block, dedicated data dir (/tmp/loopbench-scale-data-cl). Pre-build (`go build -o /tmp/pincher-scale-bin ./cmd/pinch`) and pre-index (`/tmp/pincher-scale-bin index /tmp/messy-scale-repo --data-dir /tmp/loopbench-scale-data-cl`) first. Same coaching/tool policy as the other pincher-mcp arms.",
+  "mcp_config": "mcp-pincher-scale-corelean.json",
+  "coaching": "coaching/prefer-pincher.md",
+  "disallowed_tools": [],
+  "allowed_tools": ["mcp__pincher-next", "Bash(grep:*)", "Bash(rg:*)", "Bash(find:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)", "Bash(sed -n:*)", "Bash(cat:*)", "Bash(git log:*)", "Bash(git show:*)"]
+}
