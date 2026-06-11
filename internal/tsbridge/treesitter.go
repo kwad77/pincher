@@ -58,6 +58,7 @@ type TreeSitter struct {
 	languageRust       api.Function
 	languageJava       api.Function
 	languageCSharp     api.Function
+	languageKotlin     api.Function
 	languagePHP        api.Function
 	languageRuby       api.Function
 	languageSwift      api.Function
@@ -119,6 +120,7 @@ func New(ctx context.Context) (TreeSitter, error) {
 		languageRust:        mod.ExportedFunction("tree_sitter_rust"),
 		languageJava:        mod.ExportedFunction("tree_sitter_java"),
 		languageCSharp:      mod.ExportedFunction("tree_sitter_c_sharp"),
+		languageKotlin:      mod.ExportedFunction("tree_sitter_kotlin"),
 		languagePHP:         mod.ExportedFunction("tree_sitter_php"),
 		languageRuby:        mod.ExportedFunction("tree_sitter_ruby"),
 		languageSwift:       mod.ExportedFunction("tree_sitter_swift"),
