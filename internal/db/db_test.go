@@ -616,8 +616,10 @@ var readerRoutedStoreMethods = map[string]bool{
 	"ProjectsContainingPath":         true,
 	"GetADR":                         true,
 	"ListADRs":                       true,
+	"CountADRs":                      true, // precompact-hook: PreCompact advisory point query
 	"ListLoopCheckpoints":            true, // PR-8/9 loop ledger reads
 	"ListLoops":                      true, // PR-8/9 loop ledger reads
+	"LoopLedgerStats":                true, // precompact-hook: PreCompact advisory grouped read
 	"GetFileHash":                    true,
 	"ListFilesForProject":            true,
 	"ListFilesWithHashesForProject":  true,
@@ -668,6 +670,16 @@ var readerRoutedStoreMethods = map[string]bool{
 	"HookRedirectOutcomes":          true,
 	"HookTokenColumnsPresent":       true,
 	"HookRedirectTokensLeftOnTable": true,
+	// LES (ADR LOOP_EFFICIENCY_METRIC) telemetry readers — pure
+	// SELECTs over already-recorded telemetry; LES never mutates
+	// what it measures.
+	"CountLoopCheckpointsBetween": true,
+	"TokensUsedBetween":           true,
+	"CountToolCallsBetween":       true,
+	"QueryMetricsBetween":         true,
+	"HookRedirectIgnoredBetween":  true,
+	"LoopOpeningSessionsBetween":  true,
+	"LoopIterationSpan":           true,
 	// Accessors that return the underlying *sql.DB. RO() returns the
 	// reader pool by definition; DB() returns the writer (semantic
 	// belongs to writer-routed since callers may write through it).

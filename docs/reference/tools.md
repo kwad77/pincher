@@ -122,7 +122,7 @@ Tested latency: ~10 ms.
 
 ### `coach` {#tool-coach}
 
-Retro-coaching mined from pincher's own recorded usage telemetry (per-call events, query-failure counters, hook invocations). `window=session` (default) or `window=7d`. Returns priced findings — `single_fact_burst`, `unbudgeted_heavy_context`, `zero_result_churn`, `hook_fall_through` — each with `occurrences`, `est_tokens_left_on_table`, a concrete `recommendation`, and a `basis` string documenting exactly how the number was computed from recorded data. Degrades honestly: counts-only when the schema lacks per-row token estimates, empty findings plus a note when fewer than 10 calls are recorded in the window.
+Retro-coaching mined from pincher's own recorded usage telemetry (per-call events, query-failure counters, hook invocations). `window=session` (default) or `window=7d`. Returns priced findings — `single_fact_burst`, `unbudgeted_heavy_context`, `zero_result_churn`, `hook_fall_through`, `les_regression` (the Loop Efficiency Score regressed vs the prior 7-day window; names the moved sub-metric, priced from recorded numbers where possible, counts-only otherwise) — each with `occurrences`, `est_tokens_left_on_table`, a concrete `recommendation`, and a `basis` string documenting exactly how the number was computed from recorded data. Degrades honestly: counts-only when the schema lacks per-row token estimates, empty findings plus a note when fewer than 10 calls are recorded in the window.
 
 Tested latency: ~5 ms.
 
@@ -140,7 +140,7 @@ Tested latency: <1 ms.
 
 ### `loop` {#tool-loop}
 
-Durable work-state for multi-iteration agent loops (loop-substrate PR-8/9). Actions: `start` (open a named loop), `checkpoint` (append one iteration's claim/decision/confidence/reopen_trigger/evidence, stamped with the index watermark), `list`, and `resume` — one bounded brief (default ~800 tokens, `max_tokens` to adjust) with the checkpoint tail, open reopen-triggers, ADR keys, and whether the index changed since the last checkpoint. ADR holds conventions; the loop ledger holds in-flight work.
+Durable work-state for multi-iteration agent loops (loop-substrate PR-8/9). Actions: `start` (open a named loop), `checkpoint` (append one iteration's claim/decision/confidence/reopen_trigger/evidence, stamped with the index watermark), `handoff` (compose a pointer manifest server-side — open reopen-triggers incl. `AWAITING HUMAN` entries verbatim, ADR keys, working-tree summary via the shared changes analysis, current watermark, last 3 checkpoint receipts, suggested re-entry seed ids parsed from recent evidence — and append it as a regular checkpoint, ≤600 tokens; replaces prose handoff.md files: ~200 tokens to write vs 2-5k prose, ~150 tokens to resume, and every pointer dereferences live state instead of freezing line numbers), `list`, `resume` — one bounded brief (default ~800 tokens, `max_tokens` to adjust) with the checkpoint tail, open reopen-triggers, ADR keys, whether the index changed since the last checkpoint, and a one-line `les_hint` (recorded tokens per non-empty-decision checkpoint) when this loop's LES iteration_cost is computable; when the newest checkpoint is a handoff, it leads the brief — and `export` (render the ledger as a human-readable Markdown document on demand — claims/decisions/open triggers/awaiting-human, covering the window since the previous handoff by default, `seq` to pick an endpoint, `max_tokens` default 2000; returns `{markdown}`, never writes files). ADR holds conventions; the loop ledger holds in-flight work.
 
 Tested latency: <1 ms.
 
@@ -160,7 +160,7 @@ Tested latency: 1 ms.
 
 ### `stats` {#tool-stats}
 
-Session savings as a formatted CLI summary. Persists across reconnects.
+Session savings as a formatted CLI summary. Persists across reconnects. The SESSION box also carries LES — the Loop Efficiency Score (ADR `LOOP_EFFICIENCY_METRIC`) — as one compact line for this session and one for the trailing 7 days: `i` tokens per non-empty-decision loop checkpoint, `w` waste rate (zero-unexpected queries + error envelopes + budget-truncated responses + ignored hook redirects, over total calls), `r` recovery load (plan_stale / unpredicted_impact / index_moved_since_checkpoint warnings + `investigate_failure` calls), `f` continuation fidelity (sessions opening from the loop ledger). `-` marks a sub-metric not computable from recorded data; each line is suppressed when its window has no recorded calls. Diagnostic only — never a gate.
 
 Tested latency: 8 ms.
 

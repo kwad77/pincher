@@ -247,13 +247,14 @@ The result is an edit loop with fewer blind reads and better handoffs after cont
 
 ---
 
-## Where Pincher is now (v1.4)
+## Where Pincher is now (v1.5)
 
-Pincher v1.0 froze the core tool/schema surface; everything since has been additive. v1.2 shipped Pincher-native graph intelligence (`pincher report`, rationale symbols, hotspot risk scoring). v1.3 landed the substrate (edge provenance tiers, MCP progress + prompts). v1.4 is the **loop release**:
+Pincher v1.0 froze the core tool/schema surface; everything since has been additive. v1.2 shipped Pincher-native graph intelligence (`pincher report`, rationale symbols, hotspot risk scoring). v1.3 landed the substrate (edge provenance tiers, MCP progress + prompts). v1.4 was the **loop release** — the agent-loop substrate (`loop` checkpoint ledger, `batch`, `verify_change`, `coach`, `assert_graph`, `_meta.watermark` on every envelope, diff-encoded `context` default-on) plus the ADR-0008 AST-tier language wave (real tree-sitter via WASM, pure Go: Rust, Java, C#, TS/TSX, Swift, Kotlin, PHP, Ruby, C++ at confidence 1.0) and five shippable Claude Code skills (`pincher init --target=claude-skills`). v1.5 is the **self-measuring loop**:
 
-- **Agent-loop substrate** — `loop` (a persistent EGDL checkpoint ledger), `batch` (server-side chained sub-queries), `verify_change` (plan-vs-actual blast radius in one call), `coach` (call-pattern adherence report), and `assert_graph`; every envelope carries a `_meta.watermark` so iteration N+1 never re-pays for what iteration N already read (diff-encoded `context` is now default-on).
-- **AST-tier language wave (ADR-0008)** — real upstream tree-sitter compiled to WASM (pure Go, no CGO): Rust, Java, C#, TypeScript/TSX, Swift, Kotlin, PHP, Ruby, and C++ all extract at confidence 1.0 with per-file graceful regex fallback.
-- **Shippable methodology** — five Claude Code skills travel with the binary (`pincher init --target=claude-skills`).
+- **LES — the Loop Efficiency Score** — pincher's own success metric, computed entirely from already-recorded telemetry: tokens per loop iteration, waste rate, recovery load, continuation fidelity. One compact line in `stats` (session + trailing 7d), a priced week-over-week `les_regression` finding in `coach`, a `les_hint` on `loop resume`. Diagnostic only, never a gate; a non-computable input renders `-`, never a faked number.
+- **Pointer handoffs** — `loop handoff` composes a ≤600-token server-side manifest (open reopen-triggers with `AWAITING HUMAN` entries verbatim, ADR keys, live working-tree summary, recent receipts, re-entry seed ids) that replaces 2-5k-token prose handoff.md files; `resume` leads with it; `loop export` renders human-readable Markdown from the ledger on demand, never to disk.
+- **PreCompact hook** — when Claude Code compacts a session, `pincher hook-check` tells the summarizer what the ledger already holds, so the summary keeps pointers (`<loop>#<seq>`, ADR keys, symbol ids) and drops payloads. Fail-open by contract; registered additively by `pincher init`.
+- **loopbench** — `scripts/loopbench/`: reproducible cross-toolset benchmark arms (real `claude -p` stdio-MCP sessions) with billing-grade usage capture, replacing ad-hoc benchmark agents.
 
 The boundary is deliberate: no default LLM extraction pipeline, no dashboard-first claims without API/report provenance, and no unsupported savings multipliers. If a report names a symbol or file, it should come with source provenance or say the data is missing.
 

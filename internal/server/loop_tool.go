@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/kwad77/pincher/internal/db"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -105,6 +106,16 @@ func (s *Server) handleLoop(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 		}
 		return s.jsonResultWithMeta(data, start, tool, args, 0), nil
 
+	case "handoff":
+		// M17: compose the pointer manifest server-side and append it
+		// as a checkpoint — replaces prose handoff.md (loop_handoff.go).
+		return s.loopHandoff(ctx, start, tool, args, projectID, name), nil
+
+	case "export":
+		// M17: render the ledger as a human-readable Markdown document
+		// on demand. Never writes files (loop_handoff.go).
+		return s.loopExport(start, tool, args, projectID, name), nil
+
 	case "list":
 		if name == "" {
 			loops, err := s.store.ListLoops(projectID, intArg(args, "limit", 20))
@@ -173,6 +184,16 @@ func (s *Server) handleLoop(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 			used += cost
 		}
 		sort.Slice(included, func(i, j int) bool { return included[i].Seq < included[j].Seq })
+		// M17: a handoff checkpoint is the loop's pointer manifest —
+		// when the newest checkpoint is a handoff, it LEADS the brief
+		// so a fresh session reads the manifest before the iteration
+		// tail. (entries[0] is always included, so after the ascending
+		// sort the newest sits at the end.)
+		if n := len(included); n > 1 && isLoopHandoff(included[n-1]) {
+			h := included[n-1]
+			copy(included[1:], included[:n-1])
+			included[0] = h
+		}
 
 		openTriggers := []map[string]any{}
 		for _, e := range entries { // full window, not just included
@@ -218,6 +239,15 @@ func (s *Server) handleLoop(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 				},
 			},
 		}
+		// LES (ADR LOOP_EFFICIENCY_METRIC): one-line les_hint when this
+		// loop's iteration_cost is computable from recorded telemetry —
+		// the resume brief tells the agent what its iterations have
+		// been costing before it starts the next one. Empty-decision
+		// checkpoints never count (anti-gaming); no recorded tokens or
+		// no counting checkpoints → no hint, never a guessed number.
+		if hint := s.lesHintForLoop(projectID, name, time.Now()); hint != "" {
+			data["les_hint"] = hint
+		}
 		if indexChanged {
 			attachWarningStructured(data, "index_moved_since_checkpoint", WarningSeverityWarning,
 				fmt.Sprintf("the index generation moved (%s → %s) since this loop's last checkpoint — cached symbol IDs/blast-radius from prior iterations may be stale; re-probe before editing", entries[0].Watermark, wmNow),
@@ -227,7 +257,7 @@ func (s *Server) handleLoop(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 
 	default:
 		return s.errResultRich(
-			fmt.Sprintf("unknown loop action %q — accepted: start, checkpoint, list, resume", action),
+			fmt.Sprintf("unknown loop action %q — accepted: start, checkpoint, handoff, list, resume, export", action),
 			[]map[string]string{
 				{"tool": "loop", "args": `{"action":"resume"}`,
 					"why": "resume the most recently touched loop in one bounded brief"},

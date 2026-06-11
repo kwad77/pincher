@@ -11,16 +11,19 @@ import (
 )
 
 // installClaudeHook writes (or merges into) the project's
-// .claude/settings.json PreToolUse hook so that `pincher hook-check`
-// fires on Read/Grep tool calls (#627). One install — `pincher init
-// --target=claude` — wires both the MCP server registration AND the
-// hook interception. Without this, agents running with the policy
-// in CLAUDE.md still default to Read/Grep on hot paths; the runtime
-// hook is what closes the gap.
+// .claude/settings.json hooks so that `pincher hook-check` fires on
+// Read/Grep tool calls (PreToolUse, #627) and on context compaction
+// (PreCompact, precompact-hook — the ledger-aware compaction
+// advisory). One install — `pincher init --target=claude` — wires
+// both the MCP server registration AND the hook interception. Without
+// this, agents running with the policy in CLAUDE.md still default to
+// Read/Grep on hot paths; the runtime hook is what closes the gap.
 //
-// Idempotent: if a `pincher hook-check` PreToolUse entry is already
-// present, the file is left untouched. Otherwise the hook entry is
-// merged into the existing structure without clobbering other keys.
+// Idempotent: if `pincher hook-check` entries are already present for
+// both events, the file is left untouched. Otherwise the missing
+// entries are merged into the existing structure without clobbering
+// other keys — re-running init on a pre-PreCompact install additively
+// registers the new event.
 func installClaudeHook(out io.Writer, projectDir string, dryRun bool) error {
 	settingsPath := filepath.Join(projectDir, ".claude", "settings.json")
 
@@ -38,13 +41,13 @@ func installClaudeHook(out io.Writer, projectDir string, dryRun bool) error {
 		return err
 	}
 	if action == "noop" {
-		fmt.Fprintf(out, "pincher init [claude]: PreToolUse hook already present in %s — no change\n", settingsPath)
+		fmt.Fprintf(out, "pincher init [claude]: PreToolUse + PreCompact hooks already present in %s — no change\n", settingsPath)
 		return nil
 	}
 
 	if dryRun {
 		preview, _ := json.MarshalIndent(updated, "", "  ")
-		fmt.Fprintf(out, "pincher init [claude]: would %s PreToolUse hook in %s\n", action, settingsPath)
+		fmt.Fprintf(out, "pincher init [claude]: would %s PreToolUse + PreCompact hooks in %s\n", hookPresentTense(action), settingsPath)
 		fmt.Fprintln(out, "--- new file content ---")
 		fmt.Fprintln(out, string(preview))
 		return nil
@@ -60,14 +63,26 @@ func installClaudeHook(out io.Writer, projectDir string, dryRun bool) error {
 	if err := os.WriteFile(settingsPath, append(body, '\n'), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", settingsPath, err)
 	}
-	fmt.Fprintf(out, "pincher init [claude]: %s PreToolUse hook in %s\n", action, settingsPath)
+	fmt.Fprintf(out, "pincher init [claude]: %s PreToolUse + PreCompact hooks in %s\n", action, settingsPath)
 	return nil
 }
 
 // mergePincherHook returns the updated settings JSON-shape and an
-// action label ("created" for a fresh hooks block, "added" for
-// inserting the entry into an existing PreToolUse list, or "noop"
-// when the entry is already present). Pure function — no I/O.
+// action label ("created" for a fresh PreToolUse block, "added" for
+// inserting into an existing PreToolUse list OR for additively
+// registering the PreCompact event on an install that predates it, or
+// "noop" when both entries are already present). Pure function — no
+// I/O.
+//
+// Two entries are managed (precompact-hook):
+//   - PreToolUse matcher=Read|Grep → `pincher hook-check` (#627)
+//   - PreCompact (no matcher — fires on manual AND auto compaction)
+//     → the same `pincher hook-check` command; event routing happens
+//     inside the CLI via hook_event_name
+//
+// Each leg is independently idempotent: any existing entry under the
+// event whose hook command contains "pincher hook-check" is treated as
+// ours and left alone, even if the user tweaked matcher / shell args.
 func mergePincherHook(settings map[string]any) (map[string]any, string, error) {
 	if settings == nil {
 		settings = map[string]any{}
@@ -76,23 +91,59 @@ func mergePincherHook(settings map[string]any) (map[string]any, string, error) {
 	if hooks == nil {
 		hooks = map[string]any{}
 	}
-	preToolUse, _ := hooks["PreToolUse"].([]any)
 
-	pincherEntry := map[string]any{
-		"matcher": "Read|Grep",
-		"hooks": []any{
-			map[string]any{
-				"type":    "command",
-				"command": "pincher hook-check",
+	changed := false
+	action := "added"
+
+	// Leg 1: PreToolUse (Read|Grep redirect advisories, #627).
+	preToolUse, _ := hooks["PreToolUse"].([]any)
+	if !hasPincherHookEntry(preToolUse) {
+		if len(preToolUse) == 0 {
+			action = "created"
+		}
+		preToolUse = append(preToolUse, map[string]any{
+			"matcher": "Read|Grep",
+			"hooks": []any{
+				map[string]any{
+					"type":    "command",
+					"command": "pincher hook-check",
+				},
 			},
-		},
+		})
+		hooks["PreToolUse"] = preToolUse
+		changed = true
 	}
 
-	// Idempotency: any existing PreToolUse entry with matcher=Read|Grep
-	// AND a hook command containing "pincher hook-check" is treated as
-	// the pincher hook — leave it alone, even if the user has tweaked
-	// the matcher / shell args.
-	for _, raw := range preToolUse {
+	// Leg 2: PreCompact (ledger-aware compaction advisories,
+	// precompact-hook). No matcher — PreCompact matchers select the
+	// compaction trigger ("manual"/"auto") and the advisory applies to
+	// both.
+	preCompact, _ := hooks["PreCompact"].([]any)
+	if !hasPincherHookEntry(preCompact) {
+		preCompact = append(preCompact, map[string]any{
+			"hooks": []any{
+				map[string]any{
+					"type":    "command",
+					"command": "pincher hook-check",
+				},
+			},
+		})
+		hooks["PreCompact"] = preCompact
+		changed = true
+	}
+
+	if !changed {
+		return settings, "noop", nil
+	}
+	settings["hooks"] = hooks
+	return settings, action, nil
+}
+
+// hasPincherHookEntry reports whether any entry in a hook-event list
+// carries a command containing "pincher hook-check" — the idempotency
+// probe shared by both managed legs.
+func hasPincherHookEntry(entries []any) bool {
+	for _, raw := range entries {
 		entry, _ := raw.(map[string]any)
 		if entry == nil {
 			continue
@@ -104,19 +155,11 @@ func mergePincherHook(settings map[string]any) (map[string]any, string, error) {
 				continue
 			}
 			if c, _ := cmd["command"].(string); contains(c, "pincher hook-check") {
-				return settings, "noop", nil
+				return true
 			}
 		}
 	}
-
-	action := "added"
-	if len(preToolUse) == 0 {
-		action = "created"
-	}
-	preToolUse = append(preToolUse, pincherEntry)
-	hooks["PreToolUse"] = preToolUse
-	settings["hooks"] = hooks
-	return settings, action, nil
+	return false
 }
 
 func installGooseHook(out io.Writer, projectDir string, dryRun bool) error {

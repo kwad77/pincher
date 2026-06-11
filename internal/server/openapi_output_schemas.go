@@ -347,14 +347,21 @@ var outputSchemas = map[string]string{
 		}
 	}`,
 
-	// 13b. loop — ledger ops return {loop, seq, watermark}; list returns
-	// {loops} or {loop, checkpoints}; resume returns the bounded brief.
+	// 13b. loop — ledger ops return {loop, seq, watermark, receipt};
+	// list returns {loops} or {loop, checkpoints}; resume returns the
+	// bounded brief; handoff returns {receipt, manifest} (M17); export
+	// returns {markdown, from_seq, to_seq}.
 	"loop": `{
 		"type":"object",
 		"properties":{
 			"loop":{"type":"string"},
 			"seq":{"type":"integer"},
 			"watermark":{"type":"string"},
+			"receipt":{"type":"string"},
+			"manifest":{"type":"string"},
+			"markdown":{"type":"string"},
+			"from_seq":{"type":"integer"},
+			"to_seq":{"type":"integer"},
 			"loops":{"type":"array","items":{"type":"object"}},
 			"checkpoints":{"type":"array","items":{"type":"object"}},
 			"brief":{"type":"array","items":{"type":"object"}},
