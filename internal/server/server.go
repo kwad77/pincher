@@ -4306,7 +4306,7 @@ func (s *Server) registerTools() {
 	// 5. search
 	s.addTool(&mcp.Tool{
 		Name:        "search",
-		Description: "**Use before `Grep`/`Read`** when looking for code by name or content. Always start here when you don't know the exact symbol ID. Returns signature + a query-aware snippet per result (exact-identifier queries get no snippet by default since the agent knows the target name; phrase / wildcard / multi-word queries get a 5-line snippet for triage — override via `snippet_lines`). Often enough to answer without a follow-up call. Uses FTS5 BM25 ranking. Examples: 'processOrder' for a function, 'auth*' for prefix, '\"token validation\"' for a phrase. Filter by `kind=Function` / `language=Go` / `corpus=config|docs` to narrow. Pass `format=\"text\"` for a dense TSV rendering of the hits (`results_text`) instead of the JSON results array — same envelope, materially fewer tokens on list-shaped output. Use `context` on the result ID only if you need full source + dependencies.",
+		Description: "**Use before `Grep`/`Read`** when looking for code by name or content. Always start here when you don't know the exact symbol ID. Returns signature + a query-aware snippet per result (exact-identifier queries get no snippet by default since the agent knows the target name; phrase / wildcard / multi-word queries get a 5-line snippet for triage — override via `snippet_lines`). Often enough to answer without a follow-up call. Uses FTS5 BM25 ranking. Examples: 'processOrder' for a function, 'auth*' for prefix, '\"token validation\"' for a phrase. Filter by `kind=Function` / `language=Go` / `corpus=config|docs` to narrow. Pass `format=\"text\"` for a dense TSV rendering of the hits (`results_text`) or `format=\"toon\"` for a TOON tabular rendering (`results_toon`) instead of the JSON results array — same envelope, materially fewer tokens on list-shaped output. Use `context` on the result ID only if you need full source + dependencies.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["query"],"properties":{
 				"query":{"type":"string","description":"FTS5 search query. Supports: prefix (auth*), phrase (\"login flow\"), AND/OR."},
@@ -4319,7 +4319,7 @@ func (s *Server) registerTools() {
 				"fields":{"type":"string","description":"Comma-separated fields to include in each result, e.g. 'id,name,file_path'. Omit for all fields. Use to reduce token usage when you only need IDs or signatures."},
 				"min_confidence":{"type":"number","description":"Minimum extraction_confidence (0.0-1.0). Default is query-aware (#247 #5): exact-identifier queries (single token, no wildcards/spaces/quotes) default to 0.0; phrase / wildcard / multi-word queries default to 0.71. corpus='docs' also defaults to 0.0 regardless of query shape — Markdown section symbols are the intentional target on docs searches, not noise to filter out. Rationale for 0.71 on phrase/wildcard code queries: filters bottom-floor doc-section symbols that can BM25-match wide queries when they cross the corpus boundary; an exact-identifier query can't legitimately match doc-section noise so the floor isn't needed. Set explicitly to override either default. Inclusive: a symbol scored at or above the threshold IS returned."},
 				"compact":{"type":"boolean","description":"#1226: thin-client envelope. Drops per-hit extraction_confidence + language + snippet plus the top-level confidence_distribution. Default false preserves the current shape for dashboard / dogfood / quality-aware consumers. Compact also skips the per-hit snippet disk read entirely — the real perf win on bulk searches. The thin-client minimum shape is {id, name, qualified_name, kind, file_path, start_line, end_line, signature, score} per hit — enough to drive a follow-up symbol/context/trace call. Mirrors #1225's trace compact naming."},
-				"format":{"type":"string","enum":["json","text"],"description":"Response rendering for the hit list. 'json' (default) returns the results array. 'text' replaces it with results_text — a dense TSV block (header row, then one line per hit: id<TAB>kind<TAB>file:line<TAB>signature-or-name). Same information for driving follow-up symbol/context/trace calls at a fraction of the token cost; fixed column set (fields= and snippet options don't apply to the text rendering). _meta and the pagination envelope (count/total/has_more) are unchanged."},
+				"format":{"type":"string","enum":["json","text","toon"],"description":"Response rendering for the hit list. 'json' (default) returns the results array. 'text' replaces it with results_text — a dense TSV block (header row, then one line per hit: id<TAB>kind<TAB>file:line<TAB>signature-or-name). 'toon' replaces it with results_toon — a TOON (Token-Oriented Object Notation) tabular block: field list declared once (results[N]{file,id,kind,line,name,signature}:), then one bare comma-delimited row per hit; strings quoted only when needed. Both carry the information for driving follow-up symbol/context/trace calls at a fraction of the JSON token cost; fixed column set (fields= and snippet options don't apply to the text/toon renderings). _meta and the pagination envelope (count/total/has_more) are unchanged."},
 				"snippet_lines":{"type":"integer","description":"#1091: max source lines included in each result's snippet. Default is QUERY-AWARE: exact-identifier queries (single token, no wildcards/spaces/quotes) default to 0 (snippet is dead weight when the agent knows the target name); phrase / wildcard / multi-word queries default to 5 (triage needs context). Same heuristic as min_confidence's query-aware default (#247). Pass explicitly to override either default. Pass up to 20 for deep triage. Clamped to [0, 20] with a warning when out of range. The fields= projection's snippet-suppression still pays the read cost; snippet_lines=0 is the cleaner skip."}
 			}
 		}`),
@@ -4344,7 +4344,7 @@ func (s *Server) registerTools() {
 	// 7. trace
 	s.addTool(&mcp.Tool{
 		Name:        "trace",
-		Description: "**Use before changing behaviour** that other code depends on, to find callers (inbound) or what it calls (outbound). Risk labels: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Pass `name` for the common case; when the name is ambiguous (multiple symbols share it) trace falls back to the first match and surfaces alternatives in `_meta.ambiguous_match`. To trace a specific alternative, pass `id=` with the exact symbol ID from search/symbols/query — that's the disambiguation escape hatch (#474). Default traversal follows CALLS-family edges; pass `kinds=READS,WRITES` to trace data-flow edges instead (or `kinds=CALLS,READS` to mix). Test files and testdata/ fixtures are filtered by default; pass `include_tests=true` to see test coverage of a symbol. When `depth` is omitted, the result is auto-trimmed to the smallest depth with ≥5 hops (so hotspots don't dump 100+ rows); `_meta.depth_used` reports the trim. Pass `depth=N` explicitly to skip the trim. Pass `format=\"text\"` for a dense TSV rendering of the hops (`results_text`) instead of the JSON hops array — same envelope, materially fewer tokens on hot traces.",
+		Description: "**Use before changing behaviour** that other code depends on, to find callers (inbound) or what it calls (outbound). Risk labels: CRITICAL=direct callers, HIGH=2 hops, MEDIUM=3 hops. Pass `name` for the common case; when the name is ambiguous (multiple symbols share it) trace falls back to the first match and surfaces alternatives in `_meta.ambiguous_match`. To trace a specific alternative, pass `id=` with the exact symbol ID from search/symbols/query — that's the disambiguation escape hatch (#474). Default traversal follows CALLS-family edges; pass `kinds=READS,WRITES` to trace data-flow edges instead (or `kinds=CALLS,READS` to mix). Test files and testdata/ fixtures are filtered by default; pass `include_tests=true` to see test coverage of a symbol. When `depth` is omitted, the result is auto-trimmed to the smallest depth with ≥5 hops (so hotspots don't dump 100+ rows); `_meta.depth_used` reports the trim. Pass `depth=N` explicitly to skip the trim. Pass `format=\"text\"` for a dense TSV rendering of the hops (`results_text`) or `format=\"toon\"` for a TOON tabular rendering (`results_toon`) instead of the JSON hops array — same envelope, materially fewer tokens on hot traces.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"name":{"type":"string","description":"Function name to trace (short name, e.g. 'ProcessOrder'). When ambiguous, trace picks the first match and surfaces alternatives via _meta.ambiguous_match — pass id= instead to trace a specific alternative."},
@@ -4358,7 +4358,7 @@ func (s *Server) registerTools() {
 				"include_tests":{"type":"boolean","description":"If true, surface hops in test files (*_test.go, *.spec.ts, etc.). Default false. As of #1225 this no longer also governs fixture paths — use include_fixtures for those. Set true when you genuinely want a symbol's test coverage."},
 				"include_fixtures":{"type":"boolean","description":"#1225: if true, surface hops in testdata/__fixtures__/ pinned-corpus paths. Default false. Pre-#1225 these were grouped under include_tests; split so callers can selectively unlock real tests without also unlocking pincher's snapshot inputs (mirrors #1212 pinchQL fixture filter)."},
 				"compact":{"type":"boolean","description":"#1225: thin-client envelope. Drops per-hop kind + via fields and the top-level risk_summary block, and ditto-compresses consecutive same-file hops (within a depth block, a node repeating the previous node's file_path omits the field — scan up to the nearest node carrying file_path to decode). Default false. On hot traces these account for 30-50% of payload that thin-client consumers (Cursor / Continue / Claude Desktop) don't render. Risk-aware consumers (dashboards, dogfood) stick with the default."},
-				"format":{"type":"string","enum":["json","text"],"description":"Response rendering for the hop list. 'json' (default) returns the hops array. 'text' replaces it with results_text — a dense TSV block (header row, then one line per hop: depth<TAB>risk<TAB>id; risk renders '-' when risk=false). The id embeds file path + qualified name, so each line carries enough to drive a follow-up context/symbol call. _meta and total are unchanged."},
+				"format":{"type":"string","enum":["json","text","toon"],"description":"Response rendering for the hop list. 'json' (default) returns the hops array. 'text' replaces it with results_text — a dense TSV block (header row, then one line per hop: depth<TAB>risk<TAB>id; risk renders '-' when risk=false). 'toon' replaces it with results_toon — a TOON (Token-Oriented Object Notation) tabular block: hops[N]{depth,id,risk}: with one bare comma-delimited row per hop. In both, the id embeds file path + qualified name, so each row carries enough to drive a follow-up context/symbol call. _meta and total are unchanged."},
 				"max_hops":{"type":"integer","description":"#1228: upper-bound cap on the number of hops returned (default 50). A hub function (logging utility, error helper called from 200+ sites) returns 100+ hops at depth=1; the auto-deepen trim doesn't help because depth=1 already crosses the threshold. When cap fires, _meta.truncated=true + _meta.total_before_cap + _meta.max_hops surface so the caller knows the response was truncated and can re-issue with a wider max_hops. Default 50 matches architecture's hotspot cap."},
 				"fields":{"type":"string","description":"Comma-separated top-level keys to include, e.g. 'hops,total' to drop risk_summary. Per-hop fields are NOT trimmed — pass shape via downstream symbol/symbols calls. _meta is preserved."}
 			}
@@ -6185,10 +6185,11 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// adjusted instead of silently getting a different page size than
 	// it asked for. Surfaced in _meta.warnings below.
 	var searchClampWarnings []string
-	// format=text: render the hit list as a dense TSV block
-	// (results_text) instead of the JSON results array. Unknown
-	// values fall back to json with a warning.
-	formatText, formatWarn := parseFormatArg(args)
+	// format=text/toon: render the hit list as a dense TSV block
+	// (results_text) or TOON tabular block (results_toon) instead of
+	// the JSON results array. Unknown values fall back to json with a
+	// warning.
+	searchRowFmt, formatWarn := parseFormatArg(args)
 	if formatWarn != "" {
 		searchClampWarnings = append(searchClampWarnings, formatWarn)
 	}
@@ -6696,9 +6697,9 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		// dropping it is the real perf win, not just byte savings.
 		// #1091: snippet_lines=0 is the explicit-skip knob — same effect
 		// as compact + fields-projection but without the side effects.
-		// format=text doesn't render snippets — skip the per-hit disk
-		// read entirely, same as compact.
-		includeSnippet := !compact && !formatText && snippetLines > 0 && (fieldSet == nil || fieldSet["snippet"])
+		// format=text/toon doesn't render snippets — skip the per-hit
+		// disk read entirely, same as compact.
+		includeSnippet := !compact && searchRowFmt == rowFormatJSON && snippetLines > 0 && (fieldSet == nil || fieldSet["snippet"])
 		snippet := ""
 		if includeSnippet && r.Symbol.Kind != "Variable" && r.Symbol.Kind != "Type" {
 			var src string
@@ -6745,13 +6746,18 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 
 	// Token savings: each result came from a file the agent would have read in full.
-	// format=text: measure against the TSV block actually returned, so
-	// tokens_saved/tokens_used stay honest for the smaller rendering.
-	resultsText := ""
+	// format=text/toon: measure against the rendered block actually
+	// returned, so tokens_saved/tokens_used stay honest for the smaller
+	// rendering.
+	renderedRows := ""
 	responseJSON, _ := json.Marshal(rows)
-	if formatText {
-		resultsText = renderSearchResultsText(results)
-		responseJSON = []byte(resultsText)
+	switch searchRowFmt {
+	case rowFormatText:
+		renderedRows = renderSearchResultsText(results)
+		responseJSON = []byte(renderedRows)
+	case rowFormatTOON:
+		renderedRows = renderSearchResultsTOON(results)
+		responseJSON = []byte(renderedRows)
 	}
 	var filePaths []string
 	for _, r := range results {
@@ -6946,13 +6952,19 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 		"limit":    limit,
 		"_meta":    meta,
 	}
-	if formatText {
+	switch searchRowFmt {
+	case rowFormatText:
 		// format=text: the TSV block replaces the results array.
 		// Fixed column set (id/kind/file:line/signature-or-name) —
 		// the per-row JSON key repetition and brace/quote chrome is
 		// where the token cost lives on list-shaped payloads.
-		data["results_text"] = resultsText
-	} else {
+		data["results_text"] = renderedRows
+	case rowFormatTOON:
+		// format=toon: the TOON tabular block replaces the results
+		// array — field list declared once, one bare row per hit.
+		// Same fixed column rationale as format=text.
+		data["results_toon"] = renderedRows
+	default:
 		data["results"] = rows
 	}
 	// F1: surface binary-version drift on read-class tools so the agent
@@ -8230,10 +8242,11 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// same-file hops within a depth block (repeated file_path omitted;
 	// decode by scanning up to the nearest node carrying file_path).
 	compact := boolArg(args, "compact")
-	// format=text: render the hop list as a dense TSV block
-	// (results_text) instead of the JSON hops array. Unknown values
-	// fall back to json with a warning (appended below).
-	formatText, traceFormatWarn := parseFormatArg(args)
+	// format=text/toon: render the hop list as a dense TSV block
+	// (results_text) or TOON tabular block (results_toon) instead of
+	// the JSON hops array. Unknown values fall back to json with a
+	// warning (appended below).
+	traceRowFmt, traceFormatWarn := parseFormatArg(args)
 
 	// kinds: comma-separated list of edge kinds to traverse (e.g.
 	// "CALLS" or "READS,WRITES"). Empty/missing = default (CALLS
@@ -8583,10 +8596,13 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	}
 
 	responseJSON, _ := json.Marshal(hopsList)
-	if formatText {
-		// format=text: measure savings against the TSV block actually
+	switch traceRowFmt {
+	case rowFormatText:
+		// format=text/toon: measure savings against the block actually
 		// returned so tokens_saved/tokens_used stay honest.
 		responseJSON = []byte(renderTraceHopsText(hops))
+	case rowFormatTOON:
+		responseJSON = []byte(renderTraceHopsTOON(hops))
 	}
 	var tracedPaths []string
 	for _, h := range hops {
@@ -8758,13 +8774,19 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		"total":     len(hops),
 		"_meta":     meta,
 	}
-	if formatText {
+	switch traceRowFmt {
+	case rowFormatText:
 		// format=text: the TSV block replaces the hops array. One
 		// line per hop (depth<TAB>risk<TAB>id) — the id embeds file
 		// path + qualified name, so each line still carries enough to
 		// drive a follow-up context/symbol call.
 		data["results_text"] = renderTraceHopsText(hops)
-	} else {
+	case rowFormatTOON:
+		// format=toon: the TOON tabular block replaces the hops array
+		// — one bare row per hop (depth,id,risk), field list declared
+		// once. Same follow-up-call sufficiency as format=text.
+		data["results_toon"] = renderTraceHopsTOON(hops)
+	default:
 		data["hops"] = hopsList
 	}
 	if addRisk && !compact {
