@@ -369,6 +369,11 @@ func init() {
 		exts:       map[string]string{".rb": "Ruby", ".rake": "Ruby"},
 		confidence: 0.70,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			if rubyASTEnabled() {
+				if r, ok := extractRubyTreeSitter(s, p); ok {
+					return r
+				}
+			}
 			return extractRuby(s, p)
 		},
 	})
