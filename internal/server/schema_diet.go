@@ -26,11 +26,12 @@ import (
 //
 //  2. Schema style (PINCHER_SCHEMA_STYLE=rich|lean): `lean` applies a
 //     deterministic transform at registration time — each tool
-//     description is cut to its first sentence and every arg
-//     description is cut to its first sentence then capped at
-//     leanArgDescMax chars. No hand-written variants; the pedagogy
-//     lives on in `guide` and docs/reference/tools.md. Default is
-//     `lean` since v1.6 (same #2005 measurement);
+//     description is cut to its first sentence (plus the one-sentence
+//     graph-authority note for the tools in leanAuthorityNote) and
+//     every arg description is cut to its first sentence then capped
+//     at leanArgDescMax chars. No other hand-written variants; the
+//     pedagogy lives on in `guide` and docs/reference/tools.md.
+//     Default is `lean` since v1.6 (same #2005 measurement);
 //     PINCHER_SCHEMA_STYLE=rich restores the full descriptions.
 //
 // Both knobs are read once at New() (like PINCHER_META_CAPABILITIES);
@@ -98,9 +99,29 @@ func parseSchemaStyleEnv(v string) string {
 // "Project name or ID.") while dropping the multi-paragraph pedagogy.
 const leanArgDescMax = 120
 
-// leanToolDescription returns the first sentence of a tool description.
-func leanToolDescription(s string) string {
-	return firstSentence(s)
+// leanAuthorityNote carries the one-sentence graph-authority statement
+// appended to the lean description of each graph-answer tool. Lean cuts
+// the rich description to its first sentence, which drops the authority
+// clause the rich text carries at the end — but that clause is load-
+// bearing, not pedagogy: without it, agents measurably re-verify graph
+// answers with grep/Read (n=3 trust-tax benchmark: stating authority
+// halved turns at equal 48/48 accuracy). Kept to one tight sentence per
+// tool so the core+lean surface stays under the schema-weight budget
+// (TestSchemaWeight_CoreLean_UnderBudget).
+var leanAuthorityNote = map[string]string{
+	"trace":         "Graph-derived; authoritative for caller/callee/count — no text-search re-verification needed absent warnings.",
+	"changes":       "Graph-derived; authoritative for blast-radius — no text-search re-verification needed absent warnings.",
+	"verify_change": "Graph-derived; authoritative for blast-radius/orphan checks — no re-verification needed absent warnings.",
+}
+
+// leanToolDescription returns the first sentence of a tool description,
+// plus the graph-authority note for the tools that carry one.
+func leanToolDescription(name, s string) string {
+	out := firstSentence(s)
+	if note, ok := leanAuthorityNote[name]; ok {
+		out += " " + note
+	}
+	return out
 }
 
 // leanArgDescription returns the first sentence of an arg description,

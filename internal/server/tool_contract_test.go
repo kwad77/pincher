@@ -170,7 +170,7 @@ func TestToolContract_DefaultSurface(t *testing.T) {
 			t.Errorf("tool %q missing from rich-mode server", name)
 			continue
 		}
-		if want := leanToolDescription(richTool.Description); tool.Description != want {
+		if want := leanToolDescription(name, richTool.Description); tool.Description != want {
 			t.Errorf("default description for %q is not the lean transform:\n got %q\nwant %q",
 				name, tool.Description, want)
 		}
