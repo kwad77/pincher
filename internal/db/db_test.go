@@ -668,6 +668,16 @@ var readerRoutedStoreMethods = map[string]bool{
 	"HookRedirectOutcomes":          true,
 	"HookTokenColumnsPresent":       true,
 	"HookRedirectTokensLeftOnTable": true,
+	// LES (ADR LOOP_EFFICIENCY_METRIC) telemetry readers — pure
+	// SELECTs over already-recorded telemetry; LES never mutates
+	// what it measures.
+	"CountLoopCheckpointsBetween": true,
+	"TokensUsedBetween":           true,
+	"CountToolCallsBetween":       true,
+	"QueryMetricsBetween":         true,
+	"HookRedirectIgnoredBetween":  true,
+	"LoopOpeningSessionsBetween":  true,
+	"LoopIterationSpan":           true,
 	// Accessors that return the underlying *sql.DB. RO() returns the
 	// reader pool by definition; DB() returns the writer (semantic
 	// belongs to writer-routed since callers may write through it).
