@@ -25,8 +25,13 @@ import "time"
 // RFC3339 UTC text (AppendLoopCheckpoint), so lexicographic comparison
 // is chronological. Reader-routed.
 func (s *Store) CountLoopCheckpointsBetween(from, to time.Time) (counted, total int, err error) {
+	// Handoff manifests (claim prefix "HANDOFF", written by `loop
+	// action=handoff`) carry a fat server-composed decision but are
+	// not iterations — counting them would deflate iteration_cost,
+	// the exact gaming the ADR forbids (sev-2 from the v1.5.0
+	// adversarial review, fixed pre-tag).
 	err = s.ro.QueryRow(
-		`SELECT COALESCE(SUM(CASE WHEN TRIM(decision) != '' THEN 1 ELSE 0 END), 0),
+		`SELECT COALESCE(SUM(CASE WHEN TRIM(decision) != '' AND claim NOT LIKE 'HANDOFF%' THEN 1 ELSE 0 END), 0),
 		        COUNT(*)
 		   FROM loop_checkpoints
 		  WHERE created_at >= ? AND created_at < ?`,
@@ -136,8 +141,10 @@ func (s *Store) LoopOpeningSessionsBetween(from, to time.Time, firstN int) (sess
 // first checkpoint created_at (RFC3339), "" when the loop has no rows.
 // Reader-routed.
 func (s *Store) LoopIterationSpan(projectID, loopName string) (counted int, firstCreatedAt string, err error) {
+	// Handoff manifests excluded from the denominator — same
+	// anti-gaming rationale as CountLoopCheckpointsBetween.
 	err = s.ro.QueryRow(
-		`SELECT COALESCE(SUM(CASE WHEN TRIM(decision) != '' THEN 1 ELSE 0 END), 0),
+		`SELECT COALESCE(SUM(CASE WHEN TRIM(decision) != '' AND claim NOT LIKE 'HANDOFF%' THEN 1 ELSE 0 END), 0),
 		        COALESCE(MIN(created_at), '')
 		   FROM loop_checkpoints
 		  WHERE project_id = ? AND loop_name = ?`,

@@ -300,7 +300,7 @@ func (s *Server) coachLESRegression(now time.Time) map[string]any {
 			est:            est,
 			recommendation: "Each loop iteration is costing more tokens than last week. Lean on the loop substrate: `loop resume` instead of transcript re-reads, `batch` for multi-probe iterations, `context lite=true`/`max_tokens` to bound probes.",
 			basis: fmt.Sprintf(
-				"iteration_cost rose %.0f → %.0f tokens/checkpoint week-over-week (recorded tokens_used ÷ non-empty-decision checkpoints: %d/%d this week vs %d/%d prior; empty-decision checkpoints never count, per ADR LOOP_EFFICIENCY_METRIC). est = (%.0f − %.0f) × %d checkpoints = %d.",
+				"iteration_cost rose %.0f → %.0f tokens/checkpoint week-over-week (recorded tokens_used ÷ non-empty-decision checkpoints: %d/%d this week vs %d/%d prior; empty-decision and handoff-manifest checkpoints never count, per ADR LOOP_EFFICIENCY_METRIC). est = (%.0f − %.0f) × %d checkpoints = %d.",
 				prev.iterationCost, cur.iterationCost,
 				cur.tokensUsed, cur.checkpointsCounted, prev.tokensUsed, prev.checkpointsCounted,
 				cur.iterationCost, prev.iterationCost, cur.checkpointsCounted, est),
@@ -381,6 +381,6 @@ func (s *Server) lesHintForLoop(projectID, loopName string, now time.Time) strin
 		return ""
 	}
 	return fmt.Sprintf(
-		"les: iteration_cost ≈ %d tokens/checkpoint (%d recorded tokens across all sessions since this loop's first checkpoint ÷ %d non-empty-decision checkpoints)",
+		"les: iteration_cost ≈ %d tokens/checkpoint (%d recorded tokens across ALL sessions/projects since this loop's first checkpoint — an upper bound, tokens aren't attributed per loop ÷ %d non-empty-decision checkpoints, handoff manifests excluded)",
 		tokens/int64(counted), tokens, counted)
 }
