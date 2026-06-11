@@ -247,6 +247,7 @@ func TestCancellation_HeavyToolsHaveContractTest(t *testing.T) {
 		"rebuild_fts":         true,
 		"investigate_failure": true,
 		"plan_change":         true,
+		"verify_change":       true,
 		"audit_unused":        true,
 		"onboard_module":      true,
 		"dead_code":           true,
@@ -409,6 +410,19 @@ func TestCancellation_HandlePlanChange_ReturnsPromptly(t *testing.T) {
 	})
 	if res.elapsed > 500*time.Millisecond {
 		t.Errorf("handlePlanChange took %v on a cancelled ctx; expected <500ms", res.elapsed)
+	}
+}
+
+func TestCancellation_HandleVerifyChange_ReturnsPromptly(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newTestServer(t)
+
+	ctx := withCancelledContext(t)
+	res := runWithBudget(t, "handleVerifyChange", 500*time.Millisecond, func() (any, error) {
+		return srv.handleVerifyChange(ctx, makeReq(map[string]any{}))
+	})
+	if res.elapsed > 500*time.Millisecond {
+		t.Errorf("handleVerifyChange took %v on a cancelled ctx; expected <500ms", res.elapsed)
 	}
 }
 

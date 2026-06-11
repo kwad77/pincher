@@ -3792,6 +3792,24 @@ func (s *Store) ListSymbolsForProject(projectID string) ([]Symbol, error) {
 // SQL uses NOT EXISTS rather than LEFT JOIN ... IS NULL so the
 // edges table's (project_id, to_id) index dominates the plan.
 func (s *Store) GetDeadCode(projectID string, kinds []string, language string, minConfidence float64, limit int) ([]Symbol, error) {
+	return s.getDeadCodeFiltered(projectID, kinds, language, minConfidence, limit, nil)
+}
+
+// GetDeadCodeForFiles is GetDeadCode restricted to symbols whose
+// file_path is one of files. Backs verify_change's post-edit orphan
+// check (loop-substrate PR-10): after an edit, symbols in the changed
+// files that NOW have zero inbound edges are possibly-orphaned-by-the-
+// change candidates. Shares the exact SQL with GetDeadCode (same
+// exported/entry-point/test/init carve-outs) so the two surfaces can't
+// drift; only the file_path IN (...) restriction differs.
+func (s *Store) GetDeadCodeForFiles(projectID string, files []string, kinds []string, minConfidence float64, limit int) ([]Symbol, error) {
+	if len(files) == 0 {
+		return nil, nil
+	}
+	return s.getDeadCodeFiltered(projectID, kinds, "", minConfidence, limit, files)
+}
+
+func (s *Store) getDeadCodeFiltered(projectID string, kinds []string, language string, minConfidence float64, limit int, files []string) ([]Symbol, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -3844,6 +3862,12 @@ func (s *Store) GetDeadCode(projectID string, kinds []string, language string, m
 	args := []any{projectID, minConfidence}
 	for _, k := range kinds {
 		args = append(args, k)
+	}
+	if len(files) > 0 {
+		q += " AND s.file_path IN (" + inPlaceholders(len(files)) + ")"
+		for _, f := range files {
+			args = append(args, f)
+		}
 	}
 	if language != "" {
 		q += " AND s.language = ?"
