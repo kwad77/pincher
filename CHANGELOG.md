@@ -7,6 +7,40 @@ minors.
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-06-11 — The self-measuring loop: LES, pointer handoffs, compaction advisories, loopbench
+
+v1.5 closes the loop the v1.4 substrate opened: the loop now **measures
+itself**. LES (the Loop Efficiency Score) turns already-recorded
+telemetry into a four-sub-metric efficiency readout; `loop handoff`
+replaces prose handoff.md files with a ≤600-token server-composed
+pointer manifest (measured: a full fixture manifest at 72 tokens, vs
+2-5k-token prose that rots within ~3 iterations of line drift); the
+PreCompact hook tells Claude Code's compactor what is already
+checkpointed so summaries keep pointers instead of payloads; and
+`scripts/loopbench/` makes the cross-toolset benchmark reproducible
+(real `claude -p` stdio-MCP arms, billing-grade usage capture).
+Everything is **additive** against `v1.4.0`: tool count stays 34,
+schema stays v41 (zero migrations), no tool, field, `_meta` key, HTTP
+route, CLI flag, or symbol-ID format was removed or renamed — the
+`loop` tool gains the `handoff`/`export` actions, `note`/`seq` args,
+and the `les_hint` resume field (ADR-0002 frozen-surface review passed
+clean; see [docs/release-signoff-v1.5.0.md](docs/release-signoff-v1.5.0.md)).
+
+### Added
+- `scripts/loopbench/` — reproducible cross-toolset benchmark harness: five arm specs (native-naive, native-coached, pincher-mcp, pincher-mcp-coached, deprecated pincher-curl) run as real `claude -p --output-format json` sessions with `--mcp-config`/`--strict-mcp-config`, recording billing-grade token usage to a TSV scoreboard; replaces the curl-driven manual benchmark rounds whose treatment arm paid a harness tax real MCP integration does not
+- **`loop action=handoff` + `loop action=export` — the pointer manifest that replaces prose handoff.md.** `handoff name=<loop> [note≤200ch]` composes a pointer manifest SERVER-SIDE — open reopen_triggers (incl. `AWAITING HUMAN` entries verbatim), ADR keys (capped 15), a working-tree summary from the shared `changes` analysis (counts + file list, scope=all), the current index watermark, the last 3 checkpoint receipts, and up to 3 suggested re-entry seed ids parsed from recent checkpoints' evidence — and appends it as a regular checkpoint (claim `HANDOFF — <note>`, decision = the manifest rendered as compact text ≤600 tokens, watermark stamped as usual). The response echoes `{receipt, manifest}` so the writer sees exactly what the next session will, and `resume` leads the brief with the handoff. Measured motivation: prose handoffs cost 2-5k tokens to write and rot within ~3 iterations of line drift; a handoff manifest writes at ~200 tokens, resumes at ~150, and every pointer dereferences _live_ state (triggers, ADRs, tree, symbols) instead of freezing prose. `export name=<loop> [seq]` is the escape hatch — prose only when a human actually needs it: renders a Markdown document from the ledger on demand (claims/decisions/open-triggers/awaiting-human sections, the window since the previous handoff by default, `max_tokens` default 2000) and never writes files.
+- **PreCompact hook — ledger-aware compaction advisories (precompact-hook).** `pincher hook-check` now handles Claude Code's `PreCompact` event: it resolves the session's `cwd` to an indexed project (same longest-prefix rule as the PreToolUse path), queries the loop ledger + ADR store in ≤3 read queries, and emits one advisory line on `systemMessage` + `hookSpecificOutput.additionalContext` telling the compactor what is already checkpointed — `loop '<name>' (N checkpoints, latest: <loop>#<seq> <receipt>), M open reopen-triggers, K ADRs` — so the summary can keep pointers (`<loop>#<seq>`, ADR keys, symbol ids) and drop payloads; everything stays recoverable via `loop resume` / `adr get`. Empty ledger emits nothing; malformed events fail open (`{"continue": true}`), matching the #1654 advisory-mode contract. `pincher init --target=claude` now registers the `PreCompact` event alongside `PreToolUse` (additive — re-running init upgrades legacy installs), and firings are counted in `hook_invocations` with the distinct `tool_name="compact"` (existing columns, no schema change).
+- LES — the Loop Efficiency Score (ADR `LOOP_EFFICIENCY_METRIC`), pincher's success metric, computed entirely from already-recorded telemetry (no new tool, no schema change, free local compute). Four sub-metrics: `iteration_cost` (recorded tokens_used ÷ loop checkpoints written; checkpoints with empty decisions never count — no checkpoint-stuffing), `waste_rate` (zero-unexpected queries + error envelopes + budget-truncated responses + ignored hook redirects, over total calls), `recovery_load` (plan_stale / unpredicted_impact / index_moved_since_checkpoint warnings + `investigate_failure` calls), `continuation_fidelity` (sessions opening from the loop ledger ÷ sessions on a ledger-bearing install). Surfaces: one compact LES line in the `stats` SESSION box for this session plus one for the trailing 7 days; a priced `les_regression` coach finding naming the sub-metric that moved week-over-week; and a `les_hint` line on the `loop resume` brief when that loop's iteration_cost is computable. Components not persisted across sessions (error envelopes, warning-code counts) are computed live for the session scope and documented as omissions in the 7d basis strings — never faked. Diagnostic only; never a per-call gate.
+
+### DOGFOOD
+
+Friction found while building this release with the loop methodology, and what happened to it:
+
+- **Found + worked around (#1996):** the claude CLI's variadic `--allowedTools <tools...>` swallows a trailing prompt argument — `run-arm.sh` passes a comma-joined list and feeds the prompt on stdin; documented in `scripts/loopbench/README.md`.
+- **Found + documented (#1996):** loopbench's pincher arms can inject the init-managed CLAUDE.md block into the repo under test — check `git status` after benchmark runs (in the loopbench README).
+- **Found + fixed (release-prep):** all four feature PRs shipped slug-named `CHANGELOG.d/` stubs (`loop-handoff.added.md`, …). The assembler's glob tolerates slugs, but the documented convention and stable PR-number ordering require digits — renamed to `1996–1999.<type>.md` before assembly.
+- **Found + noted (cross-PR, sev-2 in the release signoff):** `handoff` checkpoints store their manifest in the `decision` field, so they count toward LES `iteration_cost` denominators (`CountLoopCheckpointsBetween`, `LoopIterationSpan`) — each handoff mildly deflates the apparent tokens-per-iteration. Diagnostic-only metric, never a gate; follow-up is to exclude `HANDOFF`-prefixed claims from the counted set.
+
 ## [1.4.0] — 2026-06-11 — The loop release: agent-loop substrate + AST-tier language wave
 
 v1.4 is the **loop-substrate** minor: the release that makes pincher a
@@ -4231,7 +4265,8 @@ Highlights:
 - `docs/index.html`: single-file GitHub Pages landing page.
 - CI coverage gate lowered to 83% to match reality.
 
-[Unreleased]: https://github.com/kwad77/pincher/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/kwad77/pincher/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/kwad77/pincher/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/kwad77/pincher/compare/v1.3.0-rc.1...v1.4.0
 [1.3.0-rc.1]: https://github.com/kwad77/pincher/compare/v1.2.0-rc.2...v1.3.0-rc.1
 [1.2.0-rc.2]: https://github.com/kwad77/pincher/compare/v1.2.0-rc.1...v1.2.0-rc.2
