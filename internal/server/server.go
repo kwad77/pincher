@@ -3744,20 +3744,21 @@ func (s *Server) invalidateProjectIDCache() {
 // otherwise.
 var toolComplexityTiers = map[string]string{
 	// lite — pure-data, small response
-	"search":      "lite",
-	"symbol":      "lite",
-	"symbols":     "lite",
-	"health":      "lite",
-	"stats":       "lite",
-	"schema":      "lite",
-	"list":        "lite",
-	"doctor":      "lite",
-	"adr":         "lite",
-	"loop":        "lite", // PR-8/9 loop-substrate: ledger append/list are trivial; resume composes from rows already written
-	"index":       "lite",
-	"rebuild_fts": "lite",
-	"init":        "lite",
-	"self_test":   "lite",
+	"search":       "lite",
+	"symbol":       "lite",
+	"symbols":      "lite",
+	"health":       "lite",
+	"stats":        "lite",
+	"schema":       "lite",
+	"list":         "lite",
+	"doctor":       "lite",
+	"adr":          "lite",
+	"loop":         "lite", // PR-8/9 loop-substrate: ledger append/list are trivial; resume composes from rows already written
+	"index":        "lite",
+	"rebuild_fts":  "lite",
+	"init":         "lite",
+	"self_test":    "lite",
+	"assert_graph": "lite", // conclusion-density: server-side pass/fail; two-token answer when passing
 
 	// standard — pure-data, medium response (agent reasons over)
 	"context":        "standard",
@@ -3821,6 +3822,7 @@ var toolIdempotent = map[string]bool{
 	"trace":               true,
 	"query":               true,
 	"guide":               true,
+	"assert_graph":        true, // conclusion-density — read-only invariant evaluation over the edge graph
 	"changes":             true,
 	"fetch":               true,
 	"architecture":        true,
@@ -4155,6 +4157,7 @@ var toolMetadata = map[string]toolMetadataEntry{
 	"why_empty":           {Title: "Empty-result recovery composite", Annotations: annotationsReadOnly},                  // #1391 v0.85
 	"batch":               {Title: "Multi-query batch envelope", Annotations: annotationsReadOnly},                       // loop-substrate
 	"verify_change":       {Title: "Post-edit verification composite", Annotations: annotationsReadOnly},                 // loop-substrate PR-10
+	"assert_graph":        {Title: "Server-side graph assertion", Annotations: annotationsReadOnly},                      // conclusion-density
 
 	// Diagnostics (read-only, idempotent).
 	"health": {Annotations: annotationsReadOnly},
@@ -4373,6 +4376,7 @@ func (s *Server) registerTools() {
 				"min_confidence":{"type":"number","description":"Minimum extraction_confidence (0.0-1.0). Default is query-aware (#247 #5): exact-identifier queries (single token, no wildcards/spaces/quotes) default to 0.0; phrase / wildcard / multi-word queries default to 0.71. corpus='docs' also defaults to 0.0 regardless of query shape — Markdown section symbols are the intentional target on docs searches, not noise to filter out. Rationale for 0.71 on phrase/wildcard code queries: filters bottom-floor doc-section symbols that can BM25-match wide queries when they cross the corpus boundary; an exact-identifier query can't legitimately match doc-section noise so the floor isn't needed. Set explicitly to override either default. Inclusive: a symbol scored at or above the threshold IS returned."},
 				"compact":{"type":"boolean","description":"#1226: thin-client envelope. Drops per-hit extraction_confidence + language + snippet plus the top-level confidence_distribution. Default false preserves the current shape for dashboard / dogfood / quality-aware consumers. Compact also skips the per-hit snippet disk read entirely — the real perf win on bulk searches. The thin-client minimum shape is {id, name, qualified_name, kind, file_path, start_line, end_line, signature, score} per hit — enough to drive a follow-up symbol/context/trace call. Mirrors #1225's trace compact naming."},
 				"format":{"type":"string","enum":["json","text"],"description":"Response rendering for the hit list. 'json' (default) returns the results array. 'text' replaces it with results_text — a dense TSV block (header row, then one line per hit: id<TAB>kind<TAB>file:line<TAB>signature-or-name). Same information for driving follow-up symbol/context/trace calls at a fraction of the token cost; fixed column set (fields= and snippet options don't apply to the text rendering). _meta and the pagination envelope (count/total/has_more) are unchanged."},
+				"count_only":{"type":"boolean","description":"Conclusion-density mode: return {query, total, by_kind} — counts only, no result rows, no snippets (the per-hit disk read is skipped entirely). Use when the question is 'how many matches?' rather than 'which matches?'. Composes with kind/language/corpus/min_confidence filters; total is the same post-filter count the row-shaped call reports. Default false."},
 				"snippet_lines":{"type":"integer","description":"#1091: max source lines included in each result's snippet. Default is QUERY-AWARE: exact-identifier queries (single token, no wildcards/spaces/quotes) default to 0 (snippet is dead weight when the agent knows the target name); phrase / wildcard / multi-word queries default to 5 (triage needs context). Same heuristic as min_confidence's query-aware default (#247). Pass explicitly to override either default. Pass up to 20 for deep triage. Clamped to [0, 20] with a warning when out of range. The fields= projection's snippet-suppression still pays the read cost; snippet_lines=0 is the cleaner skip."}
 			}
 		}`),
@@ -4413,6 +4417,7 @@ func (s *Server) registerTools() {
 				"compact":{"type":"boolean","description":"#1225: thin-client envelope. Drops per-hop kind + via fields and the top-level risk_summary block, and ditto-compresses consecutive same-file hops (within a depth block, a node repeating the previous node's file_path omits the field — scan up to the nearest node carrying file_path to decode). Default false. On hot traces these account for 30-50% of payload that thin-client consumers (Cursor / Continue / Claude Desktop) don't render. Risk-aware consumers (dashboards, dogfood) stick with the default."},
 				"format":{"type":"string","enum":["json","text"],"description":"Response rendering for the hop list. 'json' (default) returns the hops array. 'text' replaces it with results_text — a dense TSV block (header row, then one line per hop: depth<TAB>risk<TAB>id; risk renders '-' when risk=false). The id embeds file path + qualified name, so each line carries enough to drive a follow-up context/symbol call. _meta and total are unchanged."},
 				"max_hops":{"type":"integer","description":"#1228: upper-bound cap on the number of hops returned (default 50). A hub function (logging utility, error helper called from 200+ sites) returns 100+ hops at depth=1; the auto-deepen trim doesn't help because depth=1 already crosses the threshold. When cap fires, _meta.truncated=true + _meta.total_before_cap + _meta.max_hops surface so the caller knows the response was truncated and can re-issue with a wider max_hops. Default 50 matches architecture's hotspot cap."},
+				"count_only":{"type":"boolean","description":"Conclusion-density mode: return {root, direction, total, by_depth, by_risk} — counts only, nothing row-shaped. Use when the question is 'how many callers?' rather than 'which callers?'. Composes with every filter (kinds/min_confidence/include_tests/depth/direction); counts are computed from the exact same traversal the row-shaped call would return. Default false."},
 				"fields":{"type":"string","description":"Comma-separated top-level keys to include, e.g. 'hops,total' to drop risk_summary. Per-hop fields are NOT trimmed — pass shape via downstream symbol/symbols calls. _meta is preserved."}
 			}
 		}`),
@@ -4476,6 +4481,25 @@ func (s *Server) registerTools() {
 			"required":["branch_a","branch_b"]
 		}`),
 	}, s.handleBranchOverlap)
+
+	// 10c. assert_graph — conclusion-density primitive. Compute below
+	// the envelope is token-free; only conclusions pay. Agents kept
+	// paying for N caller rows just to conclude "nothing violates the
+	// rule" — this evaluates the invariant server-side and returns the
+	// verdict (plus violations only when it fails).
+	s.addTool(&mcp.Tool{
+		Name:        "assert_graph",
+		Description: "**Check a structural invariant server-side** instead of pulling N rows to conclude pass/fail yourself. Evaluates entirely against the edge graph and returns `{pass, checked}` when passing, plus `violations` (up to 10 `{id, file_path}`) when failing. Kinds: `no_callers_outside` (every caller of `target` lives under a `scope` path prefix — the violations are the strays), `max_callers` (`target` has at most `limit` direct callers), `no_calls_to` (nothing under `scope` calls `target` — enforce a layering rule), `exists` (`target` resolves to at least one indexed symbol; presence check via exact name then FTS5 search). Caller-shaped kinds count direct CALLS/HTTP_CALLS/ASYNC_CALLS edges; test files are included — an assertion is about the whole graph.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","required":["kind","target"],"properties":{
+				"kind":{"type":"string","enum":["no_callers_outside","max_callers","no_calls_to","exists"],"description":"Which invariant to evaluate. Unknown kinds rich-error with the full catalog."},
+				"target":{"type":"string","description":"Symbol to assert about: a stable symbol ID ('{file_path}::{qualified_name}#{kind}') or a short name (resolved like trace's name= — callable kinds preferred). For kind=exists, any name or search phrase."},
+				"scope":{"type":"string","description":"Comma-separated path prefix(es), e.g. 'cmd/,internal/server/'. Required for no_callers_outside (the allowed homes for callers) and no_calls_to (the region that must not call target). Ignored by other kinds."},
+				"limit":{"type":"integer","description":"Required for max_callers: the maximum number of direct callers allowed (inclusive). Ignored by other kinds."},
+				"project":{"type":"string","description":"Project name or ID. Defaults to session project."}
+			}
+		}`),
+	}, s.handleAssertGraph)
 
 	// 11. schema — agent-callable introspection. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
@@ -6514,6 +6538,13 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// disk read entirely when compact, which is the real perf win
 	// on bulk searches.
 	compact := boolArg(args, "compact")
+	// Conclusion-density: count_only=true returns {query, total, by_kind}
+	// and nothing row-shaped. Counts are computed from the exact same
+	// post-filter result set the row-shaped call would consider, so
+	// count_only's total always equals the default call's total on the
+	// same query+filters (correctness over cleverness — no separate
+	// COUNT path that could drift from the row path).
+	countOnly := boolArg(args, "count_only")
 	corpus := str(args, "corpus")
 	limit := intArg(args, "limit", 20)
 	// #712: collect clamp warnings so the caller learns its input was
@@ -6852,6 +6883,42 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 			}
 		}
 		results = filtered
+	}
+
+	// Conclusion-density early return: the caller asked for the counts,
+	// not the rows. Computed AFTER every filter + fallthrough so the
+	// total matches what the row-shaped call would report, and BEFORE
+	// pagination/snippet work so no per-hit disk read is paid. The
+	// envelope deliberately omits next_steps / confidence_distribution —
+	// a count answer should land in tens of tokens, not hundreds.
+	if countOnly {
+		byKind := map[string]int{}
+		for _, r := range results {
+			byKind[r.Symbol.Kind]++
+		}
+		countMeta := map[string]any{}
+		if len(searchClampWarnings) > 0 {
+			countMeta["warnings"] = searchClampWarnings
+		}
+		if fellthroughTo != "" {
+			countMeta["fellthrough_to"] = fellthroughTo
+		}
+		if andFellThroughToOr {
+			countMeta["and_fallback_to_or"] = true
+			countMeta["effective_query"] = orQuery
+		}
+		if fellthroughToWildcard {
+			countMeta["fellthrough_to_wildcard"] = true
+			countMeta["effective_query"] = wildcardQuery
+		}
+		data := map[string]any{
+			"query":   query,
+			"total":   len(results),
+			"by_kind": byKind,
+			"_meta":   countMeta,
+		}
+		s.attachDriftWarning(data, projectID)
+		return s.jsonResultWithMeta(data, start, tool, args, 0), nil
 	}
 
 	// #532: pagination envelope. `searchTotal` = post-filter row count we
@@ -8569,6 +8636,13 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// (results_text) instead of the JSON hops array. Unknown values
 	// fall back to json with a warning (appended below).
 	formatText, traceFormatWarn := parseFormatArg(args)
+	// Conclusion-density: count_only=true returns {root, direction,
+	// total, by_depth, by_risk} and nothing row-shaped. The counts come
+	// from the exact same BFS + filter + trim + cap pipeline the
+	// row-shaped call runs, so count_only's total always equals the
+	// default call's total on the same args (no separate COUNT query
+	// that could drift from the row path).
+	countOnly := boolArg(args, "count_only")
 
 	// kinds: comma-separated list of edge kinds to traverse (e.g.
 	// "CALLS" or "READS,WRITES"). Empty/missing = default (CALLS
@@ -8858,6 +8932,55 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		hops = hops[:maxHops]
 		confs = confs[:maxHops]
 		traceTruncated = true
+	}
+
+	// Conclusion-density early return: counts only, nothing row-shaped.
+	// Sits AFTER every filter/trim/cap so the totals are exactly what
+	// the row-shaped call would report, and BEFORE per-hop entry
+	// building so no row payload is assembled just to be discarded.
+	// The envelope deliberately omits confidence_distribution /
+	// next_steps / ambiguity details — a count answer should land in
+	// tens of tokens. Warnings that change how the counts must be read
+	// (clamps, cross-project scope, truncation) are kept.
+	if countOnly {
+		byDepthCount := map[string]int{}
+		byRisk := map[string]int{}
+		for _, h := range hops {
+			byDepthCount[strconv.Itoa(h.Depth)]++
+			if addRisk {
+				byRisk[h.Risk]++
+			}
+		}
+		countMeta := map[string]any{}
+		var countWarnings []string
+		for _, w := range []string{
+			traceDepthClampMsg, traceDirWarning, traceMinConfWarn,
+			traceIDNameWarning, traceCrossProjectWarning, traceMaxHopsClampMsg,
+		} {
+			if w != "" {
+				countWarnings = append(countWarnings, w)
+			}
+		}
+		countWarnings = append(countWarnings, traceKindWarnings...)
+		if len(countWarnings) > 0 {
+			countMeta["warnings"] = countWarnings
+		}
+		if traceTruncated {
+			countMeta["truncated"] = true
+			countMeta["total_before_cap"] = traceTotalBeforeCap
+			countMeta["max_hops"] = maxHops
+		}
+		data := map[string]any{
+			"root":      name,
+			"direction": direction,
+			"total":     len(hops),
+			"by_depth":  byDepthCount,
+			"_meta":     countMeta,
+		}
+		if addRisk {
+			data["by_risk"] = byRisk
+		}
+		return s.jsonResultWithMeta(data, start, tool, args, 0), nil
 	}
 
 	// Group by depth
@@ -13990,6 +14113,7 @@ var baselineMethodForTool = map[string]string{
 	"neighborhood":        baselineMethodFullFileRead,
 	"batch":               baselineMethodFullFileRead, // loop-substrate: envelope over read-replacing sub-tools; tokens_saved = sum of sub-call savings
 	"verify_change":       baselineMethodFullFileRead, // loop-substrate PR-10: composite replaces re-reading every changed + impacted file post-edit
+	"assert_graph":        baselineMethodFullFileRead, // conclusion-density: replaces reading N caller rows to conclude pass/fail
 	// Admin / orientation / write-side tools — no Read/Grep alternative.
 	"index":          baselineMethodNone,
 	"architecture":   baselineMethodNone,

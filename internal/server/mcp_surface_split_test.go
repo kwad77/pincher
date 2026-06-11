@@ -36,6 +36,7 @@ var expectedMCPTools = map[string]bool{
 	"batch":               true, // loop-substrate — one envelope, N read-only sub-queries under a shared budget
 	"verify_change":       true, // loop-substrate PR-10 — the post-edit gate: changes + plan comparison + orphan check
 	"trace":               true,
+	"assert_graph":        true, // conclusion-density — server-side pass/fail invariant checks over the edge graph
 	"query":               true,
 	"guide":               true,
 	"changes":             true,

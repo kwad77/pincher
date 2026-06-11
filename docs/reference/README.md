@@ -2,12 +2,12 @@
 
 The long-form reference. The [README](../../README.md) is the pitch + quickstart; this folder is the manual. For 10-minute end-to-end walkthroughs, see [`tutorials/`](../tutorials/) — [Claude Code](../tutorials/claude-code.md), [Cursor](../tutorials/cursor.md), [HTTP dashboard](../tutorials/http-dashboard.md).
 
-**Schema version:** v41 · **MCP tools:** 32 · **MCP prompts:** 1 (`guide`) · **Languages detected:** ~25 (AST/parser-tier + regex-tier, plus 1 stub-tier — Haskell; see [Language support](languages.md) for the per-tier breakdown)
+**Schema version:** v41 · **MCP tools:** 33 · **MCP prompts:** 1 (`guide`) · **Languages detected:** ~25 (AST/parser-tier + regex-tier, plus 1 stub-tier — Haskell; see [Language support](languages.md) for the per-tier breakdown)
 
 ## Contents
 
 - [Architecture & internals](architecture.md) — two-process architecture, three-layer storage, pinchQL routing, data flow, schema + migration history, key invariants, project layout, performance, test coverage, dependencies.
-- [The 32 MCP tools](tools.md) — full tool catalogue, stable symbol IDs, field projection, empty-response taxonomy, extraction confidence.
+- [The 33 MCP tools](tools.md) — full tool catalogue, stable symbol IDs, field projection, empty-response taxonomy, extraction confidence.
 - [pinchQL query reference](pinchql.md) — the graph-query language grammar and supported operators/clauses/kinds.
 - [Language support](languages.md) — per-language extraction table, capability matrix, v1.0 fitness declaration, skip rules, bloat traps, cross-process safety.
 - [HTTP REST API](http-api.md) — `POST /v1/{tool}`, additional endpoints, server-side env knobs, observability.

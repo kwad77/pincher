@@ -14,7 +14,7 @@
 ┌───────────────────────┐          ┌───────────────────────────┐
 │  pincher (MCP process)│          │  pincher --http 127.0.0.1:8080 │
 │                       │          │  (dashboard / REST)       │
-│  • 29 MCP tools       │          │                           │
+│  • 30 MCP tools       │          │                           │
 │  • idx.Watch()        │          │  • POST /v1/{tool}        │
 │  • SessionFlusher     │          │  • GET /v1/dashboard      │
 │    (flush every 10 s) │          │  • GET /v1/openapi.json   │
@@ -229,7 +229,7 @@ pincherMCP/
 │   │   ├── bloat_trap.go         # IsBloatTrap: refuse filesystem root + $HOME;
 │   │   │                         # hook mode also requires a project marker
 │   │   └── lockfile.go           # Cross-process project lockfile w/ stale reclaim
-│   └── server/server.go          # 29 MCP tools, HTTP REST, gzip, OpenAPI 3.1, bearer auth,
+│   └── server/server.go          # 30 MCP tools, HTTP REST, gzip, OpenAPI 3.1, bearer auth,
 │                                 # basepath / reverse-proxy support, sessions persistence
 └── go.mod
 ```

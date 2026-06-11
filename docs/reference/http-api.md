@@ -2,7 +2,7 @@
 
 [Back to reference index](README.md)
 
-All 29 tools are available via `POST /v1/{tool}` with a JSON body. Run alongside MCP stdio — no either/or.
+All 30 tools are available via `POST /v1/{tool}` with a JSON body. Run alongside MCP stdio — no either/or.
 
 ```bash
 # Start a loopback-only local gateway with both transports

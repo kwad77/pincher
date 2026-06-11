@@ -1,4 +1,4 @@
-# The 32 MCP tools
+# The 33 MCP tools
 
 [Back to reference index](README.md)
 
@@ -58,7 +58,7 @@ Token savings: ~90% vs reading files.
 
 ### `search` {#tool-search}
 
-FTS5 BM25 across names, signatures, docstrings. Wildcards (`auth*`), phrases (`"process order"`), AND/OR. `kind`/`language`/`corpus` filters. `corpus` defaults to `code`; pass `config` for YAML/JSON/HCL settings, `docs` for Markdown / Documents. The legacy `all` value was removed in v0.5; older callers passing it get soft-redirected to `code` with a deprecation log line. `fields` projects columns. `project=*` searches all repos. `format="text"` replaces the `results` array with `results_text` — a TSV block (header row, then `id<TAB>kind<TAB>file:line<TAB>signature-or-name` per hit) at ~0.45× the JSON token cost on a representative 20-hit search; the rest of the envelope (`count`/`total`/`has_more`/`_meta`) is unchanged.
+FTS5 BM25 across names, signatures, docstrings. Wildcards (`auth*`), phrases (`"process order"`), AND/OR. `kind`/`language`/`corpus` filters. `corpus` defaults to `code`; pass `config` for YAML/JSON/HCL settings, `docs` for Markdown / Documents. The legacy `all` value was removed in v0.5; older callers passing it get soft-redirected to `code` with a deprecation log line. `fields` projects columns. `project=*` searches all repos. `format="text"` replaces the `results` array with `results_text` — a TSV block (header row, then `id<TAB>kind<TAB>file:line<TAB>signature-or-name` per hit) at ~0.45× the JSON token cost on a representative 20-hit search; the rest of the envelope (`count`/`total`/`has_more`/`_meta`) is unchanged. `count_only=true` returns just `{query, total, by_kind}` — the conclusion-density shape for "how many matches?" questions; composes with every filter and skips the per-hit snippet disk read.
 
 Tested latency: 1 ms.
 
@@ -70,9 +70,15 @@ Tested latency: 2 ms (single-hop).
 
 ### `trace` {#tool-trace}
 
-BFS call-path trace — who calls this, or what does it call. Grouped by depth. Risk labels: CRITICAL (depth 1) → LOW (depth 4+). `format="text"` replaces the `hops` array with `results_text` — a TSV block (header row, then `depth<TAB>risk<TAB>id` per hop). `compact=true` additionally ditto-compresses consecutive same-file nodes within a depth block: a node repeating the previous node's `file_path` omits the field — scan up to the nearest node carrying `file_path` to decode.
+BFS call-path trace — who calls this, or what does it call. Grouped by depth. Risk labels: CRITICAL (depth 1) → LOW (depth 4+). `format="text"` replaces the `hops` array with `results_text` — a TSV block (header row, then `depth<TAB>risk<TAB>id` per hop). `compact=true` additionally ditto-compresses consecutive same-file nodes within a depth block: a node repeating the previous node's `file_path` omits the field — scan up to the nearest node carrying `file_path` to decode. `count_only=true` returns just `{root, direction, total, by_depth, by_risk}` — the conclusion-density shape for "how many callers?" questions; counts come from the exact same traversal + filters the row-shaped call runs.
 
 Tested latency: <5 ms (depth 3).
+
+### `assert_graph` {#tool-assert_graph}
+
+Server-side invariant evaluation over the edge graph — the conclusion-density sibling of `count_only`. Pass `kind` + `target` (+ `scope` / `limit` per kind) and get `{pass, checked}` back when the assertion holds, plus `violations` (up to 10 `{id, file_path}`) when it doesn't. Kinds (the set is closed at exactly four; unknown kinds rich-error with the full catalog): `no_callers_outside` (every caller of `target` lives under a `scope` path prefix), `max_callers` (at most `limit` direct callers), `no_calls_to` (nothing under `scope` calls `target` — layering rule), `exists` (`target` resolves to at least one indexed symbol; exact name first, FTS5 fallback). Caller-shaped kinds count direct CALLS/HTTP_CALLS/ASYNC_CALLS edges; test files are included — an assertion is about the whole graph.
+
+Tested latency: ~1-5 ms (one edge query + per-caller lookups).
 
 ### `context_for_task` {#tool-context_for_task}
 
