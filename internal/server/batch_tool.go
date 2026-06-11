@@ -31,6 +31,10 @@ import (
 // remaining sub-queries are skipped with `skipped:"budget_exhausted"`
 // and a `budget_truncated` warning — deterministic, input-order
 // degradation, same contract as the per-tool budgets from PR-5.
+//
+// M13 adds chain mode (`from` + `quiet`, below): server-side pipelining
+// for the dependent case, additive to this contract — independent
+// queries behave byte-identically to before.
 
 // batchMaxQueries caps the number of sub-queries per call. Twelve is
 // deliberately roomy for a loop iteration's probe set (3-6 is typical)
@@ -64,6 +68,142 @@ var batchAllowedSubTools = map[string]bool{
 // carries it once.
 var batchSlimMetaKeys = []string{"empty_reason", "tokens_used", "warnings_v2"}
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Chain mode (loop-substrate M13): server-side pipelining
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Locality bias: compute below the envelope is free. Without chaining,
+// when sub-query N's input is sub-query N-1's output (search → context
+// is the canonical loop step), the agent ferries the intermediate ID
+// through its own context window and pays for it twice — once on the
+// way out, once on the way back in. A `from` clause keeps the
+// intermediate local: the server splices a NAMED selection from an
+// earlier result into the dependent sub-query's args, and `quiet:true`
+// lets the upstream body be omitted from the response entirely (its
+// entry keeps a `selected` pointer so the response stays auditable).
+//
+// Scope discipline (v1): named selectors only — top_id / ids / files.
+// No path language. Multi-value fan-out into single-value args is not
+// implemented; `select:"ids"` pairs with the `symbols` sub-tool's
+// `ids` arg only.
+
+// chainIDsCap bounds an `ids` selection. Twenty matches the typical
+// search/trace page; past that the upstream query should be narrowed,
+// not the splice widened.
+const chainIDsCap = 20
+
+// chainFilesCap bounds a `files` selection.
+const chainFilesCap = 10
+
+// chainIntoDefaults maps the dependent sub-tool to the arg key a
+// selection splices into when `from.into` is omitted. Tools whose
+// primary arg is plan-shaped free text (search, query, ...) have no
+// default — the caller must name `into` explicitly.
+var chainIntoDefaults = map[string]string{
+	"context": "id",
+	"symbol":  "id",
+	"symbols": "ids",
+	"trace":   "id",
+}
+
+// chainSpec is one validated `from` clause: splice the `sel` selection
+// over queries[upstream]'s result into this sub-query's args at key
+// `into`. multi marks selectors that yield a value LIST.
+type chainSpec struct {
+	upstream int
+	sel      string
+	into     string
+	multi    bool
+}
+
+// parseChainFrom validates the optional `from` clause of sub-query i.
+// Returns (nil, "") when absent. A non-empty message is a validation
+// failure — the whole batch rich-errors BEFORE any execution, so a
+// forward reference never burns budget on sub-queries that ran ahead
+// of a doomed chain.
+func parseChainFrom(i int, qm map[string]any) (*chainSpec, string) {
+	rawFrom, ok := qm["from"]
+	if !ok || rawFrom == nil {
+		return nil, ""
+	}
+	fm, ok := rawFrom.(map[string]any)
+	if !ok {
+		return nil, fmt.Sprintf("queries[%d].from must be an object: {\"query\": <earlier index>, \"select\": \"top_id|ids|files\", \"into\": \"<arg key>\"?}", i)
+	}
+	subTool, _ := qm["tool"].(string)
+	idxF, isNum := fm["query"].(float64)
+	if !isNum || idxF != float64(int(idxF)) {
+		return nil, fmt.Sprintf("queries[%d].from.query must be the integer index of an earlier sub-query", i)
+	}
+	upstream := int(idxF)
+	if upstream < 0 || upstream >= i {
+		return nil, fmt.Sprintf("queries[%d].from.query=%d must reference a LOWER index (0..%d) — sub-queries run strictly in declaration order, so a forward (or self) reference can never have a result to select from", i, upstream, i-1)
+	}
+	sel, _ := fm["select"].(string)
+	switch sel {
+	case "top_id", "ids", "files":
+	default:
+		return nil, fmt.Sprintf("queries[%d].from.select=%q is not a named selector — v1 supports exactly top_id (first result's stable symbol id), ids (all result ids, deduped, capped at %d), files (distinct file_path values, capped at %d); there is no path language", i, sel, chainIDsCap, chainFilesCap)
+	}
+	into, _ := fm["into"].(string)
+	if into == "" {
+		into = chainIntoDefaults[subTool]
+	}
+	if into == "" {
+		return nil, fmt.Sprintf("queries[%d].from.into must be named explicitly for sub-tool %q — into defaults exist only for context/symbol/trace (\"id\") and symbols (\"ids\")", i, subTool)
+	}
+	multi := sel != "top_id"
+	if multi && !(subTool == "symbols" && into == "ids") {
+		return nil, fmt.Sprintf("queries[%d]: multi-value select %q cannot splice into single-value key %q of %q — fan-out is not implemented in v1; select:\"ids\" pairs with the `symbols` sub-tool's \"ids\" arg only (use select:\"top_id\" to feed a single-value arg)", i, sel, into, subTool)
+	}
+	return &chainSpec{upstream: upstream, sel: sel, into: into, multi: multi}, ""
+}
+
+// chainCandidates walks the known result shapes of the batchable
+// sub-tools — search-style `results[]`, trace `hops[].nodes[]`,
+// context's `symbol`, and the flat `symbol`-tool body — and returns
+// deduped symbol ids and file paths in result order, so top_id is
+// exactly the id the agent would have copied by hand from results[0].
+func chainCandidates(body map[string]any) (ids, files []string) {
+	seenID := map[string]bool{}
+	seenFile := map[string]bool{}
+	add := func(m map[string]any) {
+		if id, _ := m["id"].(string); id != "" && !seenID[id] {
+			seenID[id] = true
+			ids = append(ids, id)
+		}
+		if fp, _ := m["file_path"].(string); fp != "" && !seenFile[fp] {
+			seenFile[fp] = true
+			files = append(files, fp)
+		}
+	}
+	if rows, ok := body["results"].([]any); ok {
+		for _, r := range rows {
+			if m, ok := r.(map[string]any); ok {
+				add(m)
+			}
+		}
+	}
+	if hops, ok := body["hops"].([]any); ok {
+		for _, h := range hops {
+			hm, _ := h.(map[string]any)
+			nodes, _ := hm["nodes"].([]any)
+			for _, n := range nodes {
+				if m, ok := n.(map[string]any); ok {
+					add(m)
+				}
+			}
+		}
+	}
+	if sym, ok := body["symbol"].(map[string]any); ok {
+		add(sym)
+	}
+	if id, _ := body["id"].(string); id != "" {
+		add(body)
+	}
+	return ids, files
+}
+
 func (s *Server) handleBatch(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start, tool, args := beginCall(req)
 	if err := ctx.Err(); err != nil {
@@ -86,6 +226,26 @@ func (s *Server) handleBatch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 			}), nil
 	}
 
+	// Chain validation pre-pass (M13): every `from` clause is checked
+	// BEFORE any execution. A forward reference, unknown selector, or
+	// multi-into-single splice fails the whole call up front — never
+	// after earlier sub-queries already spent budget.
+	chains := make([]*chainSpec, len(rawQueries))
+	for i, rq := range rawQueries {
+		qm, _ := rq.(map[string]any)
+		if qm == nil {
+			continue
+		}
+		spec, vErr := parseChainFrom(i, qm)
+		if vErr != "" {
+			return s.errResultRich(vErr, []map[string]string{
+				{"tool": "batch", "args": `{"queries":[{"tool":"search","args":{"query":"processOrder"},"quiet":true},{"tool":"context","from":{"query":0,"select":"top_id"}}]}`,
+					"why": "chain shape: a later sub-query splices a named selection (top_id | ids | files) from an EARLIER result into its args server-side, so the intermediate never crosses the token envelope"},
+			}), nil
+		}
+		chains[i] = spec
+	}
+
 	project := str(args, "project")
 	maxTokens := maxTokensArg(args)
 	if maxTokens == 0 {
@@ -94,6 +254,13 @@ func (s *Server) handleBatch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 
 	remaining := maxTokens
 	results := make([]map[string]any, 0, len(rawQueries))
+	// bodies keeps each sub-result server-side for downstream `from`
+	// selection — including quiet entries, whose body never ships.
+	// nil = errored / skipped / not yet run; downstream chains off a
+	// nil body skip with upstream_empty rather than guessing a call.
+	bodies := make([]map[string]any, len(rawQueries))
+	quietAt := make([]bool, len(rawQueries))
+	var chainTrims []map[string]any
 	skipped := 0
 	var errIdx []int
 	// Honest savings attribution: sum the numeric tokens_saved each
@@ -146,6 +313,77 @@ func (s *Server) handleBatch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		if subArgs == nil {
 			subArgs = map[string]any{}
 		}
+
+		// Chain resolution (M13): splice the named selection from the
+		// upstream result into this sub-query's args. If the upstream
+		// errored, was skipped, or the selector found nothing, this
+		// entry skips with upstream_empty — never a guessed call.
+		if spec := chains[i]; spec != nil {
+			var selected any
+			if up := bodies[spec.upstream]; up != nil {
+				ids, files := chainCandidates(up)
+				switch spec.sel {
+				case "top_id":
+					if len(ids) > 0 {
+						selected = ids[0]
+					}
+				case "ids":
+					if len(ids) > chainIDsCap {
+						chainTrims = append(chainTrims, map[string]any{
+							"query_index": i, "select": spec.sel,
+							"matched": len(ids), "kept": chainIDsCap,
+						})
+						ids = ids[:chainIDsCap]
+					}
+					if len(ids) > 0 {
+						selected = ids
+					}
+				case "files":
+					if len(files) > chainFilesCap {
+						chainTrims = append(chainTrims, map[string]any{
+							"query_index": i, "select": spec.sel,
+							"matched": len(files), "kept": chainFilesCap,
+						})
+						files = files[:chainFilesCap]
+					}
+					if len(files) > 0 {
+						selected = files
+					}
+				}
+			}
+			if selected == nil {
+				results = append(results, map[string]any{
+					"index":    i,
+					"tool":     subTool,
+					"skipped":  "upstream_empty",
+					"upstream": spec.upstream,
+				})
+				continue
+			}
+			// A single id feeding `symbols`' array arg arrives as a
+			// one-element list — the sub-tool's own schema, unchanged.
+			if sv, isStr := selected.(string); isStr && subTool == "symbols" && spec.into == "ids" {
+				subArgs[spec.into] = []any{sv}
+			} else {
+				subArgs[spec.into] = selected
+			}
+			// Provenance: a quiet upstream's body is omitted from the
+			// response, so stamp what was passed on at its entry —
+			// the chain stays auditable without echoing the body.
+			if quietAt[spec.upstream] {
+				upEntry := results[spec.upstream]
+				if prev, has := upEntry["selected"]; has {
+					if list, isList := prev.([]any); isList {
+						upEntry["selected"] = append(list, selected)
+					} else {
+						upEntry["selected"] = []any{prev, selected}
+					}
+				} else {
+					upEntry["selected"] = selected
+				}
+			}
+		}
+
 		// Default the outer project into each sub-query lacking one so
 		// callers don't repeat it N times.
 		if project != "" {
@@ -252,6 +490,26 @@ func (s *Server) handleBatch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 			}
 			delete(body, "_meta")
 		}
+		bodies[i] = body
+
+		if q, _ := qm["quiet"].(bool); q {
+			// quiet (M13): the body stays server-side for downstream
+			// chains; only the slim provenance entry ships. The shared
+			// budget is charged for what actually ships — keeping the
+			// suppressed body off the budget is the whole point
+			// (intermediates never cross the token envelope).
+			quietAt[i] = true
+			entry := map[string]any{
+				"index": i,
+				"tool":  subTool,
+				"quiet": true,
+			}
+			results = append(results, entry)
+			remarshaled, _ := json.Marshal(entry)
+			remaining -= db.ApproxTokens(string(remarshaled))
+			continue
+		}
+
 		entry := map[string]any{
 			"index":  i,
 			"tool":   subTool,
@@ -279,6 +537,11 @@ func (s *Server) handleBatch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		attachWarningStructured(data, "budget_truncated", WarningSeverityWarning,
 			fmt.Sprintf("%d sub-quer%s skipped after the %d-token shared budget was exhausted — raise max_tokens, trim earlier sub-queries with fields=, or split the batch", skipped, pluralIES(skipped), maxTokens),
 			map[string]any{"skipped_queries": skipped, "max_tokens": maxTokens})
+	}
+	for _, tr := range chainTrims {
+		attachWarningStructured(data, "chain_selector_trimmed", WarningSeverityWarning,
+			fmt.Sprintf("queries[%v] from.select=%q matched %v values; only the first %v were spliced — narrow the upstream query (kind=, limit=) if the tail mattered", tr["query_index"], tr["select"], tr["matched"], tr["kept"]),
+			tr)
 	}
 	if len(errIdx) > 0 {
 		attachWarningStructured(data, "batch_sub_errors", WarningSeverityWarning,
