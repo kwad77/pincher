@@ -88,6 +88,31 @@ done
 
 First run results + grading: `out/messy-20260611/RESULTS.md`.
 
+### Scale mode (the 10x corpus)
+
+`fixtures/build-messy-corpus.sh --scale N [target]` additionally generates N shard
+copies of the order-processing cluster with DISTINCT symbol names per copy
+(`internal/pkg01..pkgNN` + matching Python handlers + TS modules), cross-wired so
+call chains span copies: pkgK's pipeline captures payment through pkg(K+1)'s gateway
+and audits through pkg(K+1)'s store (the last shard terminates on base billing).
+Chaff scales proportionally — one generated `.pb.go` per shard that mentions that
+shard's symbol names, N/4 extra fixture dumps, a bigger one-line bundle — so the
+distinct names do NOT make grep friendly again. `--scale 0` (default) is
+byte-identical to the original 43-file corpus.
+
+```sh
+fixtures/build-messy-corpus.sh --scale 40 /tmp/messy-scale-repo   # 542 files, ~13k live LOC
+pincher index /tmp/messy-scale-repo --data-dir /tmp/loopbench-scale-data
+# core-lean treatment arm needs a schema-diet binary (post-v1.5.0):
+go build -o /tmp/pincher-scale-bin ../../cmd/pinch
+/tmp/pincher-scale-bin index /tmp/messy-scale-repo --data-dir /tmp/loopbench-scale-data-cl
+for a in arms/native-naive.json arms/pincher-mcp-scale-corelean.json; do
+  ./run-arm.sh "$a" tasks/messy-scale-8q.md out/scale-$(date +%Y%m%d)/r1 /tmp/messy-scale-repo
+done   # repeat per rep; arms/pincher-mcp-scale.json is the full/rich overhead control
+```
+
+Scale-round results + grading + the two verdicts: `out/scale-20260611/RESULTS-scale.md`.
+
 ## MCP config: stdio is the default (and why)
 
 The intended config was streamable-HTTP against the long-running patched server at

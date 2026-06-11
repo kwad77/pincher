@@ -1,0 +1,8 @@
+{
+  "name": "pincher-mcp",
+  "description": "pincher-mcp arm wired for the SCALED messy-corpus benchmark (full toolset, rich schemas — the overhead control): the RELEASE v1.5.0 binary (~/.local/bin/pincher) over stdio with a dedicated data dir (/tmp/loopbench-scale-data). Pre-index first: `pincher index /tmp/messy-scale-repo --data-dir /tmp/loopbench-scale-data`. Same coaching/tool policy as arms/pincher-mcp.json.",
+  "mcp_config": "mcp-pincher-scale.json",
+  "coaching": "coaching/prefer-pincher.md",
+  "disallowed_tools": [],
+  "allowed_tools": ["mcp__pincher-next", "Bash(grep:*)", "Bash(rg:*)", "Bash(find:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)", "Bash(sed -n:*)", "Bash(cat:*)", "Bash(git log:*)", "Bash(git show:*)"]
+}

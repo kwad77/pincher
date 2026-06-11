@@ -17,12 +17,33 @@
 # has history to work with. Output is fully deterministic (fixed dates, fixed
 # author, seedless arithmetic generators).
 #
-# Usage: build-messy-corpus.sh [target_dir]   (default: /tmp/messy-corpus-repo)
+# Scale mode (--scale N, default 0 = the original 43-file corpus, byte-identical):
+# generates N additional "shard" copies of the order-processing cluster with
+# DISTINCT symbol names per copy (internal/pkg01..pkgNN + matching Python
+# handlers + TS modules), cross-wired so call chains span copies (pkgK's
+# pipeline captures payment through pkg(K+1)'s gateway and writes its audit
+# row through pkg(K+1)'s store; the last shard terminates on base billing).
+# Chaff scales proportionally: one generated .pb.go per shard mentioning that
+# shard's symbol names, N/4 extra fixture dumps, a bigger one-line bundle.
+# Everything stays deterministic.
+#
+# Usage: build-messy-corpus.sh [--scale N] [target_dir]   (default: /tmp/messy-corpus-repo)
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 SRC="$HERE/messy-corpus"
-TARGET=${1:-/tmp/messy-corpus-repo}
+SCALE=0
+TARGET=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    --scale) SCALE=$2; shift 2 ;;
+    --scale=*) SCALE=${1#--scale=}; shift ;;
+    -*) echo "build-messy-corpus: unknown flag $1" >&2; exit 1 ;;
+    *) TARGET=$1; shift ;;
+  esac
+done
+TARGET=${TARGET:-/tmp/messy-corpus-repo}
+case $SCALE in *[!0-9]*|'') echo "build-messy-corpus: --scale wants an integer" >&2; exit 1 ;; esac
 
 [ -d "$SRC" ] || { echo "build-messy-corpus: source tree missing: $SRC" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "build-messy-corpus: python3 required" >&2; exit 1; }
@@ -118,11 +139,12 @@ with open(sys.argv[1], "w") as fh:
 PYEOF
 
 # ------------------------------------------------------------- generated JSON
-python3 - "$TARGET" <<'PYEOF'
+python3 - "$TARGET" "$SCALE" <<'PYEOF'
 import json
 import sys
 
 target = sys.argv[1]
+scale = int(sys.argv[2])
 
 # gen/defaults.gen.json — the config-knob ground truth lives HERE (and only
 # here): order_retry_limit = 7. Buried among ~200 sibling knobs.
@@ -135,6 +157,12 @@ defaults["order_retry_limit"] = 7
 defaults["default_carrier"] = "acme-post"
 defaults["process_order_queue_depth"] = 4096
 defaults["refund_retry_backoff_ms"] = 2000
+# Scale mode: one retry knob per shard. Ground truth for pkgNN_retry_limit
+# lives HERE (and only here): 3 + (K*7 % 9). The in-code fallback is 2 and
+# fixture snapshots are 2/4 — deliberate decoys.
+for k in range(1, scale + 1):
+    defaults[f"pkg{k:02d}_retry_limit"] = 3 + (k * 7) % 9
+    defaults[f"pkg{k:02d}_queue_depth"] = 256 + k * 16
 with open(f"{target}/gen/defaults.gen.json", "w") as fh:
     json.dump(defaults, fh, indent=1, sort_keys=True)
     fh.write("\n")
@@ -160,25 +188,606 @@ for n in (1, 2, 3):
         json.dump({"generated_by": "fixturegen v1.2 — DO NOT EDIT",
                    "records": records}, fh, indent=1)
         fh.write("\n")
+
+# Scale mode: N/4 extra shard job dumps saturated with pkgNN.fulfill /
+# fulfill_pkgNN strings. retry_limit_at_capture values 2/4 are HISTORICAL
+# SNAPSHOTS, deliberately different from the live pkgNN_retry_limit knobs.
+for n in range(1, scale // 4 + 1):
+    records = []
+    for i in range(900):
+        k = (i + n) % scale + 1
+        records.append({
+            "job_type": f"pkg{k:02d}.fulfill" if i % 3 else f"pkg{k:02d}.refund",
+            "order_id": f"sx{n}-{i:06d}",
+            "status": ["queued", "retry", "done", "failed"][i % 4],
+            "retry_limit_at_capture": 2 if i % 2 else 4,
+            "handler": f"fulfill_pkg{k:02d}",
+            "pipeline": f"ProcessOrderPkg{k:02d}",
+            "skus": [f"SKU-{(i * 7 + j) % 500:04d}" for j in range(4)],
+            "total_cents": 100 + (i * 137) % 90000,
+            "trace": [f"orderflow.v1.pkg{k:02d}.fulfill/{i}-{j}" for j in range(3)],
+        })
+    with open(f"{target}/fixtures/scaled_fixture_{n:02d}.json", "w") as fh:
+        json.dump({"generated_by": "fixturegen v1.2 — DO NOT EDIT",
+                   "records": records}, fh, indent=1)
+        fh.write("\n")
 PYEOF
 
 # ----------------------------------------------------- minified bundle (1 line)
-python3 - "$TARGET/web/dist/bundle.min.js" <<'PYEOF'
+python3 - "$TARGET/web/dist/bundle.min.js" "$SCALE" <<'PYEOF'
 import sys
 
-chunks = ['(()=>{"use strict";var O={order_retry_limit:7,carrier:"acme-post"};']
+scale = int(sys.argv[2])
+knobs = "".join(f"pkg{k:02d}_retry_limit:{3 + (k * 7) % 9}," for k in range(1, scale + 1))
+chunks = ['(()=>{"use strict";var O={order_retry_limit:7,' + knobs + 'carrier:"acme-post"};']
+target_size = 500_000 + scale * 25_000
 i = 0
-while sum(len(c) for c in chunks) < 500_000:
-    chunks.append(
-        f'function p{i}(e){{return e&&e.processOrder?p{(i + 7) % 991}'
-        f'(e.next):{{t:"process_order",r:{i % 9},s:"SKU-{i % 500:04d}"}}}}'
-        f'var v{i}=p{i}({{processOrder:!0,next:{{id:{i}}}}});'
-    )
+while sum(len(c) for c in chunks) < target_size:
+    if scale and i % 2:
+        k = (i // 2) % scale + 1
+        chunks.append(
+            f'function q{i}(e){{return e&&e.processPkg{k:02d}Order?q{(i + 7) % 991}'
+            f'(e.next):{{t:"pkg{k:02d}.fulfill",r:{i % 9},s:"SKU-{i % 500:04d}"}}}}'
+            f'var w{i}=q{i}({{processPkg{k:02d}Order:!0,next:{{id:{i}}}}});'
+        )
+    else:
+        chunks.append(
+            f'function p{i}(e){{return e&&e.processOrder?p{(i + 7) % 991}'
+            f'(e.next):{{t:"process_order",r:{i % 9},s:"SKU-{i % 500:04d}"}}}}'
+            f'var v{i}=p{i}({{processOrder:!0,next:{{id:{i}}}}});'
+        )
     i += 1
 chunks.append('console.log("orderflow bundle",O.order_retry_limit)})();')
 with open(sys.argv[1], "w") as fh:
     fh.write("".join(chunks) + "\n")
 PYEOF
+
+# ------------------------------------------------- scale mode: shard clusters
+if [ "$SCALE" -gt 0 ]; then
+python3 - "$TARGET" "$SCALE" <<'PYEOF'
+import os
+import sys
+
+target = sys.argv[1]
+scale = int(sys.argv[2])
+
+
+def w(rel, text):
+    path = os.path.join(target, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write(text)
+
+
+MOD = "github.com/acme/orderflow"
+
+# ---- per-shard Go cluster: internal/pkgNN/ ----------------------------------
+for k in range(1, scale + 1):
+    nn = f"{k:02d}"
+    pkg = f"pkg{nn}"
+    last = k == scale
+    nxt = f"pkg{k + 1:02d}"
+
+    extra_import = ""
+    if last:
+        capture_import = f'\t"{MOD}/internal/billing"\n'
+        extra_import = f'\t"{MOD}/internal/store"\n'
+        capture_call = (
+            f'\tinv := store.Invoice{{ID: "inv-" + o.ID, OrderID: o.ID, AmountCents: o.Total}}\n'
+            f"\tif err := billing.ProcessOrder(ctx, inv); err != nil {{\n"
+            f'\t\treturn fmt.Errorf("capture: %w", err)\n'
+            f"\t}}\n"
+        )
+        audit_call = "\t// terminal shard: no upstream audit mirror\n"
+        capture_doc = "the base billing gateway"
+    else:
+        capture_import = f'\t"{MOD}/internal/{nxt}"\n'
+        capture_call = (
+            f'\tif err := {nxt}.CapturePaymentPkg{k + 1:02d}(ctx, "inv-"+o.ID, o.Total); err != nil {{\n'
+            f'\t\treturn fmt.Errorf("capture: %w", err)\n'
+            f"\t}}\n"
+        )
+        audit_call = (
+            f'\tif err := {nxt}.RecordAuditPkg{k + 1:02d}(o.ID, "captured"); err != nil {{\n'
+            f'\t\treturn fmt.Errorf("audit: %w", err)\n'
+            f"\t}}\n"
+        )
+        capture_doc = f"the {nxt} gateway shard"
+
+    w(f"internal/{pkg}/pipeline.go", f"""// Package {pkg} is the {pkg} vertical of the sharded order pipeline.
+package {pkg}
+
+import (
+\t"context"
+\t"fmt"
+
+{capture_import}\t"{MOD}/internal/queue"
+{extra_import})
+
+// OrderPkg{nn} is an inbound {pkg}-vertical customer order.
+type OrderPkg{nn} struct {{
+\tID    string   `json:"id"`
+\tSKUs  []string `json:"skus"`
+\tTotal int64    `json:"total_cents"`
+\tEmail string   `json:"email"`
+}}
+
+// ProcessOrderPkg{nn} is the LIVE {pkg} pipeline: validate, capture payment
+// through {capture_doc}, persist, then enqueue fulfillment
+// for the Python workers.
+//
+// Not to be confused with the generated ProcessOrderPkg{nn}Request types, the
+// dead ProcessOrderPkg{nn}V1, or any other shard's pipeline.
+func ProcessOrderPkg{nn}(ctx context.Context, o *OrderPkg{nn}) error {{
+\tif err := validatePkg{nn}(o); err != nil {{
+\t\treturn fmt.Errorf("validate: %w", err)
+\t}}
+{capture_call}\trec := RecordPkg{nn}{{ID: o.ID, Status: "paid"}}
+\tif err := SaveRecordPkg{nn}(&rec); err != nil {{
+\t\treturn fmt.Errorf("persist: %w", err)
+\t}}
+{audit_call}\treturn queue.Publish("{pkg}.fulfill", map[string]any{{
+\t\t"order_id": o.ID,
+\t\t"skus":     o.SKUs,
+\t\t"email":    o.Email,
+\t}})
+}}
+""")
+
+    w(f"internal/{pkg}/charge.go", f"""package {pkg}
+
+import (
+\t"context"
+\t"errors"
+\t"fmt"
+
+\t"{MOD}/internal/config"
+)
+
+// CapturePaymentPkg{nn} captures payment for one invoice routed through the
+// {pkg} gateway shard. Despite the family resemblance to every other shard's
+// capture function, THIS one is called only from upstream of {pkg}; it
+// retries up to the {pkg}_retry_limit config knob.
+func CapturePaymentPkg{nn}(ctx context.Context, invoiceID string, amountCents int64) error {{
+\tlimit := config.ScaledKnob("{pkg}_retry_limit", 2)
+\tvar err error
+\tfor attempt := 1; attempt <= limit; attempt++ {{
+\t\tif err = gatewayChargePkg{nn}(ctx, invoiceID, amountCents); err == nil {{
+\t\t\treturn nil
+\t\t}}
+\t}}
+\treturn fmt.Errorf("{pkg} capture failed after %d attempts: %w", limit, err)
+}}
+
+// gatewayChargePkg{nn} is a stub shard-gateway call.
+func gatewayChargePkg{nn}(_ context.Context, invoiceID string, amountCents int64) error {{
+\tif amountCents <= 0 {{
+\t\treturn errors.New("gateway: zero-amount capture")
+\t}}
+\tif invoiceID == "" {{
+\t\treturn errors.New("gateway: missing invoice id")
+\t}}
+\treturn nil
+}}
+""")
+
+    w(f"internal/{pkg}/store.go", f"""package {pkg}
+
+import (
+\t"fmt"
+\t"sync"
+)
+
+// RecordPkg{nn} is the persisted {pkg} order record.
+type RecordPkg{nn} struct {{
+\tID     string `json:"id"`
+\tStatus string `json:"status"`
+}}
+
+var (
+\tmuPkg{nn}      sync.RWMutex
+\trecordsPkg{nn} = map[string]*RecordPkg{nn}{{}}
+\tauditPkg{nn}   []string
+)
+
+// SaveRecordPkg{nn} upserts one {pkg} order record.
+func SaveRecordPkg{nn}(r *RecordPkg{nn}) error {{
+\tif r.ID == "" {{
+\t\treturn fmt.Errorf("{pkg}: record missing id")
+\t}}
+\tmuPkg{nn}.Lock()
+\tdefer muPkg{nn}.Unlock()
+\trecordsPkg{nn}[r.ID] = r
+\treturn nil
+}}
+
+// GetRecordPkg{nn} fetches one {pkg} record by id.
+func GetRecordPkg{nn}(id string) (*RecordPkg{nn}, error) {{
+\tmuPkg{nn}.RLock()
+\tdefer muPkg{nn}.RUnlock()
+\tr, ok := recordsPkg{nn}[id]
+\tif !ok {{
+\t\treturn nil, fmt.Errorf("{pkg}: no record %q", id)
+\t}}
+\treturn r, nil
+}}
+
+// RecordAuditPkg{nn} appends one audit event for an upstream-shard order.
+// Called from the NEIGHBOURING shard's pipeline, not from {pkg} itself.
+func RecordAuditPkg{nn}(orderID, event string) error {{
+\tif orderID == "" {{
+\t\treturn fmt.Errorf("{pkg}: audit missing order id")
+\t}}
+\tmuPkg{nn}.Lock()
+\tdefer muPkg{nn}.Unlock()
+\tauditPkg{nn} = append(auditPkg{nn}, orderID+":"+event)
+\treturn nil
+}}
+""")
+
+    w(f"internal/{pkg}/refund.go", f"""package {pkg}
+
+import (
+\t"context"
+\t"fmt"
+
+\t"{MOD}/internal/queue"
+)
+
+// RefundRequestPkg{nn} asks for a full refund of an existing {pkg} order.
+type RefundRequestPkg{nn} struct {{
+\tOrderID string `json:"order_id"`
+\tReason  string `json:"reason"`
+}}
+
+// RefundOrderPkg{nn} marks the record refunded and tells the workers to claw
+// back fulfillment.
+func RefundOrderPkg{nn}(ctx context.Context, req *RefundRequestPkg{nn}) error {{
+\tr, err := GetRecordPkg{nn}(req.OrderID)
+\tif err != nil {{
+\t\treturn fmt.Errorf("lookup: %w", err)
+\t}}
+\tr.Status = "refunded"
+\tif err := SaveRecordPkg{nn}(r); err != nil {{
+\t\treturn fmt.Errorf("persist: %w", err)
+\t}}
+\treturn queue.Publish("{pkg}.refund", map[string]any{{
+\t\t"order_id": req.OrderID,
+\t\t"reason":   req.Reason,
+\t}})
+}}
+""")
+
+    w(f"internal/{pkg}/dead_v1.go", f"""package {pkg}
+
+import (
+\t"context"
+
+\t"{MOD}/internal/queue"
+)
+
+// ProcessOrderPkg{nn}V1 is the pre-shard-split {pkg} pipeline, kept
+// "temporarily" for rollback during the 2026 shard migration. Nothing
+// registers or calls it anymore.
+func ProcessOrderPkg{nn}V1(ctx context.Context, o *OrderPkg{nn}) error {{
+\tif err := validatePkg{nn}(o); err != nil {{
+\t\treturn err
+\t}}
+\trec := RecordPkg{nn}{{ID: o.ID, Status: "pending_capture"}}
+\tif err := SaveRecordPkg{nn}(&rec); err != nil {{
+\t\treturn err
+\t}}
+\treturn queue.Publish("{pkg}.v1", map[string]any{{"order_id": o.ID}})
+}}
+""")
+
+    w(f"internal/{pkg}/validate.go", f"""package {pkg}
+
+import (
+\t"errors"
+\t"strings"
+)
+
+func validatePkg{nn}(o *OrderPkg{nn}) error {{
+\tif o.ID == "" {{
+\t\treturn errors.New("missing order id")
+\t}}
+\tif len(o.SKUs) == 0 {{
+\t\treturn errors.New("empty order")
+\t}}
+\tif o.Total <= 0 {{
+\t\treturn errors.New("non-positive total")
+\t}}
+\tfor i, s := range o.SKUs {{
+\t\to.SKUs[i] = strings.ToUpper(strings.TrimSpace(s))
+\t}}
+\treturn nil
+}}
+""")
+
+    w(f"internal/{pkg}/register.go", f"""package {pkg}
+
+import (
+\t"context"
+\t"encoding/json"
+
+\t"{MOD}/internal/dispatch"
+)
+
+// init wires the {pkg} actions into the dispatch registry. This is the ONLY
+// place the API layer's "{pkg}.*" action names meet the implementing
+// functions.
+func init() {{
+\tdispatch.Register("{pkg}.process", processActionPkg{nn})
+\tdispatch.Register("{pkg}.refund", refundActionPkg{nn})
+}}
+
+func processActionPkg{nn}(ctx context.Context, payload []byte) error {{
+\tvar o OrderPkg{nn}
+\tif err := json.Unmarshal(payload, &o); err != nil {{
+\t\treturn err
+\t}}
+\treturn ProcessOrderPkg{nn}(ctx, &o)
+}}
+
+func refundActionPkg{nn}(ctx context.Context, payload []byte) error {{
+\tvar req RefundRequestPkg{nn}
+\tif err := json.Unmarshal(payload, &req); err != nil {{
+\t\treturn err
+\t}}
+\treturn RefundOrderPkg{nn}(ctx, &req)
+}}
+""")
+
+# ---- glue: API route, config knob reader, cmd imports -----------------------
+w("internal/api/scaled_routes.go", """package api
+
+import (
+\t"io"
+\t"net/http"
+
+\t"github.com/acme/orderflow/internal/dispatch"
+)
+
+// registerScaledRoutes mounts the per-shard order endpoint. One parameterized
+// route serves every shard; the {pkg} path value becomes the dispatch action
+// name, so this file never names any shard's implementing function.
+func (s *Server) registerScaledRoutes() {
+\ts.mux.HandleFunc("POST /api/v1/pkg/{pkg}/orders", s.handleScaledCreate)
+}
+
+// handleScaledCreate accepts a new order for one shard vertical. Business
+// logic is bound at init time under the "<pkg>.process" action.
+func (s *Server) handleScaledCreate(w http.ResponseWriter, r *http.Request) {
+\tbody, err := io.ReadAll(r.Body)
+\tif err != nil {
+\t\thttp.Error(w, "bad body", http.StatusBadRequest)
+\t\treturn
+\t}
+\taction := r.PathValue("pkg") + ".process"
+\tif err := dispatch.Dispatch(r.Context(), action, body); err != nil {
+\t\thttp.Error(w, err.Error(), http.StatusUnprocessableEntity)
+\t\treturn
+\t}
+\tw.WriteHeader(http.StatusAccepted)
+}
+""")
+
+w("internal/config/scaled.go", """package config
+
+import (
+\t"os"
+\t"strconv"
+\t"strings"
+)
+
+// ScaledKnob returns the integer default for one generated per-shard knob
+// (gen/defaults.gen.json), overridable via the upper-cased env name. The
+// fallback applies only if the generated defaults file is missing.
+func ScaledKnob(name string, fallback int) int {
+\tif env := os.Getenv(strings.ToUpper(name)); env != "" {
+\t\tif n, err := strconv.Atoi(env); err == nil {
+\t\t\treturn n
+\t\t}
+\t}
+\tonce.Do(load)
+\tif v, ok := defaults[name].(float64); ok {
+\t\treturn int(v)
+\t}
+\treturn fallback
+}
+""")
+
+imports = "".join(
+    f'\t_ "{MOD}/internal/pkg{k:02d}" // {f"pkg{k:02d}"} action registrations (init)\n'
+    for k in range(1, scale + 1)
+)
+w("cmd/orderd/scaled_imports.go", f"""package main
+
+// Side-effect imports: every shard registers its dispatch actions in init().
+import (
+{imports})
+""")
+
+# api/server.go: mount the scaled routes inside NewServer.
+sgo = os.path.join(target, "internal/api/server.go")
+src = open(sgo).read()
+needle = '\ts.mux.HandleFunc("POST /api/v1/admin/import", s.handleAdminImport)\n'
+assert needle in src, "server.go drifted; cannot mount scaled routes"
+src = src.replace(needle, needle + "\ts.registerScaledRoutes()\n")
+open(sgo, "w").write(src)
+
+# ---- per-shard Python: live handler + dead legacy twin ----------------------
+for k in range(1, scale + 1):
+    nn = f"{k:02d}"
+    pkg = f"pkg{nn}"
+    w(f"workers/handlers/{pkg}_handler.py", f'''"""Fulfillment side of a {pkg}-vertical order: reserve stock, ship, notify."""
+
+from lib import db, notify, shipping
+from lib.registry import register
+
+
+@register("{pkg}.fulfill")
+def fulfill_{pkg}(job):
+    """Fulfill one paid {pkg} order (job published by Go ProcessOrderPkg{nn}).
+
+    Same name as the decorator-free twin in {pkg}_legacy.py, but THIS one is
+    registered and live.
+    """
+    order_id = job["order_id"]
+    for sku in job.get("skus", []):
+        db.reserve_stock(sku)
+    shipment = shipping.create_shipment(order_id, job.get("skus", []))
+    db.mark_fulfilled(order_id, shipment)
+    notify.send_email(job.get("email", ""), "shipped", shipment)
+''')
+    w(f"workers/handlers/{pkg}_legacy.py", f'''"""DEAD CODE (kept for the 2026 shard-migration rollback window).
+
+This module is not imported by handlers/__init__.py, so its decorator-free
+fulfill_{pkg} is never registered and never runs.
+"""
+
+from lib import db, notify
+
+
+def fulfill_{pkg}(job):
+    """Pre-shard-split {pkg} fulfillment: charged the card from the WORKER
+    side, then shipped. Superseded by the shard capture chain + the live
+    {pkg}_handler.
+    """
+    order_id = job["order_id"]
+    db.charge_card_legacy(order_id, job.get("total_cents", 0))
+    db.mark_fulfilled(order_id, "legacy-shipment")
+    notify.send_email(job.get("email", ""), "shipped", "legacy")
+''')
+
+init_py = os.path.join(target, "workers/handlers/__init__.py")
+with open(init_py, "a") as fh:
+    fh.write(
+        "\n# Shard handlers (generated): LIVE *_handler modules only; the\n"
+        "# *_legacy twins are deliberately NOT imported.\n"
+    )
+    for k in range(1, scale + 1):
+        fh.write(f"from . import pkg{k:02d}_handler  # noqa: F401\n")
+
+# ---- per-shard TS: submit helper + action registration ----------------------
+w("web/src/api/scaledClient.ts", """// Thin HTTP client for the per-shard order endpoints of the Go service.
+
+export async function postShardOrder(pkg: string, payload: unknown): Promise<void> {
+  const res = await fetch(`/api/v1/pkg/${pkg}/orders`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    throw new Error(`postShardOrder(${pkg}) failed: ${res.status}`);
+  }
+}
+""")
+
+for k in range(1, scale + 1):
+    nn = f"{k:02d}"
+    pkg = f"pkg{nn}"
+    w(f"web/src/{pkg}/process.ts", f"""// Client-side {pkg} order submission: optimistic cart state + POST to the
+// per-shard Go endpoint. Distinct from the base processOrder and from every
+// other shard's submit helper.
+import {{ postShardOrder }} from "../api/scaledClient";
+import {{ cartToPayload, markCartSubmitting, clearCart, markCartFailed }} from "../state/cart";
+
+export async function processPkg{nn}Order(): Promise<void> {{
+  markCartSubmitting();
+  try {{
+    await postShardOrder("{pkg}", cartToPayload());
+    clearCart();
+  }} catch (err) {{
+    markCartFailed(String(err));
+    throw err;
+  }}
+}}
+""")
+    w(f"web/src/{pkg}/actions.ts", f"""// Registers the {pkg} UI actions. Imported for side effects from main.ts.
+import {{ registerAction }} from "../registry";
+import {{ processPkg{nn}Order }} from "./process";
+
+registerAction("{pkg}/submit", async () => {{
+  await processPkg{nn}Order();
+}});
+""")
+
+main_ts = os.path.join(target, "web/src/main.ts")
+with open(main_ts, "a") as fh:
+    fh.write("\n// Shard actions (generated): side-effect imports register every shard.\n")
+    for k in range(1, scale + 1):
+        fh.write(f'import "./pkg{k:02d}/actions";\n')
+
+# ---- per-shard generated chaff: gen/scaledpb/pkgNN.pb.go ---------------------
+for k in range(1, scale + 1):
+    nn = f"{k:02d}"
+    pkg = f"pkg{nn}"
+    out = [
+        "// Code generated by protoc-gen-go. DO NOT EDIT.",
+        "// versions:",
+        "//	protoc-gen-go v1.34.2",
+        "//	protoc        v5.27.1",
+        f"// source: scaledpb/{pkg}.proto",
+        "",
+        "package scaledpb",
+        "",
+    ]
+    stems = [f"ProcessOrderPkg{nn}", f"CapturePaymentPkg{nn}",
+             f"FulfillPkg{nn}", f"RefundOrderPkg{nn}", f"AuditPkg{nn}"]
+    names = []
+    for stem in stems:
+        names.append(f"{stem}Request")
+        names.append(f"{stem}Response")
+    for name in names:
+        snake = "".join(("_" + c.lower()) if c.isupper() else c for c in name).lstrip("_")
+        out += [
+            f"// {name} is generated from scaledpb/{pkg}.proto.",
+            f"type {name} struct {{",
+            "\tOrderId      string   `protobuf:\"bytes,1,opt,name=order_id,json=orderId,proto3\" json:\"order_id,omitempty\"`",
+            "\tSkus         []string `protobuf:\"bytes,2,rep,name=skus,proto3\" json:\"skus,omitempty\"`",
+            "\tTotalCents   int64    `protobuf:\"varint,3,opt,name=total_cents,json=totalCents,proto3\" json:\"total_cents,omitempty\"`",
+            "\tRetryAttempt int32    `protobuf:\"varint,4,opt,name=retry_attempt,json=retryAttempt,proto3\" json:\"retry_attempt,omitempty\"`",
+            f"\tMethodName   string   `protobuf:\"bytes,5,opt,name=method_name,json=methodName,proto3\" json:\"method_name,omitempty\"` // always \"{snake}\"",
+            "}",
+            "",
+            f"func (x *{name}) Reset()         {{ *x = {name}{{}} }}",
+            f"func (x *{name}) String() string {{ return \"{snake}\" }}",
+            f"func (x *{name}) GetOrderId() string {{",
+            "\tif x != nil {",
+            "\t\treturn x.OrderId",
+            "\t}",
+            "\treturn \"\"",
+            "}",
+            f"func (x *{name}) GetTotalCents() int64 {{",
+            "\tif x != nil {",
+            "\t\treturn x.TotalCents",
+            "\t}",
+            "\treturn 0",
+            "}",
+            "",
+        ]
+    out.append(f"// MethodNamesPkg{nn} indexes the generated {pkg} rpc methods (wire job_type values).")
+    out.append(f"var MethodNamesPkg{nn} = []string{{")
+    for verb in ("process", "fulfill", "refund", "capture_payment", "audit"):
+        out.append(f"\t\"orderflow.v1.{pkg}.{verb}\",")
+    out.append("}")
+    out.append("")
+    out.append(f"// fileDescriptorPkg{nn} is the serialized proto descriptor (generated).")
+    out.append(f"var fileDescriptorPkg{nn} = []byte{{")
+    for i in range(220):
+        row = ", ".join(f"0x{(i * 37 + j * 11 + k) % 256:02x}" for j in range(12))
+        out.append(f"\t{row},")
+    out.append("}")
+    out.append("")
+    out.append(f"var _ = fileDescriptorPkg{nn}")
+    out.append("")
+    w(f"gen/scaledpb/{pkg}.pb.go", "\n".join(out))
+
+print(f"build-messy-corpus: scale mode generated {scale} shard clusters")
+PYEOF
+fi
 
 # ----------------------------------------------------------------- git history
 export GIT_AUTHOR_NAME="orderflow-bot" GIT_AUTHOR_EMAIL="bot@acme.example"
