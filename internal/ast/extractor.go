@@ -15,11 +15,11 @@
 //   - Go:         go/ast + go/parser (precise byte offsets via token.Pos)
 //   - YAML/JSON:  gopkg.in/yaml.v3 Node tree (Setting symbols with dotted paths)
 //   - Bash:       mvdan.cc/sh/v3/syntax (the shfmt parser; Function symbols
-//                 from POSIX and reserved-word style declarations)
+//     from POSIX and reserved-word style declarations)
 //   - HCL:        github.com/hashicorp/hcl/v2/hclsyntax (Resource/DataSource/
-//                 Module/Variable/Output/Local/Provider/Block symbols with
-//                 prefixed Terraform-reference qualified names; covers .tf and
-//                 .tfvars; recurses into nested blocks at any depth)
+//     Module/Variable/Output/Local/Provider/Block symbols with
+//     prefixed Terraform-reference qualified names; covers .tf and
+//     .tfvars; recurses into nested blocks at any depth)
 //   - Python:     regex patterns (function/class/method definitions)
 //   - JavaScript: regex patterns (function/class/method/arrow definitions)
 //   - TypeScript: regex patterns (extends JavaScript, adds interface/type)
@@ -209,11 +209,11 @@ func ExtractWithModule(source []byte, language, relPath, modulePath string) *Fil
 // that pre-date the interface; new extractors should be full structs so they
 // can carry per-extractor state (e.g. a cached parser instance).
 type langAdapter struct {
-	primary    string                                                                          // primary language name (e.g. "JavaScript")
-	aliases    []string                                                                        // additional language names this extractor handles ("JSX")
-	exts       map[string]string                                                               // extension → language name (e.g. {".jsx": "JSX"})
-	filenames  map[string]string                                                               // exact basename → language (e.g. {"Makefile": "Makefile"})
-	confidence float64                                                                         // 0.0–1.0
+	primary    string                                                                         // primary language name (e.g. "JavaScript")
+	aliases    []string                                                                       // additional language names this extractor handles ("JSX")
+	exts       map[string]string                                                              // extension → language name (e.g. {".jsx": "JSX"})
+	filenames  map[string]string                                                              // exact basename → language (e.g. {"Makefile": "Makefile"})
+	confidence float64                                                                        // 0.0–1.0
 	fn         func(source []byte, language, relPath string, opts ExtractOptions) *FileResult // delegate
 }
 
@@ -251,8 +251,8 @@ func stubAdapter(name string, exts ...string) *langAdapter {
 func init() {
 	// AST-exact extractors (confidence 1.0)
 	Register(&langAdapter{
-		primary: "Go",
-		exts:    map[string]string{".go": "Go"},
+		primary:    "Go",
+		exts:       map[string]string{".go": "Go"},
 		confidence: 1.0,
 		fn: func(s []byte, _, p string, o ExtractOptions) *FileResult {
 			return extractGo(s, p, o.ModulePath)
@@ -323,33 +323,57 @@ func init() {
 			".tsx": "TSX",
 		},
 		confidence: 0.85,
-		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+		fn: func(s []byte, lang, p string, _ ExtractOptions) *FileResult {
+			if tsASTEnabled() {
+				if r, ok := extractTypeScriptTreeSitter(s, p, lang); ok {
+					return r
+				}
+			}
 			return extractTypeScript(s, p)
 		},
 	})
 	Register(&langAdapter{
 		primary: "Rust",
 		exts:    map[string]string{".rs": "Rust"},
+		// Registered baseline = the regex fallback's honest 0.85. On a clean
+		// tree-sitter parse the dispatcher returns ConfidenceOverride=1.0
+		// (AST tier, ADR-0008); on any parse error or with the AST path
+		// disabled, the regex tier runs at 0.85.
 		confidence: 0.85,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			if rustASTEnabled() {
+				if r, ok := extractRustTreeSitter(s, p); ok {
+					return r
+				}
+			}
 			return extractRust(s, p)
 		},
 	})
 	Register(&langAdapter{
-		primary: "Java",
-		exts:    map[string]string{".java": "Java"},
+		primary:    "Java",
+		exts:       map[string]string{".java": "Java"},
 		confidence: 0.85,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			if javaASTEnabled() {
+				if r, ok := extractJavaTreeSitter(s, p); ok {
+					return r
+				}
+			}
 			return extractJava(s, p)
 		},
 	})
 
 	// Approximate regex (confidence 0.70)
 	Register(&langAdapter{
-		primary: "Ruby",
-		exts:    map[string]string{".rb": "Ruby", ".rake": "Ruby"},
+		primary:    "Ruby",
+		exts:       map[string]string{".rb": "Ruby", ".rake": "Ruby"},
 		confidence: 0.70,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			if rubyASTEnabled() {
+				if r, ok := extractRubyTreeSitter(s, p); ok {
+					return r
+				}
+			}
 			return extractRuby(s, p)
 		},
 	})
@@ -363,6 +387,11 @@ func init() {
 		// modifier ordering (modifiers before or after access).
 		confidence: 0.85,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			if phpASTEnabled() {
+				if r, ok := extractPHPTreeSitter(s, p); ok {
+					return r
+				}
+			}
 			return extractPHP(s, p)
 		},
 	})
@@ -379,7 +408,14 @@ func init() {
 		// Functions / methods / macros + Linux-kernel macro rewrite
 		// stay unchanged.
 		confidence: 0.85,
-		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+		fn: func(s []byte, lang, p string, _ ExtractOptions) *FileResult {
+			// Only C++ files route through tree-sitter; C (.c/.h) stays on the
+			// regex tier (its grammar + heavy regex post-processors differ).
+			if lang == "C++" && cppASTEnabled() {
+				if r, ok := extractCppTreeSitter(s, p); ok {
+					return r
+				}
+			}
 			return extractC(s, p)
 		},
 	})
@@ -393,6 +429,11 @@ func init() {
 		// readonly + required modifiers.
 		confidence: 0.85,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			if csharpASTEnabled() {
+				if r, ok := extractCSharpTreeSitter(s, p); ok {
+					return r
+				}
+			}
 			return extractCSharp(s, p)
 		},
 	})
@@ -412,6 +453,11 @@ func init() {
 		// expect/actual.
 		confidence: 0.85,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			if kotlinASTEnabled() {
+				if r, ok := extractKotlinTreeSitter(s, p); ok {
+					return r
+				}
+			}
 			return extractKotlin(s, p)
 		},
 	})
@@ -428,6 +474,11 @@ func init() {
 		// mirroring Python's #856 pattern) tracked separately.
 		confidence: 0.85,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			if swiftASTEnabled() {
+				if r, ok := extractSwiftTreeSitter(s, p); ok {
+					return r
+				}
+			}
 			return extractSwift(s, p)
 		},
 	})
@@ -459,8 +510,8 @@ func init() {
 	Register(&langAdapter{
 		primary: "SQL",
 		exts: map[string]string{
-			".sql":  "SQL",
-			".ddl":  "SQL",
+			".sql": "SQL",
+			".ddl": "SQL",
 		},
 		confidence: 0.85,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
@@ -2678,8 +2729,8 @@ var jsRE = &regexExtractor{
 	// #261: top-level const/let/var emit Variable symbols. Caught
 	// only when funcRE didn't already claim the line as Function —
 	// see the !funcMatched gate in regexExtractor.extract.
-	varRE: regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*=`),
-	classRE: regexp.MustCompile(`(?m)^(?:export\s+)?(?:default\s+)?class\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)(?:\s+extends\s+(?P<parent>[A-Za-z_$][A-Za-z0-9_$]*))?`),
+	varRE:    regexp.MustCompile(`(?m)^\s*(?:export\s+)?(?:const|let|var)\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*=`),
+	classRE:  regexp.MustCompile(`(?m)^(?:export\s+)?(?:default\s+)?class\s+(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)(?:\s+extends\s+(?P<parent>[A-Za-z_$][A-Za-z0-9_$]*))?`),
 	importRE: regexp.MustCompile(`(?m)^import\s+.*?from\s+['"](?P<path>[^'"]+)['"]`),
 }
 
@@ -2727,6 +2778,7 @@ func extractJavaScript(source []byte, relPath string) *FileResult {
 //   - optional `*` for generators
 //   - method name (identifier; constructors land as `constructor`)
 //   - opening paren
+//
 // Excludes lines that start with `function`/`const`/`let`/`var`/`=`/
 // `if`/`for`/`while`/`switch` (already-handled or definitely-not-method).
 // Foundational piece of the v0.61 TS receiver-type stack — without
@@ -2903,8 +2955,8 @@ func isTSOverloadSignature(source []byte, off int) bool {
 // `=>` case shouldn't happen but errs on safe-keep). Stops at end of
 // source.
 func scanForTSBodyOrSemicolon(source []byte, start int) bool {
-	depth := 0    // generic / object-type brace depth
-	bracket := 0  // square-bracket depth
+	depth := 0   // generic / object-type brace depth
+	bracket := 0 // square-bracket depth
 	for i := start; i < len(source); i++ {
 		c := source[i]
 		// Skip line comments.
@@ -2969,28 +3021,28 @@ func scanForTSBodyOrSemicolon(source []byte, start int) bool {
 // real-world TS code. `constructor` IS a valid method name in TS so
 // it's NOT in this list.
 var tsReservedKeywords = map[string]struct{}{
-	"if":       {},
-	"else":     {},
-	"for":      {},
-	"while":    {},
-	"do":       {},
-	"switch":   {},
-	"case":     {},
-	"default":  {},
-	"break":    {},
-	"continue": {},
-	"return":   {},
-	"throw":    {},
-	"try":      {},
-	"catch":    {},
-	"finally":  {},
-	"typeof":   {},
+	"if":         {},
+	"else":       {},
+	"for":        {},
+	"while":      {},
+	"do":         {},
+	"switch":     {},
+	"case":       {},
+	"default":    {},
+	"break":      {},
+	"continue":   {},
+	"return":     {},
+	"throw":      {},
+	"try":        {},
+	"catch":      {},
+	"finally":    {},
+	"typeof":     {},
 	"instanceof": {},
-	"new":      {},
-	"delete":   {},
-	"void":     {},
-	"yield":    {},
-	"await":    {},
+	"new":        {},
+	"delete":     {},
+	"void":       {},
+	"yield":      {},
+	"await":      {},
 }
 
 // dropTSKeywordFalsePositives filters Function/Method symbols whose
@@ -3068,7 +3120,7 @@ var javaRE = &regexExtractor{
 	// breaks the bare-word run before any whitespace (#823). Nested
 	// generics (`Map<String,List<Int>>`) are still a residual: the
 	// `<[^>]*>` stops at the first `>`.
-	funcRE:      regexp.MustCompile(`(?m)^\s*(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?(?:[\w.]+(?:<[^>]*>)?(?:\[\])?\s+)+(?P<name>[A-Za-z][A-Za-z0-9_]*)\s*\(`),
+	funcRE: regexp.MustCompile(`(?m)^\s*(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?(?:[\w.]+(?:<[^>]*>)?(?:\[\])?\s+)+(?P<name>[A-Za-z][A-Za-z0-9_]*)\s*\(`),
 	// `record` (Java 14+) is a type declaration, not a method. Without
 	// it in classRE, `record Point(int x, int y)` falls through to
 	// funcRE — funcRE reads `record` as a return-type token and emits
@@ -3196,7 +3248,7 @@ func extractPHP(source []byte, relPath string) *FileResult {
 // AST-tier (1.0) for C/C++ would need libclang-equivalent via
 // modernc.org/cc or similar pure-Go parser; tracked separately.
 var cRE = &regexExtractor{
-	funcRE:      regexp.MustCompile(`(?m)^(?:static\s+)?(?:inline\s+)?(?:\w+\s+)+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(`),
+	funcRE: regexp.MustCompile(`(?m)^(?:static\s+)?(?:inline\s+)?(?:\w+\s+)+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(`),
 	// Name pattern allows lowercase first char — C struct/enum
 	// convention frequently uses snake_case (`file_operations`,
 	// `list_head`, `log_level`). C++ uses PascalCase by convention
@@ -3214,8 +3266,8 @@ var cRE = &regexExtractor{
 	// ALLCAPS class names aren't eaten) and is optional + greedy:
 	// when there's only one identifier after `class` (no macro),
 	// RE2 takes the not-taken branch and `name` captures it directly.
-	classRE:     regexp.MustCompile(`(?m)^\s*(?:class|struct|union)\s+(?:[A-Z][A-Z0-9_]*_[A-Z0-9_]*\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*(?:(?:public|private|protected|virtual)\s+)*(?P<parent>[A-Za-z_][A-Za-z0-9_:]*))?`),
-	enumRE:      regexp.MustCompile(`(?m)^\s*enum(?:\s+(?:class|struct))?\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)`),
+	classRE: regexp.MustCompile(`(?m)^\s*(?:class|struct|union)\s+(?:[A-Z][A-Z0-9_]*_[A-Z0-9_]*\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:\s*:\s*(?:(?:public|private|protected|virtual)\s+)*(?P<parent>[A-Za-z_][A-Za-z0-9_:]*))?`),
+	enumRE:  regexp.MustCompile(`(?m)^\s*enum(?:\s+(?:class|struct))?\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)`),
 }
 
 // cMacroRE matches Linux-kernel-style declaration macros where the real
@@ -3479,6 +3531,7 @@ func cIsForwardDecl(source []byte, off int) bool {
 //   - `;` `*` `&` `,` `)` `[` `=`  → forward-decl or type-use → DROP
 //   - `{` `:` `(` or anything else → definition (or ambiguous, e.g.
 //     `struct alignas(16) Foo {`) → KEEP
+//
 // Errs toward KEEP — a real definition wrongly dropped is symbol
 // loss; a type-use wrongly kept is just a recoverable collision.
 func dropCTypeUseClasses(syms []ExtractedSymbol, source []byte) []ExtractedSymbol {
@@ -3909,7 +3962,7 @@ var swiftRE = &regexExtractor{
 	// inheritance and protocol-conformance lists; for structs/actors
 	// it captures conformed protocols (Swift structs can't inherit
 	// from other structs but DO conform to protocols).
-	classRE:     regexp.MustCompile(`(?m)^\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+)*(?:public|private|fileprivate|internal|open)?\s*(?:final\s+)?(?:class|struct|actor)\s+(?P<name>[A-Z][A-Za-z0-9_]*)(?:<[^>]*>)?(?:\s*:\s*(?P<parent>[A-Z][A-Za-z0-9_, ]*))?`),
+	classRE: regexp.MustCompile(`(?m)^\s*(?:@[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?\s+)*(?:public|private|fileprivate|internal|open)?\s*(?:final\s+)?(?:class|struct|actor)\s+(?P<name>[A-Z][A-Za-z0-9_]*)(?:<[^>]*>)?(?:\s*:\s*(?P<parent>[A-Z][A-Za-z0-9_, ]*))?`),
 	// enumRE matches Swift enum declarations. Swift enums carry
 	// methods + associated values + computed properties — they ARE
 	// types, not C-style integer constants. Modeled as Enum kind so
@@ -3984,7 +4037,7 @@ var scalaRE = &regexExtractor{
 	// `private`/`protected`/`override`/`final`/`abstract`/`implicit`. Methods
 	// inside class/object/trait scope land via the existing pipeline's
 	// classRE-tracked currentClass when funcRE matches.
-	funcRE:      regexp.MustCompile(`(?m)^\s*(?:private(?:\[\w+\])?\s+|protected\s+|override\s+|final\s+|abstract\s+|implicit\s+|sealed\s+)*def\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)`),
+	funcRE: regexp.MustCompile(`(?m)^\s*(?:private(?:\[\w+\])?\s+|protected\s+|override\s+|final\s+|abstract\s+|implicit\s+|sealed\s+)*def\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)`),
 	// `trait` belongs to interfaceRE ONLY — listing it in classRE too
 	// made `trait Store` match both, emitting one Store#Class AND one
 	// Store#Interface (conflicting-kind duplicate). classRE owns
@@ -4010,7 +4063,7 @@ var dartRE = &regexExtractor{
 	// the same way as TS's methodRE (modifier-permissive at line start)
 	// but require either a type token before the name OR a static
 	// modifier. The trailing `\(` anchor reduces false-positives.
-	funcRE:      regexp.MustCompile(`(?m)^\s*(?:static\s+|external\s+|abstract\s+)?(?:async\s+)?(?:[A-Za-z_$][A-Za-z0-9_$<>?,\s]*?\s+)?(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\(`),
+	funcRE: regexp.MustCompile(`(?m)^\s*(?:static\s+|external\s+|abstract\s+)?(?:async\s+)?(?:[A-Za-z_$][A-Za-z0-9_$<>?,\s]*?\s+)?(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\(`),
 	// #1753: tolerate any sequence of Dart 3 class modifiers
 	// (`sealed` / `final` / `base` / `interface` / `mixin` — alongside
 	// the pre-existing `abstract`). A modifier the regex didn't accept

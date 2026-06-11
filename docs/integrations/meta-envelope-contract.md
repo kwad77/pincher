@@ -200,6 +200,7 @@ Always-on tags emitted by every server:
 | `sse` | `GET /v1/events` SSE endpoint available |
 | `metrics_prometheus` | `GET /v1/metrics` Prometheus scrape endpoint available |
 | `mcp_logging` | Server-initiated `notifications/message` lane (`ServerSession.Log`) wired — schema-drift warnings + future async progress fire here. Hosts subscribe via `logging/setLevel`. |
+| `mcp_prompts` | User-controlled MCP prompts registered — the `guide` prompt is the slash-command twin of the `guide` tool. SDK advertises the `prompts` capability in `initialize`; hosts surface it via `prompts/list` + `prompts/get`. |
 
 Conditional tags (appear only when the corresponding mode is on):
 

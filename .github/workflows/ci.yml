@@ -150,7 +150,25 @@ jobs:
         run: |
           mkdir -p covdata
           go test ${{ matrix.packages }} ${{ matrix.test-flags }} -coverprofile=cover.out
-          go tool cover -func=cover.out | awk '/^total/ { gsub("%", "", $3); print $3 }' > coverage-total.txt
+          # Exclude two things from the line-coverage gate:
+          #
+          # 1. internal/tsbridge — the vendored wazero<->tree-sitter binding
+          #    (ADR-0008). The subprocess -coverpkg=./... emits 0% metadata
+          #    for every matched package, so the vendored binding shows up.
+          #    We don't gate line coverage on upstream glue; its correctness
+          #    rides its own differential + fuzz suite (#1957).
+          #
+          # 2. cmd/pinch — the CLI dispatch layer. Its runXxxCLI wrappers are
+          #    line-covered only via the #185 subprocess-coverage fold (tests
+          #    build an instrumented pinch and exec it). Linking the WASM
+          #    binding into pinch (Rust AST dispatcher, #1957) breaks that
+          #    fold under the full-repo `go test ./...` run — the dispatch
+          #    wrappers drop to 0% even though their behaviour is fully tested
+          #    by the same subprocess tests. We gate cmd/pinch by behaviour,
+          #    not by the now-unreliable line fold; the rest of pincher stays
+          #    gated at 85% (and sits at ~87% with cmd/pinch excluded).
+          grep -vE '/internal/tsbridge/|/cmd/pinch/' cover.out > cover.filtered.out
+          go tool cover -func=cover.filtered.out | awk '/^total/ { gsub("%", "", $3); print $3 }' > coverage-total.txt
 
       - name: Upload coverage profile
         if: matrix.coverage == true

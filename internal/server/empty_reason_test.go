@@ -102,7 +102,7 @@ func TestApplyLiteMeta_PreservesEmptyReason(t *testing.T) {
 	meta := map[string]any{
 		"empty_reason":     EmptyReasonNoProjectIndexed,
 		"diagnosis":        "stamped together with the enum",
-		"capabilities":     []string{"schema_v38"},
+		"capabilities":     []string{"schema_v39"},
 		"baseline_method":  "full_file_read",
 		"complexity_tier":  "lite",
 		"tokens_used":      100,

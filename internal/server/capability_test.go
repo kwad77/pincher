@@ -30,11 +30,11 @@ type capProbe struct {
 
 var capabilityProbes = []capProbe{
 	{
-		tag: "schema_v38",
+		tag: "schema_v39",
 		probe: func(t *testing.T, srv *Server) {
 			ver := db.CurrentSchemaVersion()
-			if ver != 38 {
-				t.Errorf("schema_v38 advertised but CurrentSchemaVersion()=%d", ver)
+			if ver != 39 {
+				t.Errorf("schema_v39 advertised but CurrentSchemaVersion()=%d", ver)
 			}
 		},
 	},
@@ -227,6 +227,33 @@ var capabilityProbes = []capProbe{
 		},
 	},
 	{
+		// #1082 v1.3: user-controlled `guide` prompt. The probe asserts the
+		// prompt handler is reachable and returns the same shape-driven
+		// recommendations as the tool. Wire-level prompts/list + prompts/get
+		// behavior is covered by guide_prompt_test.go's session-attached
+		// cases.
+		tag: "mcp_prompts",
+		probe: func(t *testing.T, srv *Server) {
+			res, err := srv.handleGuidePrompt(context.Background(), &mcp.GetPromptRequest{
+				Params: &mcp.GetPromptParams{
+					Name:      guidePromptName,
+					Arguments: map[string]string{"task": "fix the login retry bug"},
+				},
+			})
+			if err != nil {
+				t.Errorf("mcp_prompts advertised but handleGuidePrompt errored: %v", err)
+				return
+			}
+			if res == nil || len(res.Messages) == 0 {
+				t.Errorf("mcp_prompts advertised but guide prompt returned no messages")
+				return
+			}
+			if _, ok := res.Messages[0].Content.(*mcp.TextContent); !ok {
+				t.Errorf("mcp_prompts advertised but guide prompt message content is %T, want *mcp.TextContent", res.Messages[0].Content)
+			}
+		},
+	},
+	{
 		tag: "metrics_prometheus",
 		probe: func(t *testing.T, srv *Server) {
 			// GET /v1/metrics must answer 200 with text/plain content-type
@@ -383,7 +410,7 @@ func TestCapability_PresentInMetaEnvelope(t *testing.T) {
 	}
 	found := false
 	for _, c := range caps {
-		if c == "schema_v38" {
+		if c == "schema_v39" {
 			found = true
 			break
 		}
