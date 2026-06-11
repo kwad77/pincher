@@ -155,6 +155,10 @@
           "description": "When true, return only {id, source} — no imports, no callees, no next_steps. Used by PreToolUse hook to land on minimum-envelope shape when redirecting a Read call. Default false.",
           "type": "boolean"
         },
+        "max_tokens": {
+          "description": "Lite-mode token budget (hook-redirect-v2). When set with lite=true, source is truncated to ~max_tokens (4 bytes/token approximation) with an explicit truncation marker + truncated:true flag. The PreToolUse hook derives it from the intercepted Read call's own limit param so the redirect can't cost more window than the Read it replaces. Ignored when lite is false. 0 / omitted = unbounded.",
+          "type": "integer"
+        },
         "project": {
           "type": "string"
         }

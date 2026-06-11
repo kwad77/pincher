@@ -652,6 +652,10 @@ var readerRoutedStoreMethods = map[string]bool{
 	"HookConversionRate7d": true,
 	"HookOverrideRate7d":   true,
 	"HookCountsByTool7d":   true,
+	// hook-redirect-v2: repeat-read point query + v40 savings sum.
+	// Both pure SELECTs — reader-routed.
+	"HookFileSeenInSession": true,
+	"HookSavings7d":         true,
 	// Accessors that return the underlying *sql.DB. RO() returns the
 	// reader pool by definition; DB() returns the writer (semantic
 	// belongs to writer-routed since callers may write through it).

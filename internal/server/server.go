@@ -43,6 +43,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kwad77/pincher/internal/ast"
 	"github.com/kwad77/pincher/internal/cypher"
@@ -2107,15 +2108,32 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if byTool == nil {
 			byTool = map[string]map[string]int{}
 		}
+		// hook-redirect-v2: honest savings vs realistic baseline.
+		// est_tokens_served = estimated cost of the suggested context
+		// lite calls; baseline_tokens = what the intercepted Reads
+		// would actually have returned (stat-ed size capped by the
+		// Read's own limit). Best-effort — a query failure zeroes the
+		// fields rather than failing the whole endpoint.
+		estServed, baselineTok, savErr := s.store.HookSavings7d()
+		if savErr != nil {
+			estServed, baselineTok = 0, 0
+		}
+		var savedPct float64
+		if baselineTok > 0 {
+			savedPct = float64(baselineTok-estServed) / float64(baselineTok) * 100
+		}
 		json.NewEncoder(w).Encode(map[string]any{
-			"window":         "7d",
-			"redirects":      redirects,
-			"taken":          taken,
-			"conversion_pct": pct,
-			"resolved":       resolved,
-			"overrides":      overrides,
-			"override_pct":   overridePct,
-			"by_tool":        byTool,
+			"window":               "7d",
+			"redirects":            redirects,
+			"taken":                taken,
+			"conversion_pct":       pct,
+			"resolved":             resolved,
+			"overrides":            overrides,
+			"override_pct":         overridePct,
+			"by_tool":              byTool,
+			"est_tokens_served":    estServed,
+			"baseline_tokens":      baselineTok,
+			"est_tokens_saved_pct": savedPct,
 		})
 		return
 	}
@@ -4271,6 +4289,7 @@ func (s *Server) registerTools() {
 				"project":{"type":"string"},
 				"fields":{"type":"string","description":"Comma-separated top-level keys to include, e.g. 'symbol,callees' to drop imports. Omit for all. _meta is preserved unconditionally."},
 				"lite":{"type":"boolean","description":"When true, return only {id, source} — no imports, no callees, no next_steps. Used by PreToolUse hook to land on minimum-envelope shape when redirecting a Read call. Default false."},
+				"max_tokens":{"type":"integer","description":"Lite-mode token budget (hook-redirect-v2). When set with lite=true, source is truncated to ~max_tokens (4 bytes/token approximation) with an explicit truncation marker + truncated:true flag. The PreToolUse hook derives it from the intercepted Read call's own limit param so the redirect can't cost more window than the Read it replaces. Ignored when lite is false. 0 / omitted = unbounded."},
 				"cross_project":{"type":"boolean","description":"#1232 opt-in: when the requested ID isn't in the session project but exists in another indexed project, default behavior is to error (rich-error with next_steps) instead of silently returning the other project's data — including its callees + imports, which would also belong to the wrong tree. Pass cross_project=true to opt back into the legacy silent-fallback-with-warning behavior. Default false. Has no effect when project= is set explicitly."}
 			}
 		}`),
@@ -5763,9 +5782,34 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// byte-offset precision. Skips the IMPORTS/CALLS edge walks that
 	// account for most of context's per-call latency on big symbols.
 	if lite, _ := args["lite"].(bool); lite {
+		// hook-redirect-v2: optional max_tokens budget. The PreToolUse
+		// hook derives it from the intercepted Read call's own limit
+		// param (limit × ~12 tokens/line, floor 400) so a redirected
+		// giant symbol can't blow the agent's window any harder than
+		// the Read it replaced. Truncation is byte-approximate
+		// (4 bytes/token, matching db.ApproxTokens's fast path) and
+		// always announced — a silent cut would be the
+		// confidently-wrong shape this codebase keeps stamping out.
+		liteTruncated := false
+		if maxTok := intArg(args, "max_tokens", 0); maxTok > 0 {
+			budgetBytes := maxTok * 4
+			if len(source) > budgetBytes {
+				cut := budgetBytes
+				// Don't split a UTF-8 rune at the cut point.
+				for cut > 0 && !utf8.RuneStart(source[cut]) {
+					cut--
+				}
+				source = source[:cut] + fmt.Sprintf(
+					"\n…[truncated at max_tokens=%d budget; re-issue without max_tokens or use symbol/Read with offset for the remainder]", maxTok)
+				liteTruncated = true
+			}
+		}
 		liteData := map[string]any{
 			"id":     sym.ID,
 			"source": source,
+		}
+		if liteTruncated {
+			liteData["truncated"] = true
 		}
 		// Apply field projection if requested — keeps the contract
 		// consistent (callers already use `fields=` patterns elsewhere).

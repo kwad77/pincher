@@ -174,6 +174,28 @@ func TestOpenStoreReadOnlyOrCreate_MigratesStaleSchema(t *testing.T) {
 		)`); err != nil {
 		t.Fatalf("create pre-v39 edges: %v", err)
 	}
+	// Reset hook_invocations to its pre-v40 shape for the same reason —
+	// v39→v40 (hook-redirect-v2) ALTERs in est_tokens_served +
+	// baseline_tokens, which must not survive the synthetic downgrade.
+	if _, err := store.DB().Exec(`DROP TABLE hook_invocations`); err != nil {
+		t.Fatalf("drop hook_invocations: %v", err)
+	}
+	if _, err := store.DB().Exec(`
+		CREATE TABLE hook_invocations (
+			id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+			ts                  INTEGER NOT NULL,
+			session_id          TEXT,
+			tool_name           TEXT NOT NULL,
+			file_path           TEXT,
+			file_bytes          INTEGER,
+			decision            TEXT NOT NULL,
+			suggested_tool      TEXT,
+			suggested_args      TEXT,
+			next_tool_within_3  TEXT,
+			took_recommendation INTEGER
+		)`); err != nil {
+		t.Fatalf("create pre-v40 hook_invocations: %v", err)
+	}
 	if _, err := store.DB().Exec(`UPDATE schema_version SET version = 35`); err != nil {
 		t.Fatalf("downgrade schema_version: %v", err)
 	}
