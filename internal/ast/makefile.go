@@ -82,12 +82,12 @@ var makeVarRE = regexp.MustCompile(
 // symbols for rule targets + Setting symbols for top-level variable
 // definitions. Targets named in a `.PHONY:` line get is_exported=true.
 //
-// Byte-range invariant: each symbol's [StartByte, EndByte) covers the
-// definition line only. Multi-line recipe bodies are intentionally NOT
-// included — the symbol's source view should be the rule signature, not
-// the shell commands beneath it (those are out of scope for code
-// intelligence; a future iteration could include them as part of the
-// rule's "body" similar to how Go function bodies are captured).
+// Byte-range invariant: a rule symbol's [StartByte, EndByte) covers the
+// rule line plus its recipe body — the contiguous run of TAB-prefixed
+// lines immediately below it (#1745). The first non-TAB line (blank
+// line or column-0 comment included) ends the recipe, matching GNU
+// make's recipe delimitation closely enough for source retrieval.
+// Variable (Setting) symbols stay definition-line-only.
 func extractMakefile(source []byte, relPath string) *FileResult {
 	out := &FileResult{}
 
@@ -140,6 +140,23 @@ func extractMakefile(source []byte, relPath string) *FileResult {
 
 		startByte := lineStart
 		endByte := nameStart + lineEnd
+		// #1745: extend the range over the recipe body — the contiguous
+		// run of TAB-prefixed lines below the rule line. A recipe is
+		// TAB-delimited (no braces / end keyword / indentation block),
+		// which is why blockEnd()'s finders never applied here. Stop at
+		// the first non-TAB line; blank lines and column-0 comments end
+		// the recipe.
+		for endByte < len(source) && source[endByte] == '\n' {
+			next := endByte + 1
+			if next >= len(source) || source[next] != '\t' {
+				break
+			}
+			if nl := bytes.IndexByte(source[next:], '\n'); nl >= 0 {
+				endByte = next + nl
+			} else {
+				endByte = len(source)
+			}
+		}
 		startLine := bytes.Count(source[:startByte], []byte("\n")) + 1
 		endLine := bytes.Count(source[:endByte], []byte("\n")) + 1
 		out.Symbols = append(out.Symbols, ExtractedSymbol{

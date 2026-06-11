@@ -3,12 +3,12 @@
 package ast
 
 import (
+	"strings"
 	"testing"
 )
 
 // TestExtractMakefile_RuleTargets pins the basic case: rule targets at
-// column 0 produce one Function symbol each, with byte ranges covering
-// the rule signature line.
+// column 0 produce one Function symbol each.
 func TestExtractMakefile_RuleTargets(t *testing.T) {
 	src := []byte(`# Build commands
 
@@ -188,7 +188,7 @@ func TestMakefile_DetectedByFilename(t *testing.T) {
 		// Path-shaped filenames must still resolve via basename.
 		{"subdir/Makefile", "Makefile"},
 		// Confirm non-matches return empty.
-		{"main.c", ""},                        // C extractor handles
+		{"main.c", ""}, // C extractor handles
 		{"NotAMakefile.txt", ""},
 	}
 	for _, c := range cases {
@@ -214,3 +214,80 @@ func TestMakefile_RegisteredConfidenceIs0_85(t *testing.T) {
 	}
 }
 
+// TestExtractMakefile_RuleByteRangeIncludesRecipe pins #1745: a rule
+// symbol's [StartByte, EndByte) spans the rule line plus the contiguous
+// TAB-prefixed recipe beneath it, so `symbol`/`context` return what the
+// target actually does instead of just `build:`. The first non-TAB line
+// (blank line or column-0 comment) ends the recipe.
+func TestExtractMakefile_RuleByteRangeIncludesRecipe(t *testing.T) {
+	src := []byte(`build:
+	go build ./...
+	go vet ./...
+
+test: build
+	go test ./...
+# column-0 comment after a blank-less recipe end? no — comment ends it
+clean:
+	rm -f *.o`)
+	r := extractMakefile(src, "Makefile")
+	got := map[string]ExtractedSymbol{}
+	for _, s := range r.Symbols {
+		got[s.Name] = s
+	}
+
+	cases := []struct {
+		name     string
+		contains []string
+		excludes []string
+		endLine  int
+	}{
+		// Recipe with two commands, ended by a blank line.
+		{"build", []string{"go build ./...", "go vet ./..."}, []string{"test:"}, 3},
+		// Recipe ended by a column-0 comment line.
+		{"test", []string{"go test ./..."}, []string{"# column-0"}, 6},
+		// Recipe at EOF with no trailing newline.
+		{"clean", []string{"rm -f *.o"}, nil, 9},
+	}
+	for _, tc := range cases {
+		s, ok := got[tc.name]
+		if !ok {
+			t.Fatalf("missing rule %q in extracted symbols: %v", tc.name, keysOf(got))
+		}
+		body := string(src[s.StartByte:s.EndByte])
+		for _, want := range tc.contains {
+			if !strings.Contains(body, want) {
+				t.Errorf("rule %q range %q should contain %q", tc.name, body, want)
+			}
+		}
+		for _, not := range tc.excludes {
+			if strings.Contains(body, not) {
+				t.Errorf("rule %q range %q should NOT contain %q", tc.name, body, not)
+			}
+		}
+		if s.EndLine != tc.endLine {
+			t.Errorf("rule %q EndLine = %d, want %d", tc.name, s.EndLine, tc.endLine)
+		}
+	}
+}
+
+// TestExtractMakefile_VariableByteRangeStaysLineOnly pins the other half
+// of the #1745 invariant: Setting symbols (variable definitions) keep
+// their definition-line-only range — recipe extension applies to rules.
+func TestExtractMakefile_VariableByteRangeStaysLineOnly(t *testing.T) {
+	src := []byte(`GO ?= go
+BIN := ./pincher
+
+build:
+	$(GO) build
+`)
+	r := extractMakefile(src, "Makefile")
+	for _, s := range r.Symbols {
+		if s.Kind != "Setting" {
+			continue
+		}
+		body := string(src[s.StartByte:s.EndByte])
+		if strings.Contains(body, "\n") {
+			t.Errorf("setting %q range %q spans multiple lines, want single line", s.Name, body)
+		}
+	}
+}
