@@ -349,6 +349,11 @@ func init() {
 		exts:       map[string]string{".java": "Java"},
 		confidence: 0.85,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			if javaASTEnabled() {
+				if r, ok := extractJavaTreeSitter(s, p); ok {
+					return r
+				}
+			}
 			return extractJava(s, p)
 		},
 	})

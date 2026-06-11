@@ -50,3 +50,11 @@ func (t TreeSitter) LanguageRust(ctx context.Context) (Language, error) {
 	}
 	return NewLanguage(p[0], t), nil
 }
+
+func (t TreeSitter) LanguageJava(ctx context.Context) (Language, error) {
+	p, err := t.languageJava.Call(ctx)
+	if err != nil {
+		return Language{}, fmt.Errorf("initiating java language: %w", err)
+	}
+	return NewLanguage(p[0], t), nil
+}
