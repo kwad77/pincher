@@ -102,6 +102,23 @@ func (s *Server) handleBatch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// jsonResultWithMeta — the single stats writer for batched traffic.
 	summedSubTokensSaved := 0
 
+	// Session-delta interplay (envelope-compression integration): the
+	// sub-handlers below run through the same _meta stamping as
+	// top-level calls, so the FIRST sub-call would consume the
+	// session's one full-capabilities emission — and batch then strips
+	// it from the slim per-entry _meta, meaning the consumer would
+	// never see the advertisement at all. Restore the delta ledger to
+	// its pre-batch state after the sub-calls so the OUTER envelope
+	// (the one full _meta this tool's contract promises) emits exactly
+	// as if the sub-calls had never stamped. Worst case under a
+	// concurrent race is a double-emit of the full slice — the same
+	// safe direction the ledger already guarantees (never under-emits).
+	// The defer covers early error returns; the success path restores
+	// explicitly BEFORE jsonResultWithMeta builds the outer envelope
+	// (defer would run after the outer stamp — too late).
+	preBatchCapsFP, _ := s.lastEmittedCaps.Load().(string)
+	defer s.lastEmittedCaps.Store(preBatchCapsFP)
+
 	for i, rq := range rawQueries {
 		qm, _ := rq.(map[string]any)
 		subTool, _ := qm["tool"].(string)
@@ -269,6 +286,9 @@ func (s *Server) handleBatch(ctx context.Context, req *mcp.CallToolRequest) (*mc
 			map[string]any{"error_indexes": errIdx})
 	}
 
+	// Restore the session-delta ledger before stamping the outer
+	// envelope — see the pre-loop comment.
+	s.lastEmittedCaps.Store(preBatchCapsFP)
 	return s.jsonResultWithMeta(data, start, tool, args, summedSubTokensSaved), nil
 }
 
