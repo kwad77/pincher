@@ -17,6 +17,10 @@ import (
 // Grep (#1656).
 
 func TestDecideHook_Glob_CodePatternInIndexedDir_Advisory(t *testing.T) {
+	// Pin the toolset so the assertion is deterministic regardless of
+	// the developer's environment (#2011): under the core default the
+	// advisory recommends `search`, which is advertised in both modes.
+	t.Setenv("PINCHER_TOOLSET", "core")
 	store := newHookTestStore(t)
 	projectDir := t.TempDir()
 	indexLargeFakeFile(t, store, projectDir, "internal/server/server.go", 50000)
@@ -35,13 +39,10 @@ func TestDecideHook_Glob_CodePatternInIndexedDir_Advisory(t *testing.T) {
 	if d.Decision != "redirect_advisory" {
 		t.Errorf("decision = %q, want redirect_advisory", d.Decision)
 	}
-	if d.SuggestedTool != "onboard_module" {
-		t.Errorf("suggested tool = %q, want onboard_module", d.SuggestedTool)
+	if d.SuggestedTool != "search" {
+		t.Errorf("suggested tool = %q, want search (core-toolset default, #2011)", d.SuggestedTool)
 	}
-	if !strings.Contains(d.SuggestedArgs, `"directory"`) {
-		t.Errorf("suggested args should carry the directory; got %s", d.SuggestedArgs)
-	}
-	if !strings.Contains(d.SystemMessage, "onboard_module") {
+	if !strings.Contains(d.SystemMessage, "`search`") {
 		t.Errorf("system message should name the suggested tool; got %q", d.SystemMessage)
 	}
 	if d.StopReason != "" {

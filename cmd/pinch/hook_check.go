@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kwad77/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/server"
 	"github.com/zeebo/xxh3"
 )
 
@@ -104,7 +105,9 @@ func matchIndexedFile(store *db.Store, absPath string) (relPath string, fileByte
 //
 // Decision logic for Glob:
 //   - advisory hint when the glob targets code files inside an
-//     indexed project (suggests onboard_module / search)
+//     indexed project; the suggested tool resolves against the active
+//     toolset (#2011): onboard_module under PINCHER_TOOLSET=full,
+//     search (advertised in both modes) under the core default
 //   - pass through when path is absent, outside every indexed
 //     project, or the pattern isn't code-shaped
 func runHookCheckCLI(args []string) {
@@ -540,17 +543,44 @@ func decideGlobHook(store *db.Store, in hookCheckInput, debug bool) hookDecision
 		return debugPass(debug, "glob path not in any indexed project", hookDecision{})
 	}
 
-	args := fmt.Sprintf(`{"directory":"%s"}`, dir)
+	// #2011: resolve the recommendation against the active toolset.
+	// Under the v1.6 core-toolset default, onboard_module is not on
+	// the session's tools/list and a tools/call against it returns
+	// -32602 — an advisory must never recommend a tool the agent
+	// cannot call. The hook is a subprocess and can only read its OWN
+	// $PINCHER_TOOLSET; normally that matches the server's (both
+	// inherit the user environment), but they can diverge when the
+	// server was launched with an explicit --toolset/env override the
+	// hook doesn't share. The mismatch case is asymmetric-safe by
+	// construction: only a hook env that canonically says "full"
+	// restores the onboard_module suggestion, and the fallback
+	// recommendation (`search`) is advertised in BOTH modes — so the
+	// worst divergence outcome is a core-safe hint on a full server,
+	// never an uncallable one.
+	if server.ToolAdvertised("onboard_module") {
+		args := fmt.Sprintf(`{"directory":"%s"}`, dir)
+		msg := fmt.Sprintf(
+			"Pincher hint: %s is indexed — `onboard_module directory=\"%s\"` maps entry points, exports and consumers in one envelope, and `search` finds symbols by name with BM25 ranking. (Hook is advisory — Glob passes through.)",
+			dir, dir,
+		)
+		return hookDecision{
+			Continue:      true,
+			SystemMessage: msg,
+			Decision:      "redirect_advisory",
+			SuggestedTool: "onboard_module",
+			SuggestedArgs: args,
+		}
+	}
 	msg := fmt.Sprintf(
-		"Pincher hint: %s is indexed — `onboard_module directory=\"%s\"` maps entry points, exports and consumers in one envelope, and `search` finds symbols by name with BM25 ranking. (Hook is advisory — Glob passes through.)",
-		dir, dir,
+		"Pincher hint: %s is indexed — `search` finds symbols by name with BM25 ranking, and `context` expands a hit to full source plus imports. (Module-level orientation via `onboard_module` is outside the core toolset: reach it as a `batch` sub-query, or restart the server with PINCHER_TOOLSET=full. Hook is advisory — Glob passes through.)",
+		dir,
 	)
 	return hookDecision{
 		Continue:      true,
 		SystemMessage: msg,
 		Decision:      "redirect_advisory",
-		SuggestedTool: "onboard_module",
-		SuggestedArgs: args,
+		SuggestedTool: "search",
+		SuggestedArgs: `{"query":"<symbol or keyword>"}`,
 	}
 }
 

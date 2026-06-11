@@ -4,6 +4,7 @@ package server
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 )
 
@@ -66,6 +67,24 @@ var coreToolset = map[string]bool{
 	"loop":          true,
 	"verify_change": true,
 	"guide":         true,
+}
+
+// ToolAdvertised reports whether the named tool appears on the MCP
+// tools/list advertisement under the toolset resolved from this
+// process's $PINCHER_TOOLSET (#2011): full advertises every tool,
+// core (the default) advertises only coreToolset. Used by the
+// hook-check CLI to keep PreToolUse advisory recommendations
+// callable — a session running under the core default never saw the
+// non-core tools on tools/list, so a tools/call against one returns
+// -32602. The resolution is against the CALLING process's
+// environment; for the hook subprocess that is a best-effort proxy
+// for the server's env (see cmd/pinch/hook_check.go decideGlobHook
+// for why the mismatch case stays safe).
+func ToolAdvertised(name string) bool {
+	if parseToolsetEnv(os.Getenv("PINCHER_TOOLSET")) == toolsetFull {
+		return true
+	}
+	return coreToolset[name]
 }
 
 // parseToolsetEnv reads PINCHER_TOOLSET and returns the effective
