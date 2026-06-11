@@ -457,6 +457,11 @@ func init() {
 		// mirroring Python's #856 pattern) tracked separately.
 		confidence: 0.85,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			if swiftASTEnabled() {
+				if r, ok := extractSwiftTreeSitter(s, p); ok {
+					return r
+				}
+			}
 			return extractSwift(s, p)
 		},
 	})

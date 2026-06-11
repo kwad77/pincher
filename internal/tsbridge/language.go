@@ -67,6 +67,14 @@ func (t TreeSitter) LanguageCSharp(ctx context.Context) (Language, error) {
 	return NewLanguage(p[0], t), nil
 }
 
+func (t TreeSitter) LanguageSwift(ctx context.Context) (Language, error) {
+	p, err := t.languageSwift.Call(ctx)
+	if err != nil {
+		return Language{}, fmt.Errorf("initiating swift language: %w", err)
+	}
+	return NewLanguage(p[0], t), nil
+}
+
 func (t TreeSitter) LanguagePHP(ctx context.Context) (Language, error) {
 	p, err := t.languagePHP.Call(ctx)
 	if err != nil {
