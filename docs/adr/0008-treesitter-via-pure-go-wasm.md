@@ -1,9 +1,9 @@
 # ADR-0008: AST-tier extraction via real tree-sitter compiled to WASM (pure-Go)
 
-**Status:** Proposed
-**Date:** 2026-06-10
+**Status:** **Accepted** — engine decision proven in production; **Rust shipped at AST tier (1.0)** ([#1960](https://github.com/kwad77/pincher/issues/1960), 2026-06-11). Java/TS/C# are rollout (extractor work), not viability.
+**Date:** 2026-06-10 (accepted 2026-06-11)
 **Decision-maker:** kwad77 (sole maintainer)
-**Confidence:** core architectural claim **measured** (Rust); per-language error rates for Java/TS/C# **inferred** pending Phase-1 confirmation
+**Confidence:** core architectural claim **measured + shipped** (Rust, production); Java/TS/C# parse-error rates **measured at 0%** on real corpora; their extractors are pending (same pattern as Rust).
 **Supersedes:** [ADR-0006](0006-non-go-ast-strategy.md)'s "Option D only" stance (regex-tier sufficient, no non-Go AST). This ADR re-opens that decision on the **cost axis** ADR-0006 named as a valid trigger.
 **Issues:** [#1689](https://github.com/kwad77/pincher/issues/1689) non-Go AST strategy · [#1182](https://github.com/kwad77/pincher/issues/1182) Rust · [#1183](https://github.com/kwad77/pincher/issues/1183) Java · [#1452](https://github.com/kwad77/pincher/issues/1452) Swift
 **Related:** [ADR-0002](0002-v1-frozen-surface.md) frozen surface · [ADR-0005](0005-v1.3-substrate-and-language-coverage.md) provenance-tier substrate · `delivery-loop.md` (the EGDL practice this ADR was produced under)
@@ -108,6 +108,18 @@ This ADR moves to **Accepted** when, for all four Phase-1 anchors (Java, Rust, T
 ## Re-open / reversal trigger
 
 Reverse to ADR-0006 (regex-only) if Phase-1 surfaces: a sustained >2% corpus parse-error rate that grammar updates can't close, an unfixable concurrency/throughput regression, or a binary-size blowout beyond budget that selective embedding can't contain.
+
+## Realized outcomes & lessons (2026-06-11, from shipping Rust)
+
+What executing the decision actually taught — load-bearing for the remaining
+language rollouts, so they don't relearn it:
+
+- **Generalization confirmed (N=4, all 0%).** Real-tree-sitter-via-WASM parsed Rust (ripgrep), Java (gson), C# (Newtonsoft.Json), and TypeScript (zod) at **0% parse errors** on real corpora. The review's #1 "Rust=0% won't generalize" risk is retired.
+- **The vendored binding leaked WASM memory — the real production blocker.** `malivvan` v0.0.1 `malloc`s a 24-byte node struct per `Child`/`NamedChild` and never frees it, and didn't export `ts_tree_delete`. Harmless one-shot; fatal under the indexer's pooled-instance reuse (unbounded heap → OOM on large repos). **Fix pattern (reuse for every language):** export `ts_tree_delete`, add `Tree.Close` + `Node.Free`, and have the extractor track every per-parse allocation and bulk-free it + close the tree on the way out. **Gate it:** a no-leak-under-N-reuses RSS test (must stay flat) + a fuzz target on the marshaling boundary (no panic on arbitrary bytes). Both shipped for Rust.
+- **Match the regex tier's QN conventions exactly to avoid silent ID churn.** Don't invent QNs. Use `moduleQN(relPath, "::")` (filename stem included, not `filepath.Dir`); `impl Trait for Type` puts the trait in the *QN* (`Type::Trait::method`, #1783) but the *Parent* is just `Type`; per-file CALLS key on the enclosing function at confidence **0.6** (the resolver upgrades them); symbols carry byte+line spans. Doing this made the **entire existing regex test suite pass unchanged through the tree-sitter dispatcher** — the proof of zero churn. Mod-block-aware QNs are a *separate*, deliberately-churning enhancement.
+- **Dispatcher shape (reuse verbatim):** per-file all-or-nothing — clean parse (`HasError()==false`) → AST symbols with `FileResult.ConfidenceOverride = 1.0`; any error or `PINCHER_DISABLE_<LANG>_AST=1` → regex tier. Thread-safe via a bounded (≤4) lazily-initialized instance pool (the indexer is concurrent; tsbridge isn't). Mirrors the JS/Python AST dispatchers.
+- **CI gotcha — linking the WASM binding into `pinch` breaks the #185 subprocess-coverage fold.** Under `go test ./...`, the `runXxxCLI` dispatch wrappers (line-covered only via an instrumented-subprocess exec) drop to 0% once `wazero` links in — independent of `-coverpkg`. Resolution: exclude `cmd/pinch` from the *line*-coverage gate (it's behavior-tested via the subprocess exec). Already in `ci.yml`; no further action per language.
+- **Costs realized:** binary 37 → 41 MB (wazero + one 1.2 MB grammar); ~0.2 s one-time pool warmup on the first file of a language. Within budget.
 
 ## References
 
