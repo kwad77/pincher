@@ -382,6 +382,11 @@ func init() {
 		// modifier ordering (modifiers before or after access).
 		confidence: 0.85,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			if phpASTEnabled() {
+				if r, ok := extractPHPTreeSitter(s, p); ok {
+					return r
+				}
+			}
 			return extractPHP(s, p)
 		},
 	})
