@@ -58,3 +58,11 @@ func (t TreeSitter) LanguageJava(ctx context.Context) (Language, error) {
 	}
 	return NewLanguage(p[0], t), nil
 }
+
+func (t TreeSitter) LanguageCSharp(ctx context.Context) (Language, error) {
+	p, err := t.languageCSharp.Call(ctx)
+	if err != nil {
+		return Language{}, fmt.Errorf("initiating csharp language: %w", err)
+	}
+	return NewLanguage(p[0], t), nil
+}

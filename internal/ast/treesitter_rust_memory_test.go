@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -82,6 +83,7 @@ func TestRustTSExtractor_NoLeakUnderReuse(t *testing.T) {
 		_, _ = x.extractChecked(src, "warm.rs")
 	}
 	runtime.GC()
+	debug.FreeOSMemory()
 	before := vmRSSKB(t)
 	if before < 0 {
 		t.Skip("no VmRSS")
@@ -95,6 +97,7 @@ func TestRustTSExtractor_NoLeakUnderReuse(t *testing.T) {
 		}
 	}
 	runtime.GC()
+	debug.FreeOSMemory()
 	after := vmRSSKB(t)
 
 	growthMB := float64(after-before) / 1024.0

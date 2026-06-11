@@ -53,10 +53,11 @@ type TreeSitter struct {
 	nodeStartByte       api.Function
 	nodeIsError         api.Function
 
-	languageC    api.Function
-	languageCpp  api.Function
-	languageRust api.Function
-	languageJava api.Function
+	languageC      api.Function
+	languageCpp    api.Function
+	languageRust   api.Function
+	languageJava   api.Function
+	languageCSharp api.Function
 }
 
 func New(ctx context.Context) (TreeSitter, error) {
@@ -112,6 +113,7 @@ func New(ctx context.Context) (TreeSitter, error) {
 		languageCpp:         mod.ExportedFunction("tree_sitter_cpp"),
 		languageRust:        mod.ExportedFunction("tree_sitter_rust"),
 		languageJava:        mod.ExportedFunction("tree_sitter_java"),
+		languageCSharp:      mod.ExportedFunction("tree_sitter_c_sharp"),
 	}, nil
 }
 

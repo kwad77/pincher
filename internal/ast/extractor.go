@@ -407,6 +407,11 @@ func init() {
 		// readonly + required modifiers.
 		confidence: 0.85,
 		fn: func(s []byte, _, p string, _ ExtractOptions) *FileResult {
+			if csharpASTEnabled() {
+				if r, ok := extractCSharpTreeSitter(s, p); ok {
+					return r
+				}
+			}
 			return extractCSharp(s, p)
 		},
 	})
