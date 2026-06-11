@@ -84,6 +84,11 @@ func ProfileDir(dir string) (*Profile, error) {
 	queue := make(chan *gocodewalker.File, 256)
 	walker := gocodewalker.NewFileWalker(dir, queue)
 	walker.ExcludeDirectory = profileSkippedDirs()
+	// .pincherignore: user-controlled ignore file with gitignore semantics.
+	// Keep in sync with the indexer's walker (internal/index/indexer.go) so
+	// the census reported by `pincher init` matches what indexing will
+	// actually extract.
+	walker.CustomIgnore = []string{".pincherignore"}
 
 	walkErr := make(chan error, 1)
 	go func() { walkErr <- walker.Start() }()

@@ -65,9 +65,9 @@ type whyEmptyEntry struct {
 // TestWhyEmpty_CatalogCoversEveryConstant gate fails when they drift.
 var whyEmptyCatalog = map[string]whyEmptyEntry{
 	EmptyReasonNoProjectIndexed: {
-		Reason:      EmptyReasonNoProjectIndexed,
-		Title:       "Project arg didn't resolve",
-		WhenItFires: "The `project` argument resolved to nothing on disk OR the MCP session has no project and the caller didn't pass one explicitly.",
+		Reason:         EmptyReasonNoProjectIndexed,
+		Title:          "Project arg didn't resolve",
+		WhenItFires:    "The `project` argument resolved to nothing on disk OR the MCP session has no project and the caller didn't pass one explicitly.",
 		RecoveryAction: "Call `list` to see what's indexed. If the intended project isn't there, call `index path=<absolute>` to add it.",
 		RecoverySteps: []map[string]string{
 			{"tool": "list", "args": "{}", "why": "see indexed projects"},
@@ -76,9 +76,9 @@ var whyEmptyCatalog = map[string]whyEmptyEntry{
 		CatalogAnchor: "docs/empty-reasons.md#no_project_indexed",
 	},
 	EmptyReasonStaleIndex: {
-		Reason:      EmptyReasonStaleIndex,
-		Title:       "Index is stale vs running binary or working tree",
-		WhenItFires: "The running binary is newer than the project's schema_version_at_index OR the working tree drifted vs index without a re-index.",
+		Reason:         EmptyReasonStaleIndex,
+		Title:          "Index is stale vs running binary or working tree",
+		WhenItFires:    "The running binary is newer than the project's schema_version_at_index OR the working tree drifted vs index without a re-index.",
 		RecoveryAction: "Call `index force=true path=<project>` to refresh against current binary + tree. Pre-empt next time by checking `health` for `binary_stale`.",
 		RecoverySteps: []map[string]string{
 			{"tool": "index", "args": `{"path":"<project>","force":true}`, "why": "refresh against current binary"},
@@ -87,9 +87,9 @@ var whyEmptyCatalog = map[string]whyEmptyEntry{
 		CatalogAnchor: "docs/empty-reasons.md#stale_index",
 	},
 	EmptyReasonUnsupportedLanguage: {
-		Reason:      EmptyReasonUnsupportedLanguage,
-		Title:       "Language has no extractor registered",
-		WhenItFires: "File extension was detected but no extractor exists for that language. Currently only Haskell (post-v0.63).",
+		Reason:         EmptyReasonUnsupportedLanguage,
+		Title:          "Language has no extractor registered",
+		WhenItFires:    "File extension was detected but no extractor exists for that language. Currently only Haskell (post-v0.63).",
 		RecoveryAction: "Language-support gap, not a workflow bug. Either pick a different file or file an issue requesting the extractor. `architecture` lists which languages have edges.",
 		RecoverySteps: []map[string]string{
 			{"tool": "architecture", "args": `{"aspects":["languages"]}`, "why": "see supported-language list"},
@@ -97,9 +97,9 @@ var whyEmptyCatalog = map[string]whyEmptyEntry{
 		CatalogAnchor: "docs/empty-reasons.md#unsupported_language",
 	},
 	EmptyReasonLowConfidenceExtractor: {
-		Reason:      EmptyReasonLowConfidenceExtractor,
-		Title:       "min_confidence floor excluded every match",
-		WhenItFires: "Extractor ran but every symbol fell below the min_confidence threshold for this language tier.",
+		Reason:         EmptyReasonLowConfidenceExtractor,
+		Title:          "min_confidence floor excluded every match",
+		WhenItFires:    "Extractor ran but every symbol fell below the min_confidence threshold for this language tier.",
 		RecoveryAction: "Lower min_confidence: AST tier = 1.0, stable-regex = 0.85, approximate-regex = 0.70. Default for `search` / `query` / `dead_code` is 0.95 — too strict for regex-tier languages.",
 		RecoverySteps: []map[string]string{
 			{"tool": "search", "args": `{"query":"<term>","min_confidence":0.85}`, "why": "widen to stable-regex tier"},
@@ -108,9 +108,9 @@ var whyEmptyCatalog = map[string]whyEmptyEntry{
 		CatalogAnchor: "docs/empty-reasons.md#low_confidence_extractor",
 	},
 	EmptyReasonSameFileOnly: {
-		Reason:      EmptyReasonSameFileOnly,
-		Title:       "Cross-file resolver unavailable for this language",
-		WhenItFires: "Language has same-file CALLS edges but no cross-file resolver yet. trace direction=out returns empty when crossing file boundaries.",
+		Reason:         EmptyReasonSameFileOnly,
+		Title:          "Cross-file resolver unavailable for this language",
+		WhenItFires:    "Language has same-file CALLS edges but no cross-file resolver yet. trace direction=out returns empty when crossing file boundaries.",
 		RecoveryAction: "Scope to same-file (use `neighborhood`). Cross-file resolution is feature work — track via the language's tier-promotion issue.",
 		RecoverySteps: []map[string]string{
 			{"tool": "neighborhood", "args": `{"id":"<seed-id>"}`, "why": "same-file siblings (no cross-file dependency)"},
@@ -118,9 +118,9 @@ var whyEmptyCatalog = map[string]whyEmptyEntry{
 		CatalogAnchor: "docs/empty-reasons.md#same_file_only",
 	},
 	EmptyReasonCrossFileUnavailable: {
-		Reason:      EmptyReasonCrossFileUnavailable,
-		Title:       "No edge graph for this language",
-		WhenItFires: "Extractor exists but emits zero edges of any kind (regex-tier pre-v0.62 for CALLS). No call graph to traverse.",
+		Reason:         EmptyReasonCrossFileUnavailable,
+		Title:          "No edge graph for this language",
+		WhenItFires:    "Extractor exists but emits zero edges of any kind (regex-tier pre-v0.62 for CALLS). No call graph to traverse.",
 		RecoveryAction: "Use direct symbol search instead of edge traversal — `search` and `symbol` don't depend on the call graph.",
 		RecoverySteps: []map[string]string{
 			{"tool": "search", "args": `{"query":"<term>"}`, "why": "direct symbol lookup, no edges needed"},
@@ -128,9 +128,9 @@ var whyEmptyCatalog = map[string]whyEmptyEntry{
 		CatalogAnchor: "docs/empty-reasons.md#cross_file_unavailable",
 	},
 	EmptyReasonQueryTooNarrow: {
-		Reason:      EmptyReasonQueryTooNarrow,
-		Title:       "Combined filters excluded everything",
-		WhenItFires: "Query is well-formed and corpus is non-empty, but kind + language + corpus + min_confidence + file_pattern filters excluded every match.",
+		Reason:         EmptyReasonQueryTooNarrow,
+		Title:          "Combined filters excluded everything",
+		WhenItFires:    "Query is well-formed and corpus is non-empty, but kind + language + corpus + min_confidence + file_pattern filters excluded every match.",
 		RecoveryAction: "Drop one filter at a time. The diagnosis names the most-restrictive filter — drop that one first.",
 		RecoverySteps: []map[string]string{
 			{"tool": "search", "args": `{"query":"<term>"}`, "why": "widest possible — no filters"},
@@ -138,9 +138,9 @@ var whyEmptyCatalog = map[string]whyEmptyEntry{
 		CatalogAnchor: "docs/empty-reasons.md#query_too_narrow",
 	},
 	EmptyReasonNoResultsInCorpus: {
-		Reason:      EmptyReasonNoResultsInCorpus,
-		Title:       "Symbol doesn't appear in the indexed corpus",
-		WhenItFires: "Query is fine, filters are fine, but the symbol genuinely isn't in the index. No filter relaxation will rescue it.",
+		Reason:         EmptyReasonNoResultsInCorpus,
+		Title:          "Symbol doesn't appear in the indexed corpus",
+		WhenItFires:    "Query is fine, filters are fine, but the symbol genuinely isn't in the index. No filter relaxation will rescue it.",
 		RecoveryAction: "(1) Confirm spelling — try a partial query. (2) Confirm the project is scoped. (3) The symbol may live outside the indexed paths — index the parent directory or sibling repo.",
 		RecoverySteps: []map[string]string{
 			{"tool": "search", "args": `{"query":"<partial-term>"}`, "why": "widen with prefix to catch typos"},
@@ -149,9 +149,9 @@ var whyEmptyCatalog = map[string]whyEmptyEntry{
 		CatalogAnchor: "docs/empty-reasons.md#no_results_in_corpus",
 	},
 	EmptyReasonCapDroppedAll: {
-		Reason:      EmptyReasonCapDroppedAll,
-		Title:       "Result cap (limit / offset / max_hops) dropped everything",
-		WhenItFires: "Candidates matched but every one was dropped by a cap. Canonical instance: offset past the last result page.",
+		Reason:         EmptyReasonCapDroppedAll,
+		Title:          "Result cap (limit / offset / max_hops) dropped everything",
+		WhenItFires:    "Candidates matched but every one was dropped by a cap. Canonical instance: offset past the last result page.",
 		RecoveryAction: "Raise the cap or paginate back. The diagnosis names the specific cap that fired.",
 		RecoverySteps: []map[string]string{
 			{"tool": "search", "args": `{"query":"<term>","offset":0,"limit":50}`, "why": "rewind to start"},
@@ -159,9 +159,9 @@ var whyEmptyCatalog = map[string]whyEmptyEntry{
 		CatalogAnchor: "docs/empty-reasons.md#cap_dropped_all",
 	},
 	EmptyReasonIncrementalNoChange: {
-		Reason:      EmptyReasonIncrementalNoChange,
-		Title:       "Indexer ran with nothing to do",
-		WhenItFires: "index ran but every file was unchanged (incremental fast path) OR reprocessed files had symbol-neutral edits. Not a bug.",
+		Reason:         EmptyReasonIncrementalNoChange,
+		Title:          "Indexer ran with nothing to do",
+		WhenItFires:    "index ran but every file was unchanged (incremental fast path) OR reprocessed files had symbol-neutral edits. Not a bug.",
 		RecoveryAction: "Expected. If verifying a recent edit, this confirms it didn't change the symbol surface. If re-extraction is genuinely needed (binary upgrade, extractor change), call `index force=true`.",
 		RecoverySteps: []map[string]string{
 			{"tool": "index", "args": `{"path":"<project>","force":true}`, "why": "force re-extraction if binary/extractor changed"},
@@ -169,19 +169,19 @@ var whyEmptyCatalog = map[string]whyEmptyEntry{
 		CatalogAnchor: "docs/empty-reasons.md#incremental_no_change",
 	},
 	EmptyReasonAllFilesBlocked: {
-		Reason:      EmptyReasonAllFilesBlocked,
-		Title:       "Every file filtered as bloat",
-		WhenItFires: "Every discovered file was filtered by ast.ShouldSkip (lockfiles, minified bundles, source maps, generated code). Expected for vendor-only directories.",
-		RecoveryAction: "Either the path is wrong (you indexed node_modules/ or dist/) or the path has nothing extractable. Check the path; if correct, pick a different directory.",
+		Reason:         EmptyReasonAllFilesBlocked,
+		Title:          "Every file filtered as bloat",
+		WhenItFires:    "Every discovered file was filtered by ast.ShouldSkip (lockfiles, minified bundles, source maps, generated code). Expected for vendor-only directories. A .pincherignore file (gitignore semantics) covering every source file produces the same shape — the walker drops ignored files before extraction.",
+		RecoveryAction: "Either the path is wrong (you indexed node_modules/ or dist/), the path has nothing extractable, or an over-broad .pincherignore / .gitignore rule excluded everything. Check the path and any ignore files at the project root; if correct, pick a different directory.",
 		RecoverySteps: []map[string]string{
 			{"tool": "list", "args": "{}", "why": "compare project root against intent"},
 		},
 		CatalogAnchor: "docs/empty-reasons.md#all_files_blocked",
 	},
 	EmptyReasonExtractorEmittedNothing: {
-		Reason:      EmptyReasonExtractorEmittedNothing,
-		Title:       "Files processed but no symbols emitted",
-		WhenItFires: "Files weren't blocked but the extractor returned zero symbols. Usually a language-detection gap (extension not mapped) or malformed source.",
+		Reason:         EmptyReasonExtractorEmittedNothing,
+		Title:          "Files processed but no symbols emitted",
+		WhenItFires:    "Files weren't blocked but the extractor returned zero symbols. Usually a language-detection gap (extension not mapped) or malformed source.",
 		RecoveryAction: "Call `doctor` to see extraction_failures with reason codes. If extraction_failures is empty too, the file extensions may not be mapped to any extractor.",
 		RecoverySteps: []map[string]string{
 			{"tool": "doctor", "args": "{}", "why": "extraction_failures lists parse/heuristic failures with reason codes"},
@@ -189,9 +189,9 @@ var whyEmptyCatalog = map[string]whyEmptyEntry{
 		CatalogAnchor: "docs/empty-reasons.md#extractor_emitted_nothing",
 	},
 	EmptyReasonTargetNotResolved: {
-		Reason:      EmptyReasonTargetNotResolved,
-		Title:       "Composite target didn't resolve to a symbol",
-		WhenItFires: "A composite (plan_change / investigate_failure / etc.) accepted input that LOOKED valid for its resolution heuristic — file extension, name, or symbol-id shape — but couldn't find a matching symbol in the index. The data isn't missing; the input was the wrong shape for THIS project's index.",
+		Reason:         EmptyReasonTargetNotResolved,
+		Title:          "Composite target didn't resolve to a symbol",
+		WhenItFires:    "A composite (plan_change / investigate_failure / etc.) accepted input that LOOKED valid for its resolution heuristic — file extension, name, or symbol-id shape — but couldn't find a matching symbol in the index. The data isn't missing; the input was the wrong shape for THIS project's index.",
 		RecoveryAction: "Re-issue with a more specific target, or run `search` first to confirm what shape resolves. `list` confirms the project scope.",
 		RecoverySteps: []map[string]string{
 			{"tool": "search", "args": `{"query":"<your-target>"}`, "why": "confirm what BM25 surfaces — if 0 hits, the symbol isn't indexed; if hits, copy the id"},

@@ -69,7 +69,10 @@ const (
 
 	// all_files_blocked: every discovered file was filtered by
 	// ast.ShouldSkip (lockfiles, minified bundles, source maps). Expected
-	// for vendor-only or build-artifact-only directories.
+	// for vendor-only or build-artifact-only directories. An over-broad
+	// .pincherignore (or .gitignore) that excludes every source file
+	// produces the same shape — the walker drops ignored files before
+	// extraction, so they never even reach ast.ShouldSkip.
 	EmptyReasonAllFilesBlocked = "all_files_blocked"
 
 	// extractor_emitted_nothing: files were processed and not blocked, but
