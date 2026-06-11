@@ -8741,15 +8741,19 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 		return errResult(err.Error()), nil
 	}
 
-	// Run git diff
-	diffOutput, diffErr := runGitDiff(root, scope)
-	if diffErr != nil {
+	// Diff → changed symbols → blast radius → impacted tests. The
+	// pipeline lives in AnalyzeChanges (changes_analysis.go) so the
+	// `pincher test-impacted` CLI runs the exact same analysis instead
+	// of forking the logic. The only error it returns is a git-diff
+	// failure; everything downstream is best-effort.
+	analysis, analysisErr := AnalyzeChanges(ctx, s.store, s.indexer, projectID, root, scope, depth)
+	if analysisErr != nil {
 		// Rich envelope so the agent learns the valid scopes instead of
 		// staring at a bare "git diff failed". Most common cause is a
 		// base-branch typo (`base:mian`) or a non-existent branch — the
 		// next_steps lead them at the supported shapes.
 		return s.errResultRich(
-			fmt.Sprintf("git diff failed: %v", diffErr),
+			analysisErr.Error(),
 			[]map[string]string{
 				{"tool": "changes", "args": `{"scope":"unstaged"}`,
 					"why": "default: working-tree changes not yet staged"},
@@ -8761,120 +8765,25 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 					"why": "committed-only diff vs master's merge-base — preview a PR's blast radius. Use the actual base branch name (master/main/develop/…)"},
 			}), nil
 	}
+	changedFiles := analysis.ChangedFiles
+	changedSymbols := analysis.ChangedSymbols
+	testsToRun := analysis.TestsToRun
 
-	// Parse changed files from diff
-	changedFiles := parseGitDiffFiles(diffOutput)
-
-	// #502: also fetch the unified diff so per-file hunk ranges can
-	// intersect each symbol's [StartLine, EndLine]. Pre-fix, every
-	// symbol in any changed file was treated as "changed" — adding
-	// one function to a 6000-line file expanded the blast radius BFS
-	// to half the codebase. The hunk fetch is best-effort: on error
-	// we fall back to the pre-#502 behaviour (all symbols in changed
-	// files) so the tool stays usable when git options change shape.
-	hunkDiff, hunkErr := runGitDiffHunks(root, scope)
-	var hunksByFile map[string][][2]int
-	if hunkErr == nil {
-		hunksByFile = parseGitDiffHunks(hunkDiff)
-	}
-
-	// Find symbols in changed files. When we have hunks for a file,
-	// keep only symbols whose line range overlaps an actual edit.
-	// When hunks aren't available for a file (untracked content,
-	// rename without content change, parse miss), fall back to
-	// "all symbols in file" — better to over-report than under-report
-	// for the safety-check use case.
-	var changedSymbols []db.Symbol
-	for _, f := range changedFiles {
-		syms, err := s.store.GetSymbolsForFile(projectID, f)
-		if err != nil {
-			continue
-		}
-		hunks, hasHunks := hunksByFile[f]
-		if !hasHunks || len(hunks) == 0 {
-			changedSymbols = append(changedSymbols, syms...)
-			continue
-		}
-		for _, sym := range syms {
-			if symbolOverlapsHunks(sym.StartLine, sym.EndLine, hunks) {
-				changedSymbols = append(changedSymbols, sym)
-			}
-		}
-	}
-
-	// BFS trace for blast radius. Use TraceByID so a changed `Run` /
-	// `Handler` / `Open` resolves to the *exact* symbol that changed,
-	// not whichever same-named symbol the name-based lookup picks first
-	// (#5). The previous Trace(name, ...) path computed blast radius
-	// from a sibling symbol when one name had multiple definitions.
-	//
-	// #247 #4: alongside the impacted-symbol collection, track which
-	// test symbols reach each changed symbol — separately from the
-	// `seen` dedupe so a test reached via multiple changed symbols gets
-	// its overlap counted, not collapsed into the first path. Used to
-	// produce the tests_to_run array sorted by overlap descending.
-	// #330: pre-allocate as zero-len so the JSON field is always [], never
+	// Project the impacted set into the response map shape. #330:
+	// pre-allocate as zero-len so the JSON field is always [], never
 	// null. A nil slice marshals to null, forcing every consumer to
 	// null-check; same fix shape as #328 on health.extraction_coverage.
-	impacted := []map[string]any{}
-	seen := make(map[string]bool)
-	testHits := make(map[string]map[string]bool) // test sym ID → set of changed sym IDs that reach it
-	testSyms := make(map[string]db.Symbol)       // test sym ID → the symbol (for output projection)
-	for _, sym := range changedSymbols {
-		hops, err := s.indexer.TraceByID(ctx, projectID, sym.ID, "inbound", depth, true)
-		if err != nil {
-			continue
-		}
-		for _, h := range hops {
-			if h.Symbol.IsTest {
-				if _, ok := testHits[h.Symbol.ID]; !ok {
-					testHits[h.Symbol.ID] = make(map[string]bool)
-					testSyms[h.Symbol.ID] = h.Symbol
-				}
-				testHits[h.Symbol.ID][sym.ID] = true
-			}
-			if seen[h.Symbol.ID] {
-				continue
-			}
-			seen[h.Symbol.ID] = true
-			impacted = append(impacted, map[string]any{
-				"id":         h.Symbol.ID,
-				"name":       h.Symbol.Name,
-				"kind":       h.Symbol.Kind,
-				"file_path":  h.Symbol.FilePath,
-				"risk":       h.Risk,
-				"changed_by": sym.Name,
-			})
-		}
-	}
-
-	// Build tests_to_run sorted by overlap descending (then test ID
-	// ascending for stable output). Overlap = how many distinct
-	// changed symbols this test reaches; higher overlap = more bang
-	// per re-run. Deterministic ordering keeps any future snapshot
-	// test on this surface stable.
-	type testRow struct {
-		ID       string `json:"id"`
-		Name     string `json:"name"`
-		FilePath string `json:"file_path"`
-		Overlap  int    `json:"overlap"`
-	}
-	testsToRun := make([]testRow, 0, len(testHits))
-	for testID, hits := range testHits {
-		sym := testSyms[testID]
-		testsToRun = append(testsToRun, testRow{
-			ID:       testID,
-			Name:     sym.Name,
-			FilePath: sym.FilePath,
-			Overlap:  len(hits),
+	impacted := make([]map[string]any, 0, len(analysis.Impacted))
+	for _, item := range analysis.Impacted {
+		impacted = append(impacted, map[string]any{
+			"id":         item.ID,
+			"name":       item.Name,
+			"kind":       item.Kind,
+			"file_path":  item.FilePath,
+			"risk":       item.Risk,
+			"changed_by": item.ChangedBy,
 		})
 	}
-	sort.Slice(testsToRun, func(i, j int) bool {
-		if testsToRun[i].Overlap != testsToRun[j].Overlap {
-			return testsToRun[i].Overlap > testsToRun[j].Overlap
-		}
-		return testsToRun[i].ID < testsToRun[j].ID
-	})
 
 	// Build risk summary — count the FULL impacted set before any trim.
 	riskCounts := map[string]int{"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
