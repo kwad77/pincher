@@ -67,6 +67,16 @@ fi
 # adaptation, and `project` is a first-class argument every
 # code-navigation tool already accepts.
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# The corpus transcripts were captured against the FULL/rich tool
+# surface (tools_list_must_include names non-core tools like
+# architecture and investigate_failure). Since the v1.6 default flip
+# (#2005 → core/lean), pin the full surface explicitly — same
+# default-independence rationale as the tool-contract golden: this
+# gate validates host wire-shape conformance of the complete surface,
+# while the dieted default advertisement has its own gates
+# (TestToolContract_DefaultSurface, TestToolset_CoreSurface).
+export PINCHER_TOOLSET=full
+export PINCHER_SCHEMA_STYLE=rich
 # One temp root for the whole run — the shared index DB plus every
 # host's per-replay scratch — torn down by a single EXIT trap (a
 # per-host `trap ... EXIT` would clobber it, and each other).
