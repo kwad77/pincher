@@ -44,6 +44,18 @@ func newTestServer(t *testing.T) (*Server, *db.Store, string) {
 	return srv, store, dir
 }
 
+// newRichTestServer is newTestServer pinned to the pre-v1.6 FULL/rich
+// surface (the v1.6 default flipped to core/lean, #2005). Description-
+// contract tests assert the RICH literals — the complete documented
+// surface — so they pin the env instead of riding the shipped default.
+// Not parallel-safe (t.Setenv): callers must not use t.Parallel.
+func newRichTestServer(t *testing.T) (*Server, *db.Store, string) {
+	t.Helper()
+	t.Setenv("PINCHER_TOOLSET", "full")
+	t.Setenv("PINCHER_SCHEMA_STYLE", "rich")
+	return newTestServer(t)
+}
+
 // makeReq builds a minimal CallToolRequest with JSON args.
 func makeReq(args map[string]any) *mcp.CallToolRequest {
 	b, _ := json.Marshal(args)

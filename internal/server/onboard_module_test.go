@@ -463,8 +463,7 @@ func TestOnboardModule_NoEntryPoints_EmitsWarningAndNextStep_1879(t *testing.T) 
 // TestOnboardModule_IsRegistered — gate: tool is registered and
 // the description mentions orientation intent.
 func TestOnboardModule_IsRegistered(t *testing.T) {
-	t.Parallel()
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	tool, ok := srv.tools["onboard_module"]
 	if !ok {
 		t.Fatal("onboard_module not registered in srv.tools")

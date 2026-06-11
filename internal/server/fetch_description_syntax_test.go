@@ -26,7 +26,7 @@ import (
 //     recommendation matches the schema's vocabulary).
 
 func TestFetchDescription_NamesCorrectKindSyntax(t *testing.T) {
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	tool := srv.tools["fetch"]
 	if tool == nil {
 		t.Fatal("fetch tool not registered")
@@ -49,7 +49,7 @@ func TestFetchDescription_NamesCorrectKindSyntax(t *testing.T) {
 // won't slip back. This was the stale form that misled agents
 // into passing it as a query string.
 func TestFetchDescription_DoesNotRecommendFTSOperatorSyntax(t *testing.T) {
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	tool := srv.tools["fetch"]
 	if tool == nil {
 		t.Fatal("fetch tool not registered")

@@ -32,7 +32,7 @@ import (
 //     label in the response.
 
 func TestHealthDescription_NamesThreeTiers(t *testing.T) {
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	tool := srv.tools["health"]
 	if tool == nil {
 		t.Fatal("health tool not registered")

@@ -36,7 +36,7 @@ import (
 
 func findQueryToolSchema(t *testing.T) map[string]any {
 	t.Helper()
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	tool := srv.tools["query"]
 	if tool == nil {
 		t.Fatal("query tool not registered")

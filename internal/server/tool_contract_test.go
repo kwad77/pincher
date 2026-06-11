@@ -32,8 +32,17 @@ var updateGolden = flag.Bool("update-tool-contract", false,
 // when the change ships, or revisit the change. A non-diffable rewrite
 // (whitespace, comment shuffles inside the schema string) should produce
 // no diff because the comparison happens on the parsed JSON tree.
+//
+// The golden pins the FULL/rich surface explicitly (env set below, not
+// inherited): the contract documents the complete tool surface — every
+// registered tool with its full description — independent of the
+// shipped default, which flipped to core/lean in v1.6 (#2005). The
+// default-mode advertisement has its own gate:
+// TestToolContract_DefaultSurface below plus the toolset tests in
+// schema_diet_test.go.
 func TestToolContract_GoldenFile(t *testing.T) {
-	t.Parallel()
+	t.Setenv("PINCHER_TOOLSET", "full")
+	t.Setenv("PINCHER_SCHEMA_STYLE", "rich")
 	srv, _, _ := newTestServer(t)
 
 	// Build a stable, parsed-and-re-encoded snapshot. We intentionally
@@ -113,6 +122,58 @@ func TestToolContract_GoldenFile(t *testing.T) {
 			"and commit the diff alongside the version bump.\n\n"+
 			"first divergent characters: ...%s",
 			goldenPath, firstDiff(string(got), string(want)))
+	}
+}
+
+// TestToolContract_DefaultSurface pins what a tools/list client gets
+// with NO env set — the shipped default, core/lean since v1.6 (#2005:
+// full/rich at scale = 1.44M tokens vs 475k core+lean at identical
+// accuracy). The advertisement is exactly coreToolset, every
+// description is the lean transform of its rich counterpart, and the
+// full surface stays registered underneath (HTTP /v1/<tool>, OpenAPI,
+// `batch` dispatch). Restoring the old default is an explicit opt-out:
+// PINCHER_TOOLSET=full PINCHER_SCHEMA_STYLE=rich.
+func TestToolContract_DefaultSurface(t *testing.T) {
+	t.Setenv("PINCHER_TOOLSET", "")
+	t.Setenv("PINCHER_SCHEMA_STYLE", "")
+	srv, _, _ := newTestServer(t)
+
+	// Advertisement == coreToolset, both directions.
+	for name := range srv.mcpVisible {
+		if !coreToolset[name] {
+			t.Errorf("default surface advertises %q over MCP — not in coreToolset", name)
+		}
+	}
+	for name := range coreToolset {
+		if !srv.mcpVisible[name] {
+			t.Errorf("default surface does not advertise core tool %q over MCP", name)
+		}
+	}
+
+	// Full registration preserved underneath: REST never loses tools.
+	for name := range expectedMCPTools {
+		if _, ok := srv.handlers[name]; !ok {
+			t.Errorf("default surface dropped %q from s.handlers — HTTP /v1/%s would 404", name, name)
+		}
+		if _, ok := srv.tools[name]; !ok {
+			t.Errorf("default surface dropped %q from s.tools — OpenAPI/contract surface broken", name)
+		}
+	}
+
+	// Descriptions are the lean transform of the rich ones.
+	t.Setenv("PINCHER_TOOLSET", "full")
+	t.Setenv("PINCHER_SCHEMA_STYLE", "rich")
+	rich, _, _ := newTestServer(t)
+	for name, tool := range srv.tools {
+		richTool := rich.tools[name]
+		if richTool == nil {
+			t.Errorf("tool %q missing from rich-mode server", name)
+			continue
+		}
+		if want := leanToolDescription(richTool.Description); tool.Description != want {
+			t.Errorf("default description for %q is not the lean transform:\n got %q\nwant %q",
+				name, tool.Description, want)
+		}
 	}
 }
 

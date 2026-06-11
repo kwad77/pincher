@@ -18,16 +18,20 @@ import (
 //     EVERY tool stays registered on s.handlers/s.tools, so the HTTP
 //     /v1/<tool> routes, the OpenAPI spec, the tool-contract golden and
 //     `batch` sub-query dispatch are unaffected — core mode narrows the
-//     tools/list advertisement only. Default is `full` this release;
-//     the flip to `core` is a future measured decision (see
-//     docs/reference/http-api.md).
+//     tools/list advertisement only. Default is `core` since v1.6: the
+//     scale round (PR #2005) measured full/rich at 1.44M total tokens
+//     vs 475k for core+lean over the same 8-question run at identical
+//     accuracy — 3.0x waste. PINCHER_TOOLSET=full restores the full
+//     advertisement (see docs/reference/http-api.md).
 //
 //  2. Schema style (PINCHER_SCHEMA_STYLE=rich|lean): `lean` applies a
 //     deterministic transform at registration time — each tool
 //     description is cut to its first sentence and every arg
 //     description is cut to its first sentence then capped at
 //     leanArgDescMax chars. No hand-written variants; the pedagogy
-//     lives on in `guide` and docs/reference/tools.md.
+//     lives on in `guide` and docs/reference/tools.md. Default is
+//     `lean` since v1.6 (same #2005 measurement);
+//     PINCHER_SCHEMA_STYLE=rich restores the full descriptions.
 //
 // Both knobs are read once at New() (like PINCHER_META_CAPABILITIES);
 // they cannot toggle mid-process. The schema-weight gate test
@@ -64,25 +68,29 @@ var coreToolset = map[string]bool{
 }
 
 // parseToolsetEnv reads PINCHER_TOOLSET and returns the effective
-// toolset mode. Only the canonical "core" narrows the surface; anything
-// else (unset, "full", a typo) keeps the full default — same
-// unknown-value safety as parseToolDescriptionsEnv (#1088): a typo'd
-// "coree" doesn't silently hide 24 tools.
+// toolset mode. Only the canonical "full" restores the full
+// advertisement; anything else (unset, "core", a typo) gets the core
+// default — same unknown-value rule as parseToolDescriptionsEnv
+// (#1088) and parseSchemaStyleEnv: only the canonical non-default
+// value switches, unknowns land on the default, never a third state.
+// A typo'd "fulll" still keeps every tool reachable over HTTP
+// /v1/<tool> and `batch` — core narrows tools/list only.
 func parseToolsetEnv(v string) string {
-	if strings.ToLower(strings.TrimSpace(v)) == toolsetCore {
-		return toolsetCore
+	if strings.ToLower(strings.TrimSpace(v)) == toolsetFull {
+		return toolsetFull
 	}
-	return toolsetFull
+	return toolsetCore
 }
 
 // parseSchemaStyleEnv reads PINCHER_SCHEMA_STYLE and returns the
-// effective style. Only the canonical "lean" opts in; anything else
-// keeps the rich default.
+// effective style. Only the canonical "rich" restores the full
+// descriptions; anything else (unset, "lean", a typo) keeps the lean
+// default.
 func parseSchemaStyleEnv(v string) string {
-	if strings.ToLower(strings.TrimSpace(v)) == schemaStyleLean {
-		return schemaStyleLean
+	if strings.ToLower(strings.TrimSpace(v)) == schemaStyleRich {
+		return schemaStyleRich
 	}
-	return schemaStyleRich
+	return schemaStyleLean
 }
 
 // leanArgDescMax caps each arg description under lean style. ~120 chars

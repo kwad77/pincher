@@ -234,8 +234,7 @@ func TestWhyEmpty_NoDBQueryRequired(t *testing.T) {
 
 // TestWhyEmpty_IsRegistered — gate.
 func TestWhyEmpty_IsRegistered(t *testing.T) {
-	t.Parallel()
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	tool, ok := srv.tools["why_empty"]
 	if !ok {
 		t.Fatal("why_empty not registered in srv.tools")

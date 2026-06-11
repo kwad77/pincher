@@ -21,8 +21,7 @@ import (
 // description fails fast in CI — same description-vs-runtime
 // parity shape pinned by TestToolContract_GoldenFile.
 func TestInitTool_DescriptionMentionsEveryTarget(t *testing.T) {
-	t.Parallel()
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 
 	initTool, ok := srv.tools["init"]
 	if !ok {

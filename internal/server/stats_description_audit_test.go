@@ -38,7 +38,7 @@ import (
 //     runtime can't drift.
 
 func TestStatsDescription_NamesAllSections(t *testing.T) {
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	tool := srv.tools["stats"]
 	if tool == nil {
 		t.Fatal("stats tool not registered")

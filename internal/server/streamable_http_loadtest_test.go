@@ -52,6 +52,10 @@ func TestStreamableHTTP_ConcurrentSessions(t *testing.T) {
 }
 
 func runStreamableLoadtest(t *testing.T, sessions, callsPer int) {
+	// The warmup call exercises `health`, which is not on the core
+	// tools/list default (v1.6 flip, #2005) — pin the full toolset; this
+	// test is about transport concurrency, not the advertised surface.
+	t.Setenv("PINCHER_TOOLSET", "full")
 	srv, store, _ := newTestServer(t)
 	srv.SetMCPHTTPPath("/mcp")
 

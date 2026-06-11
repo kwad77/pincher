@@ -3,7 +3,6 @@
 package server
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -36,16 +35,8 @@ func TestParseToolDescriptionsEnv_Cases(t *testing.T) {
 // without the env opt-in, the dense pedagogical descriptions every
 // consumer sees today must survive.
 func TestApplyShortDescriptions_DefaultLeavesLongForm(t *testing.T) {
-	t.Parallel()
-	prev := os.Getenv("PINCHER_TOOL_DESCRIPTIONS")
-	os.Unsetenv("PINCHER_TOOL_DESCRIPTIONS")
-	t.Cleanup(func() {
-		if prev != "" {
-			os.Setenv("PINCHER_TOOL_DESCRIPTIONS", prev)
-		}
-	})
-
-	srv, _, _ := newTestServer(t)
+	t.Setenv("PINCHER_TOOL_DESCRIPTIONS", "")
+	srv, _, _ := newRichTestServer(t)
 	trace, ok := srv.tools["trace"]
 	if !ok || trace == nil {
 		t.Fatal("trace tool not registered")
@@ -108,9 +99,11 @@ func TestApplyShortDescriptions_OtherToolsUntouched(t *testing.T) {
 // than the long form it replaces. Otherwise the trim isn't earning
 // its keep.
 func TestShortToolDescriptions_AllShorterThanOriginals(t *testing.T) {
-	// Capture long descriptions first (default-off path).
+	// Capture long descriptions first (default-off path; rich style —
+	// the v1.6 lean default would first-sentence the long forms and
+	// void the comparison).
 	t.Setenv("PINCHER_TOOL_DESCRIPTIONS", "")
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	longLen := make(map[string]int, len(shortToolDescriptions))
 	for name := range shortToolDescriptions {
 		if tool, ok := srv.tools[name]; ok && tool != nil {

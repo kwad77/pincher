@@ -335,8 +335,7 @@ func TestAuditUnused_IdleIndexer_StillReturnsCandidates(t *testing.T) {
 }
 
 func TestAuditUnused_IsRegistered(t *testing.T) {
-	t.Parallel()
-	srv, _, _ := newTestServer(t)
+	srv, _, _ := newRichTestServer(t)
 	tool, ok := srv.tools["audit_unused"]
 	if !ok {
 		t.Fatal("audit_unused not registered in srv.tools")

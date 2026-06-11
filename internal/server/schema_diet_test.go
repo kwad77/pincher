@@ -9,19 +9,21 @@ import (
 
 // Schema diet (#2003) — toolset-mode surface contracts + lean-transform
 // unit tests. The weight numbers themselves are pinned in
-// schema_weight_test.go; the FULL-mode schema bytes are pinned by the
-// tool-contract golden (unchanged when the env is unset — zero default
-// drift).
+// schema_weight_test.go; the FULL/rich schema bytes are pinned by the
+// tool-contract golden (which sets the env explicitly — the contract
+// documents the complete surface, independent of the core/lean default
+// shipped since v1.6, #2005).
 
 func TestParseToolsetEnv(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
-		"":      toolsetFull,
+		"":      toolsetCore, // v1.6 default flip (#2005)
 		"full":  toolsetFull,
+		" FULL": toolsetFull,
 		"core":  toolsetCore,
 		" CORE": toolsetCore,
-		"coree": toolsetFull, // typo safety: unknown values keep the full default
-		"lean":  toolsetFull,
+		"fulll": toolsetCore, // unknown values land on the default, never a third state
+		"lean":  toolsetCore,
 	}
 	for in, want := range cases {
 		if got := parseToolsetEnv(in); got != want {
@@ -33,11 +35,12 @@ func TestParseToolsetEnv(t *testing.T) {
 func TestParseSchemaStyleEnv(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
-		"":      schemaStyleRich,
+		"":      schemaStyleLean, // v1.6 default flip (#2005)
 		"rich":  schemaStyleRich,
+		"RICH ": schemaStyleRich,
 		"lean":  schemaStyleLean,
 		"LEAN ": schemaStyleLean,
-		"short": schemaStyleRich, // PINCHER_TOOL_DESCRIPTIONS=short is a different knob
+		"short": schemaStyleLean, // PINCHER_TOOL_DESCRIPTIONS=short is a different knob; unknowns land on the default
 	}
 	for in, want := range cases {
 		if got := parseSchemaStyleEnv(in); got != want {
@@ -117,14 +120,15 @@ func TestToolset_CoreSurface(t *testing.T) {
 	}
 }
 
-// TestToolset_FullDefault pins the default: with the env unset (or set
-// to anything but "core"), every registered tool is MCP-visible.
-func TestToolset_FullDefault(t *testing.T) {
-	t.Setenv("PINCHER_TOOLSET", "")
+// TestToolset_FullOptOut pins the opt-out: PINCHER_TOOLSET=full
+// restores the pre-v1.6 behavior — every registered tool MCP-visible.
+// (The core default itself is pinned by TestToolContract_DefaultSurface.)
+func TestToolset_FullOptOut(t *testing.T) {
+	t.Setenv("PINCHER_TOOLSET", "full")
 	srv, _, _ := newTestServer(t)
 	for name := range expectedMCPTools {
 		if !srv.mcpVisible[name] {
-			t.Errorf("full mode (default) does not advertise %q over MCP", name)
+			t.Errorf("full mode does not advertise %q over MCP", name)
 		}
 	}
 }
