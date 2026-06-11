@@ -524,6 +524,62 @@ var outputSchemas = map[string]string{
 		}
 	}`,
 
+	// 16h. verify_change — loop-substrate PR-10. The post-edit gate:
+	// changes analysis + ranked tests + predicted-vs-actual plan
+	// comparison + possibly-orphaned check, one envelope.
+	// plan_comparison is OPTIONAL — present only when `target` was
+	// passed AND a plan_change run is cached for it.
+	"verify_change": `{
+		"type":"object",
+		"required":["summary","changed_symbols","tests_to_run","possibly_orphaned","_meta"],
+		"properties":{
+			"summary":{
+				"type":"object",
+				"properties":{
+					"changed_files":{"type":"integer"},
+					"changed_symbols":{"type":"integer"},
+					"total_impacted":{"type":"integer"},
+					"tests_to_run":{"type":"integer"},
+					"critical":{"type":"integer"},
+					"high":{"type":"integer"},
+					"possibly_orphaned":{"type":"integer"}
+				}
+			},
+			"changed_symbols":{"type":"array","items":{"type":"object"}},
+			"tests_to_run":{"type":"array","items":{
+				"type":"object",
+				"properties":{
+					"id":{"type":"string"},
+					"name":{"type":"string"},
+					"file_path":{"type":"string"},
+					"overlap":{"type":"integer"}
+				}
+			}},
+			"plan_comparison":{
+				"type":"object",
+				"properties":{
+					"target":{"type":"string"},
+					"predicted_callers":{"type":"array","items":{"type":"string"}},
+					"actual_impacted":{"type":"array","items":{"type":"string"}},
+					"unpredicted_impact":{"type":"array","items":{"type":"string"}},
+					"stale":{"type":"boolean"},
+					"target_file_in_diff":{"type":"boolean"}
+				}
+			},
+			"possibly_orphaned":{"type":"array","items":{
+				"type":"object",
+				"properties":{
+					"id":{"type":"string"},
+					"name":{"type":"string"},
+					"kind":{"type":"string"},
+					"file_path":{"type":"string"},
+					"label":{"type":"string"}
+				}
+			}},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
 	// 16e. audit_unused — #1391 Phase 4 composite #3 (v0.83).
 	// Dead-code with deep-trace confirmation: runs dead_code, then per
 	// candidate fires a scoped inbound CALLS trace, classifies each by

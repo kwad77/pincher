@@ -34,6 +34,7 @@ var expectedMCPTools = map[string]bool{
 	"onboard_module":      true, // #1391 v0.84 Phase 4 composite — new-contributor orientation
 	"why_empty":           true, // #1391 v0.85 Phase 4 composite — empty-result recovery (stateless catalog)
 	"batch":               true, // loop-substrate — one envelope, N read-only sub-queries under a shared budget
+	"verify_change":       true, // loop-substrate PR-10 — the post-edit gate: changes + plan comparison + orphan check
 	"trace":               true,
 	"query":               true,
 	"guide":               true,

@@ -598,6 +598,7 @@ var readerRoutedStoreMethods = map[string]bool{
 	"ListCallEdgesForProject":        true, // architecture: pure SELECT, reader pool.
 	"GetHotspots":                    true,
 	"GetDeadCode":                    true,
+	"GetDeadCodeForFiles":            true, // loop-substrate PR-10: verify_change orphan check — same SELECT as GetDeadCode, reader pool.
 	"SearchSymbols":                  true,
 	"SearchSymbolsByCorpus":          true,
 	"FTS5Fragmentation":              true, // #1612 v0.87: per-corpus shadow-table COUNT(*)s.

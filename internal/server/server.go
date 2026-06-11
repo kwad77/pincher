@@ -392,6 +392,16 @@ type Server struct {
 	// PINCHER_DIFF_CONTEXT=0/off/false to disable.
 	diffContext bool
 
+	// planCache backs verify_change's predicted-vs-actual blast-radius
+	// comparison (loop-substrate PR-10). plan_change stashes {target,
+	// full depth-1 caller ids, index generation} per run; verify_change
+	// with a `target` looks the newest matching entry up and reports
+	// unpredicted_impact (actual minus predicted). Bounded FIFO of the
+	// newest planCacheMax entries; in-memory only — a plan is a
+	// session-scale artifact, not durable state (the loop ledger is).
+	planMu    sync.Mutex
+	planCache []planCacheEntry
+
 	// events is the SSE fan-out bus for GET /v1/events (#654). The
 	// indexer publishes index_started / index_complete through it via
 	// the hook wired in New(); /v1/events subscribers drain it. Always
@@ -3723,6 +3733,7 @@ var toolComplexityTiers = map[string]string{
 	"plan_change":         "heavy", // #1391 v0.82: composite of resolve + trace × symbols + adr list
 	"audit_unused":        "heavy", // #1391 v0.83: composite of dead_code + trace × candidates with confidence classification
 	"onboard_module":      "heavy", // #1391 v0.84: composite of scope-scan + entry-point enumeration + boundary edges
+	"verify_change":       "heavy", // loop-substrate PR-10: composite of changes analysis + plan comparison + orphan check
 	"why_empty":           "lite",  // #1391 v0.85: stateless catalog lookup — no DB query
 }
 
@@ -3761,6 +3772,7 @@ var toolIdempotent = map[string]bool{
 	"onboard_module":      true, // #1391 v0.84 — read-only composite (scope scan + boundary edges)
 	"why_empty":           true, // #1391 v0.85 — stateless catalog lookup
 	"batch":               true, // loop-substrate — envelope over read-only sub-tools only (whitelist enforced per-entry)
+	"verify_change":       true, // loop-substrate PR-10 — read-only composite (changes analysis + plan comparison + orphan check)
 	"trace":               true,
 	"query":               true,
 	"guide":               true,
@@ -4097,6 +4109,7 @@ var toolMetadata = map[string]toolMetadataEntry{
 	"onboard_module":      {Title: "New-contributor orientation composite", Annotations: annotationsReadOnly},            // #1391 v0.84
 	"why_empty":           {Title: "Empty-result recovery composite", Annotations: annotationsReadOnly},                  // #1391 v0.85
 	"batch":               {Title: "Multi-query batch envelope", Annotations: annotationsReadOnly},                       // loop-substrate
+	"verify_change":       {Title: "Post-edit verification composite", Annotations: annotationsReadOnly},                 // loop-substrate PR-10
 
 	// Diagnostics (read-only, idempotent).
 	"health": {Annotations: annotationsReadOnly},
@@ -4661,6 +4674,26 @@ func (s *Server) registerTools() {
 			}
 		}`),
 	}, s.handleWhyEmpty)
+
+	// 16h. verify_change — the loop's post-edit gate in ONE call
+	// (loop-substrate PR-10). Composes the changes analysis (shared
+	// core with `changes` via analyzeChanges), the ranked tests_to_run
+	// it produces, a predicted-vs-actual blast-radius comparison
+	// against the plan plan_change stashed pre-edit, and a dead_code
+	// pass restricted to the changed files (possibly_orphaned_by_change,
+	// advisory, Functions only — Methods are dispatch-blind).
+	s.addTool(&mcp.Tool{
+		Name:        "verify_change",
+		Description: "**Use after an edit, before declaring done — \"did my edit do what I planned, what do I run, what broke\" in ONE call.** Composes: (1) the `changes` blast-radius analysis over `scope` (unstaged/staged/all/base:<branch>); (2) `tests_to_run` ranked by overlap — run the top entries first; (3) when `target` matches a prior `plan_change` run, a predicted-vs-actual comparison: `plan_comparison.{predicted_callers, actual_impacted, unpredicted_impact}` with `warnings_v2 code=unpredicted_impact` when the edit reached callers the plan never saw, and `code=plan_stale` when the index moved between plan and verify (no bogus diff); (4) `possibly_orphaned` — symbols in the changed files with zero inbound edges NOW (advisory `possibly_orphaned_by_change`; Functions only, Methods are interface-dispatch-blind). Pass `max_tokens` to bound the envelope (bulk lists trim first; summary counts always ship). Read-only; the post-edit half of the plan_change → edit → verify_change loop.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","properties":{
+				"scope":{"type":"string","description":"Which diff to verify: 'unstaged' (default), 'staged', 'all' (includes untracked), or 'base:<branch>' (committed diff vs merge-base of <branch>)"},
+				"target":{"type":"string","description":"Optional — the same target you passed to plan_change (symbol id, file path, or name). When given, the response includes plan_comparison: the plan's predicted depth-1 callers vs the depth-1 callers this diff actually impacts. Omit to skip the comparison."},
+				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
+				"max_tokens":{"type":"integer","description":"Response budget in approximate tokens (same chars/4 heuristic as _meta.tokens_used). Degradation order: changed_symbols, possibly_orphaned, tests_to_run (floor 3), plan_comparison id lists (counts survive). 0/omitted = unlimited. warnings_v2 code=budget_truncated names the trimmed sections."}
+			}
+		}`),
+	}, s.handleVerifyChange)
 
 	// 17. neighborhood — graph view around a symbol. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
@@ -8912,8 +8945,12 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 		return errResult(err.Error()), nil
 	}
 
-	// Run git diff
-	diffOutput, diffErr := runGitDiff(root, scope)
+	// loop-substrate PR-10: the diff → changed-symbols → blast-radius →
+	// tests_to_run core is shared with verify_change via analyzeChanges
+	// (see verify_change.go — the moved code keeps its #502/#247/#330
+	// commentary there). The handler keeps everything response-shaped:
+	// caps, summary, warnings, empty-state diagnosis.
+	analysis, diffErr := s.analyzeChanges(ctx, projectID, root, scope, depth)
 	if diffErr != nil {
 		// Rich envelope so the agent learns the valid scopes instead of
 		// staring at a bare "git diff failed". Most common cause is a
@@ -8932,120 +8969,10 @@ func (s *Server) handleChanges(ctx context.Context, req *mcp.CallToolRequest) (*
 					"why": "committed-only diff vs master's merge-base — preview a PR's blast radius. Use the actual base branch name (master/main/develop/…)"},
 			}), nil
 	}
-
-	// Parse changed files from diff
-	changedFiles := parseGitDiffFiles(diffOutput)
-
-	// #502: also fetch the unified diff so per-file hunk ranges can
-	// intersect each symbol's [StartLine, EndLine]. Pre-fix, every
-	// symbol in any changed file was treated as "changed" — adding
-	// one function to a 6000-line file expanded the blast radius BFS
-	// to half the codebase. The hunk fetch is best-effort: on error
-	// we fall back to the pre-#502 behaviour (all symbols in changed
-	// files) so the tool stays usable when git options change shape.
-	hunkDiff, hunkErr := runGitDiffHunks(root, scope)
-	var hunksByFile map[string][][2]int
-	if hunkErr == nil {
-		hunksByFile = parseGitDiffHunks(hunkDiff)
-	}
-
-	// Find symbols in changed files. When we have hunks for a file,
-	// keep only symbols whose line range overlaps an actual edit.
-	// When hunks aren't available for a file (untracked content,
-	// rename without content change, parse miss), fall back to
-	// "all symbols in file" — better to over-report than under-report
-	// for the safety-check use case.
-	var changedSymbols []db.Symbol
-	for _, f := range changedFiles {
-		syms, err := s.store.GetSymbolsForFile(projectID, f)
-		if err != nil {
-			continue
-		}
-		hunks, hasHunks := hunksByFile[f]
-		if !hasHunks || len(hunks) == 0 {
-			changedSymbols = append(changedSymbols, syms...)
-			continue
-		}
-		for _, sym := range syms {
-			if symbolOverlapsHunks(sym.StartLine, sym.EndLine, hunks) {
-				changedSymbols = append(changedSymbols, sym)
-			}
-		}
-	}
-
-	// BFS trace for blast radius. Use TraceByID so a changed `Run` /
-	// `Handler` / `Open` resolves to the *exact* symbol that changed,
-	// not whichever same-named symbol the name-based lookup picks first
-	// (#5). The previous Trace(name, ...) path computed blast radius
-	// from a sibling symbol when one name had multiple definitions.
-	//
-	// #247 #4: alongside the impacted-symbol collection, track which
-	// test symbols reach each changed symbol — separately from the
-	// `seen` dedupe so a test reached via multiple changed symbols gets
-	// its overlap counted, not collapsed into the first path. Used to
-	// produce the tests_to_run array sorted by overlap descending.
-	// #330: pre-allocate as zero-len so the JSON field is always [], never
-	// null. A nil slice marshals to null, forcing every consumer to
-	// null-check; same fix shape as #328 on health.extraction_coverage.
-	impacted := []map[string]any{}
-	seen := make(map[string]bool)
-	testHits := make(map[string]map[string]bool) // test sym ID → set of changed sym IDs that reach it
-	testSyms := make(map[string]db.Symbol)       // test sym ID → the symbol (for output projection)
-	for _, sym := range changedSymbols {
-		hops, err := s.indexer.TraceByID(ctx, projectID, sym.ID, "inbound", depth, true)
-		if err != nil {
-			continue
-		}
-		for _, h := range hops {
-			if h.Symbol.IsTest {
-				if _, ok := testHits[h.Symbol.ID]; !ok {
-					testHits[h.Symbol.ID] = make(map[string]bool)
-					testSyms[h.Symbol.ID] = h.Symbol
-				}
-				testHits[h.Symbol.ID][sym.ID] = true
-			}
-			if seen[h.Symbol.ID] {
-				continue
-			}
-			seen[h.Symbol.ID] = true
-			impacted = append(impacted, map[string]any{
-				"id":         h.Symbol.ID,
-				"name":       h.Symbol.Name,
-				"kind":       h.Symbol.Kind,
-				"file_path":  h.Symbol.FilePath,
-				"risk":       h.Risk,
-				"changed_by": sym.Name,
-			})
-		}
-	}
-
-	// Build tests_to_run sorted by overlap descending (then test ID
-	// ascending for stable output). Overlap = how many distinct
-	// changed symbols this test reaches; higher overlap = more bang
-	// per re-run. Deterministic ordering keeps any future snapshot
-	// test on this surface stable.
-	type testRow struct {
-		ID       string `json:"id"`
-		Name     string `json:"name"`
-		FilePath string `json:"file_path"`
-		Overlap  int    `json:"overlap"`
-	}
-	testsToRun := make([]testRow, 0, len(testHits))
-	for testID, hits := range testHits {
-		sym := testSyms[testID]
-		testsToRun = append(testsToRun, testRow{
-			ID:       testID,
-			Name:     sym.Name,
-			FilePath: sym.FilePath,
-			Overlap:  len(hits),
-		})
-	}
-	sort.Slice(testsToRun, func(i, j int) bool {
-		if testsToRun[i].Overlap != testsToRun[j].Overlap {
-			return testsToRun[i].Overlap > testsToRun[j].Overlap
-		}
-		return testsToRun[i].ID < testsToRun[j].ID
-	})
+	changedFiles := analysis.changedFiles
+	changedSymbols := analysis.changedSymbols
+	impacted := analysis.impacted
+	testsToRun := analysis.testsToRun
 
 	// Build risk summary — count the FULL impacted set before any trim.
 	riskCounts := map[string]int{"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
@@ -13407,6 +13334,7 @@ var baselineMethodForTool = map[string]string{
 	"dead_code":           baselineMethodFullFileRead,
 	"neighborhood":        baselineMethodFullFileRead,
 	"batch":               baselineMethodFullFileRead, // loop-substrate: envelope over read-replacing sub-tools; tokens_saved = sum of sub-call savings
+	"verify_change":       baselineMethodFullFileRead, // loop-substrate PR-10: composite replaces re-reading every changed + impacted file post-edit
 	// Admin / orientation / write-side tools — no Read/Grep alternative.
 	"index":          baselineMethodNone,
 	"architecture":   baselineMethodNone,
