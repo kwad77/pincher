@@ -44,7 +44,7 @@ Generated: 2023-11-14T22:15:00Z
 ## Hotspots
 
 - `Greeter` Class — `src/index.ts` (incoming calls: 1)
-  - Risk score: 3 (inputs: incoming=1, outgoing=0, degree=1, test-adjacent=0, confidence=0.98)
+  - Risk score: 3 (inputs: incoming=1, outgoing=0, degree=1, test-adjacent=0, confidence=1.00)
 
 ## Rationale / design intent
 

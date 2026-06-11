@@ -1,8 +1,8 @@
 {
   "avg_confidence_by_kind": {
-    "Class": 0.9875,
-    "Function": 0.9875,
-    "Method": 0.9938,
+    "Class": 1,
+    "Function": 1,
+    "Method": 1,
     "Section": 0.9125,
     "Setting": 1,
     "Variable": 1
