@@ -2750,6 +2750,7 @@ func openAPIComponentSchemas() map[string]any {
 					},
 				},
 				"warnings":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Non-fatal advisories — typo'd args, unknown property names, etc. (#473, #499, #501)."},
+				"skeleton":    map[string]any{"type": "boolean", "description": "Present (true) when the response was produced with detail=skeleton — every source payload is a deterministic structural outline, not verbatim bytes. One top-level marker; detail applies call-wide."},
 				"celebration": map[string]any{"type": "string", "description": "One-shot tier-milestone line, fired exactly once per installation per tier (#494). Opt-in: only present when PINCHER_CELEBRATIONS=1 is set (default off — #863)."},
 				"request_id":  map[string]any{"type": "string", "description": "Correlation ID for end-to-end request tracing (#657). Echoes the inbound X-Request-ID header, or a freshly minted UUID v7 when the request carries none. Also returned in the X-Request-ID response header."},
 			},
@@ -4236,12 +4237,13 @@ func (s *Server) registerTools() {
 	// 2. symbol
 	s.addTool(&mcp.Tool{
 		Name:        "symbol",
-		Description: "**Use after `search`** to read one symbol's source by stable ID. O(1) byte-offset seeking — never re-parses the file. ID format: `{file_path}::{qualified_name}#{kind}`. **IDs survive file renames/moves** — when the caller's ID no longer resolves directly, the handler auto-redirects via the `symbol_moves` table populated at index time, so a cached ID from a prior session keeps working after `git mv`. **Prefer `context`** when you also need the symbol's dependencies, or **`symbols`** for batching multiple lookups (one round trip instead of N). Pass `fields` (comma-separated) to project specific keys and skip the source disk read when not needed.",
+		Description: "**Use after `search`** to read one symbol's source by stable ID. O(1) byte-offset seeking — never re-parses the file. ID format: `{file_path}::{qualified_name}#{kind}`. **IDs survive file renames/moves** — when the caller's ID no longer resolves directly, the handler auto-redirects via the `symbol_moves` table populated at index time, so a cached ID from a prior session keeps working after `git mv`. **Prefer `context`** when you also need the symbol's dependencies, or **`symbols`** for batching multiple lookups (one round trip instead of N). Pass `fields` (comma-separated) to project specific keys and skip the source disk read when not needed. Pass `detail=\"skeleton\"` for a deterministic structural outline instead of the full body (signature + control flow + '… N lines (calls: …)' markers) — the orientation-phase shape read.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["id"],"properties":{
 				"id":{"type":"string","description":"Stable symbol ID. Format: '{file_path}::{qualified_name}#{kind}'"},
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
 				"fields":{"type":"string","description":"Comma-separated allow-list of response keys (e.g. 'id,signature'). Omit for all fields. Skipping 'source' avoids the byte-offset disk read."},
+				"detail":{"type":"string","enum":["full","skeleton"],"description":"'full' (default) returns source verbatim. 'skeleton' replaces the source payload with a deterministic structural outline: signature + top-level control-flow lines kept verbatim (nesting shown by indentation), other runs elided as '… N lines (calls: A, B)' with call names harvested from the symbol's outbound CALLS edges. Use when you need a function's shape, not its body — large bodies compress to well under 30% of full-source tokens. Line-classifier based: language-agnostic and deterministic (tree-sitter-precise skeletons are the documented v2 path). Responses are marked with _meta.skeleton:true."},
 				"cross_project":{"type":"boolean","description":"#1232 opt-in: when the requested ID isn't in the session project but exists in another indexed project, default behavior is to error (rich-error with next_steps) instead of silently returning the other project's row. Pass cross_project=true to opt back into the legacy silent-fallback-with-warning behavior. Default false. Has no effect when project= is set explicitly."}
 			}
 		}`),
@@ -4250,12 +4252,13 @@ func (s *Server) registerTools() {
 	// 3. symbols (batch)
 	s.addTool(&mcp.Tool{
 		Name:        "symbols",
-		Description: "**Use instead of repeated `symbol` calls** when you have several IDs. Batch fetches up to 100 symbols in a single SQL round trip + per-symbol byte-offset reads. Returns `[{id, source, signature, file_path, start_line}, ...]` in the same order as the input `ids`. Missing IDs surface as `{id, error: \"not found\"}` rather than failing the whole batch. Pass `fields=id,name,signature` to drop unused fields and skip the disk-read for source.",
+		Description: "**Use instead of repeated `symbol` calls** when you have several IDs. Batch fetches up to 100 symbols in a single SQL round trip + per-symbol byte-offset reads. Returns `[{id, source, signature, file_path, start_line}, ...]` in the same order as the input `ids`. Missing IDs surface as `{id, error: \"not found\"}` rather than failing the whole batch. Pass `fields=id,name,signature` to drop unused fields and skip the disk-read for source. Pass `detail=\"skeleton\"` to compress every entry's source to a deterministic structural outline — the cheap way to skim several function bodies at once.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["ids"],"properties":{
 				"ids":{"type":"array","items":{"type":"string"},"description":"Array of stable symbol IDs."},
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project. Pass '*' to look every ID up unscoped (cross-repo)."},
 				"fields":{"type":"string","description":"Comma-separated fields to include per result, e.g. 'id,name,signature'. Omit for all fields. Skipping 'source' avoids the per-symbol disk read entirely — major win on 50+ ID batches where the agent only needs metadata."},
+				"detail":{"type":"string","enum":["full","skeleton"],"description":"'full' (default) returns each source verbatim. 'skeleton' replaces every entry's source with a deterministic structural outline (signature + control-flow lines verbatim, other runs elided as '… N lines (calls: A, B)' using each symbol's CALLS edges). Shape-not-body skims of multi-symbol batches at a fraction of the token cost. One top-level _meta.skeleton:true marks the whole response (detail applies call-wide)."},
 				"cross_project":{"type":"boolean","description":"#1799 opt-in: the batch is session-scoped by default (an ID is path+QN+kind, so an unscoped lookup can resolve it from an indexed mirror of the session repo). An ID absent from the session project surfaces as not_found. Pass cross_project=true to fall back to an unscoped lookup for those missed IDs. Default false. Ignored when project= is set."}
 			}
 		}`),
@@ -4264,12 +4267,13 @@ func (s *Server) registerTools() {
 	// 4. context
 	s.addTool(&mcp.Tool{
 		Name:        "context",
-		Description: "**Use before editing a function** to read it together with everything it directly imports and calls — one shot, ~90% token reduction vs reading files. Returns `{symbol: {source, ...}, imports: [{source, ...}], callees: [{source, ...}]}` — `imports` is cross-package dependencies (IMPORTS edges), `callees` is the in-package helpers it directly calls (CALLS edges). De-duplicated so a symbol that's both imported and called only appears once. Prefer this over `symbol` whenever you need to understand how a function works in context, not just see its source. Pass `fields=symbol,callees` to drop sections you don't need. Pass `lite=true` for source-only retrieval — minimum-envelope shape used by the PreToolUse hook redirect when replacing a Read call.",
+		Description: "**Use before editing a function** to read it together with everything it directly imports and calls — one shot, ~90% token reduction vs reading files. Returns `{symbol: {source, ...}, imports: [{source, ...}], callees: [{source, ...}]}` — `imports` is cross-package dependencies (IMPORTS edges), `callees` is the in-package helpers it directly calls (CALLS edges). De-duplicated so a symbol that's both imported and called only appears once. Prefer this over `symbol` whenever you need to understand how a function works in context, not just see its source. Pass `fields=symbol,callees` to drop sections you don't need. Pass `lite=true` for source-only retrieval — minimum-envelope shape used by the PreToolUse hook redirect when replacing a Read call. Pass `detail=\"skeleton\"` to compress every source payload (symbol + imports + callees) to a deterministic structural outline.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","required":["id"],"properties":{
 				"id":{"type":"string","description":"Symbol ID to fetch with its imports."},
 				"project":{"type":"string"},
 				"fields":{"type":"string","description":"Comma-separated top-level keys to include, e.g. 'symbol,callees' to drop imports. Omit for all. _meta is preserved unconditionally."},
+				"detail":{"type":"string","enum":["full","skeleton"],"description":"'full' (default) returns sources verbatim. 'skeleton' replaces EVERY source payload in the response — the primary symbol's and each import's/callee's — with a deterministic structural outline (signature + control-flow lines verbatim, other runs elided as '… N lines (calls: A, B)' using each symbol's CALLS edges). Marked _meta.skeleton:true. Note: skeleton mode bypasses the PINCHER_DIFF_CONTEXT diff cache — the cache only operates on detail=full so the two representations can't poison each other."},
 				"lite":{"type":"boolean","description":"When true, return only {id, source} — no imports, no callees, no next_steps. Used by PreToolUse hook to land on minimum-envelope shape when redirecting a Read call. Default false."},
 				"cross_project":{"type":"boolean","description":"#1232 opt-in: when the requested ID isn't in the session project but exists in another indexed project, default behavior is to error (rich-error with next_steps) instead of silently returning the other project's data — including its callees + imports, which would also belong to the wrong tree. Pass cross_project=true to opt back into the legacy silent-fallback-with-warning behavior. Default false. Has no effect when project= is set explicitly."}
 			}
@@ -4906,6 +4910,10 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 	projectArg := str(args, "project")
 	fieldsArg := str(args, "fields")
+	// Skeleton mode: detail="skeleton" replaces the source payload with a
+	// deterministic structural outline (see skeleton.go). Unknown values
+	// degrade to full with a warning.
+	detailSkeleton, detailWarning := parseDetailArg(args)
 	// #1232: opt-in to the legacy silent-cross-project-fallback
 	// behaviour. Pre-#1232, when projectArg was omitted AND the ID
 	// happened to resolve in some indexed project other than the
@@ -5101,6 +5109,15 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 		if source == "" && sym.Kind == "Document" {
 			source = sym.Docstring
 		}
+		// Skeleton mode: compress the body to its structural outline.
+		// Documents are prose, not code — the line classifier would
+		// mangle them, so they always ship full. Honest accounting:
+		// tokensSaved below keeps the same file-read baseline; the
+		// response is simply smaller (skeleton savings show up as a
+		// smaller tokens_used, not an inflated tokens_saved).
+		if detailSkeleton && source != "" && sym.Kind != "Document" {
+			source = skeletonize(source, s.calleeShortNames(sym.ProjectID, sym.ID))
+		}
 	}
 
 	// #766: for a Document the content is returned in `source`; its
@@ -5155,6 +5172,14 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// lied about the field's existence. #914 hoisted the check pattern
 	// out of this handler so trace / changes match the same shape.
 	data := projectAndCheckFields(allFields, fieldSet)
+	// Skeleton mode: one top-level marker (see attachSkeletonMeta for
+	// why top-level beats per-entry) + soft warning on unknown values.
+	if detailSkeleton {
+		attachSkeletonMeta(data)
+	}
+	if detailWarning != "" {
+		attachWarning(data, detailWarning)
+	}
 	// #1026: surface the project-resolve failure when project was
 	// explicitly passed but didn't match. attachWarning merges into
 	// existing _meta — safe to call before attachStalenessWarning.
@@ -5363,6 +5388,9 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 		sort.Strings(symbolsUnknownFields)
 	}
 	includeSource := fieldSet == nil || fieldSet["source"]
+	// Skeleton mode: detail="skeleton" applies the structural-outline
+	// compression to every entry's source (see skeleton.go).
+	detailSkeleton, detailWarning := parseDetailArg(args)
 	root := s.sessionRoot
 	// #1048: skip resolution when projectArg=="*" — documented
 	// cross-project sentinel. Batch lookups with "*" map to "look
@@ -5494,6 +5522,13 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 			if source == "" && sym.Kind == "Document" {
 				source = sym.Docstring
 			}
+			// Skeleton mode: per-entry structural compression. Call
+			// names come from each symbol's own CALLS edges (one
+			// indexed query per entry, only paid when skeleton was
+			// requested). Documents are prose — always full.
+			if detailSkeleton && source != "" && sym.Kind != "Document" {
+				source = skeletonize(source, s.calleeShortNames(sym.ProjectID, sym.ID))
+			}
 		}
 		// #766: blank a Document's docstring — its text is already in
 		// `source`; echoing both doubles the payload. Mirrors handleSymbol.
@@ -5568,6 +5603,15 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 	data := map[string]any{
 		"symbols": results,
 		"count":   len(results),
+	}
+	// Skeleton mode: ONE top-level _meta.skeleton marker for the whole
+	// batch, not a per-entry boolean — detail applies call-wide, so N
+	// markers would add payload weight without information.
+	if detailSkeleton {
+		attachSkeletonMeta(data)
+	}
+	if detailWarning != "" {
+		attachWarning(data, detailWarning)
 	}
 	// #1066: surface batch-level not-found summary so a partial-hit
 	// response is obviously partial. `count` historically lumps
@@ -5645,6 +5689,10 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	}
 	// #400: response-level field projection. Caller-driven cut.
 	fieldSet := parseFieldsArg(str(args, "fields"))
+	// Skeleton mode: detail="skeleton" replaces each source payload —
+	// the primary symbol's AND its imports'/callees' — with the
+	// structural outline (see skeleton.go).
+	detailSkeleton, detailWarning := parseDetailArg(args)
 
 	// #1039: context's schema declares a `project` arg ("Project name
 	// or ID. Defaults to session project.") but the handler used to
@@ -5753,6 +5801,15 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 
 	root, _ := s.resolveProjectRoot(sym.ProjectID)
 	source, _ := index.ReadSymbolSource(root, *sym)
+	// Skeleton mode: compress the primary symbol's body before any
+	// downstream path (lite / diff / full) sees it. Placed ABOVE the
+	// #655 diff block, which is additionally gated on !detailSkeleton —
+	// the diff cache must only ever hold full-source representations
+	// (see comment on the diff block). Documents are prose — never
+	// skeletonized.
+	if detailSkeleton && source != "" && sym.Kind != "Document" {
+		source = skeletonize(source, s.calleeShortNames(sym.ProjectID, sym.ID))
+	}
 
 	// #623: lite=true short-circuit. Returns just {id, source} —
 	// no imports, no callees, no staleness warning, no next_steps.
@@ -5796,6 +5853,15 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		if contextCrossProjectWarning != "" {
 			attachWarning(liteData, contextCrossProjectWarning)
 		}
+		// Skeleton mode marker + soft warning on the lite path too —
+		// minimum envelope means "skip imports/callees", not "hide
+		// which representation the source is in".
+		if detailSkeleton {
+			attachSkeletonMeta(liteData)
+		}
+		if detailWarning != "" {
+			attachWarning(liteData, detailWarning)
+		}
 		liteResponseJSON, _ := json.Marshal(liteData)
 		return s.jsonResultWithMeta(liteData, start, tool, args,
 			s.savedVsFileSizesSession(sym.ProjectID, root, []string{sym.FilePath}, liteResponseJSON)), nil
@@ -5808,8 +5874,17 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// it). Changed → fall through, but ship the primary symbol's source
 	// as a line diff against what we last served instead of the full
 	// body. diffMode is "" (normal), "changed" by the end of this block.
+	//
+	// Skeleton mode BYPASSES the diff cache entirely (!detailSkeleton):
+	// the cache stores the last-served representation, and skeleton and
+	// full are different representations of the same bytes — letting a
+	// skeleton call populate (or diff against) the cache would poison
+	// it: a later detail=full call could receive a diff computed against
+	// a skeleton (or an "unchanged" short-circuit that withholds the
+	// full body the agent never saw). Simplest correct rule: the diff
+	// cache only operates on detail=full.
 	var diffMode, sinceHash string
-	if s.diffContext && root != "" {
+	if s.diffContext && root != "" && !detailSkeleton {
 		diffKey := sym.ProjectID + "|" + sym.ID
 		curHash, hashOK := fileHashOnDisk(filepath.Join(root, filepath.FromSlash(sym.FilePath)))
 		if hashOK {
@@ -5888,6 +5963,11 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 			continue
 		}
 		impSource, _ := index.ReadSymbolSource(root, *imp)
+		// Skeleton mode applies to every source payload in the
+		// response, each with its own CALLS-edge call names.
+		if detailSkeleton && impSource != "" && imp.Kind != "Document" {
+			impSource = skeletonize(impSource, s.calleeShortNames(imp.ProjectID, imp.ID))
+		}
 		imports = append(imports, map[string]any{
 			"id":        imp.ID,
 			"name":      imp.Name,
@@ -5903,6 +5983,9 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 			continue
 		}
 		calleeSource, _ := index.ReadSymbolSource(root, *callee)
+		if detailSkeleton && calleeSource != "" && callee.Kind != "Document" {
+			calleeSource = skeletonize(calleeSource, s.calleeShortNames(callee.ProjectID, callee.ID))
+		}
 		callees = append(callees, map[string]any{
 			"id":        callee.ID,
 			"name":      callee.Name,
@@ -5978,6 +6061,15 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		} else {
 			data = projected
 		}
+	}
+	// Skeleton mode: one top-level marker (cheapest honest signal —
+	// detail applies to the whole response) + soft warning on unknown
+	// values. Attached after projection: _meta survives projection.
+	if detailSkeleton {
+		attachSkeletonMeta(data)
+	}
+	if detailWarning != "" {
+		attachWarning(data, detailWarning)
 	}
 	// #1039: surface the project-resolve failure on success too — the
 	// caller's scope hint was ignored but the symbol resolved via the
