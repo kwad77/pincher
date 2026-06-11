@@ -122,13 +122,16 @@ def unique_child_qn(parent_qn, name, kind, scope_counts, start_line):
 
 
 def collect(node, parent_qn, dunder_all, line_offsets, source_len,
-            in_class, class_qn, imports_map, symbols, edges):
+            in_class, class_qn, imports_map, symbols, edges,
+            module_types=None, local_classes=None):
     """Walk child nodes; emit one record per FunctionDef/AsyncFunctionDef/ClassDef.
 
     Function/method bodies are scanned for ast.Call nodes; each call becomes
     a CALLS edge with from_qn set to the enclosing function's QN. class_qn
     is the QN of the immediately-enclosing class (or "" outside any class),
     used to rewrite `self.X` callers into resolvable absolute paths.
+    module_types / local_classes feed the one-hop instance-type inference
+    in collect_calls_in_body (see there for semantics).
     """
     scope_counts = {}
     for child in ast.iter_child_nodes(node):
@@ -184,7 +187,9 @@ def collect(node, parent_qn, dunder_all, line_offsets, source_len,
         # (they're visited by the recursive collect() call below and emit
         # their own from_qn-anchored edges).
         if not isinstance(child, ast.ClassDef):
-            collect_calls_in_body(child, qn, class_qn, imports_map, edges)
+            collect_calls_in_body(child, qn, class_qn, imports_map, edges,
+                                  module_types=module_types,
+                                  local_classes=local_classes)
 
         next_class_qn = qn if isinstance(child, ast.ClassDef) else class_qn
         collect(
@@ -193,32 +198,134 @@ def collect(node, parent_qn, dunder_all, line_offsets, source_len,
             class_qn=next_class_qn,
             imports_map=imports_map,
             symbols=symbols, edges=edges,
+            module_types=module_types, local_classes=local_classes,
         )
 
 
-def collect_calls_in_body(fn_node, from_qn, class_qn, imports_map, edges):
+def inferred_class_path(func, imports_map, local_classes):
+    """Dotted path of the class a constructor-looking Call instantiates, or ''.
+
+    Plain-Name callees only. A name counts as a class when it's a known
+    module-level class in this file, or an imported name whose final
+    segment is capitalized (PEP 8 class naming). Deliberately conservative:
+    anything else returns '' and no type is inferred.
+    """
+    if not isinstance(func, ast.Name):
+        return ""
+    name = func.id
+    if local_classes and name in local_classes:
+        return local_classes[name]
+    mapped = (imports_map or {}).get(name, "")
+    if mapped:
+        last = mapped.rsplit(".", 1)[-1]
+        if last[:1].isupper():
+            return mapped
+    return ""
+
+
+def track_assign(node, local_types, imports_map, local_classes):
+    """One-hop local type inference: record `x = ClassName(...)`.
+
+    Only plain Name targets; no flow analysis — last assignment wins, and
+    any assignment whose RHS isn't a recognizable class instantiation
+    clears a previously-inferred type for that name (so a rebound variable
+    never keeps a stale inference).
+    """
+    path = ""
+    if isinstance(node.value, ast.Call):
+        path = inferred_class_path(node.value.func, imports_map, local_classes)
+    for tgt in node.targets:
+        if not isinstance(tgt, ast.Name):
+            continue
+        if path:
+            local_types[tgt.id] = path
+        else:
+            local_types.pop(tgt.id, None)
+
+
+def collect_local_classes(tree, module):
+    """Module-level class names → their module-qualified dotted path."""
+    out = {}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            out[node.name] = module + "." + node.name if module else node.name
+    return out
+
+
+def collect_module_types(tree, imports_map, local_classes):
+    """Module-level `x = ClassName(...)` assignments, in source order.
+
+    Functions execute after the module body has run, so the final
+    module-level binding is what an instance call inside any function
+    sees; last assignment wins, mirroring track_assign.
+    """
+    types = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            track_assign(node, types, imports_map, local_classes)
+    return types
+
+
+def collect_calls_in_body(fn_node, from_qn, class_qn, imports_map, edges,
+                          module_types=None, local_classes=None):
     """Emit one CALLS edge per ast.Call inside fn_node, stopping at nested defs.
 
     Nested FunctionDef / AsyncFunctionDef / ClassDef boundaries are NOT
     descended into here — collect()'s outer recursion will visit them and
     record their own calls under their own from_qn.
+
+    One-hop type inference: statements are visited in source order, and
+    simple `x = ClassName(...)` assignments (seeded with the module-level
+    ones) bind x to the class's dotted path so a subsequent `x.method()`
+    emits `<class path>.method` instead of the unresolvable raw attribute
+    chain. Inferred edges carry confidence 0.6 — below the 0.7 of
+    statically-written call paths — so consumers can distinguish them.
     """
-    stack = list(fn_node.body)
-    while stack:
-        node = stack.pop()
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            continue
-        if isinstance(node, ast.Call):
-            to_name = call_target_name(node.func, class_qn, imports_map)
-            if to_name:
+    local_types = dict(module_types) if module_types else {}
+
+    def emit_call(node):
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            parts = []
+            cur = func
+            while isinstance(cur, ast.Attribute):
+                parts.append(cur.attr)
+                cur = cur.value
+            # Single-attribute chains only: `x.method()`. Longer chains
+            # (`x.field.method()`) would need field-type info we don't have.
+            if (isinstance(cur, ast.Name) and len(parts) == 1
+                    and cur.id in local_types):
                 edges.append({
                     "from_qn": from_qn,
-                    "to_name": to_name,
+                    "to_name": local_types[cur.id] + "." + parts[0],
                     "kind": "CALLS",
-                    "confidence": 0.7,
+                    "confidence": 0.6,
                 })
+                return
+        to_name = call_target_name(func, class_qn, imports_map)
+        if to_name:
+            edges.append({
+                "from_qn": from_qn,
+                "to_name": to_name,
+                "kind": "CALLS",
+                "confidence": 0.7,
+            })
+
+    def visit(node):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return
+        if isinstance(node, ast.Call):
+            emit_call(node)
         for sub in ast.iter_child_nodes(node):
-            stack.append(sub)
+            visit(sub)
+        # Update the type map AFTER visiting children so calls inside the
+        # RHS (`x = ClassName(arg())`) are emitted against the pre-binding
+        # state, then the binding takes effect for subsequent statements.
+        if isinstance(node, ast.Assign):
+            track_assign(node, local_types, imports_map, local_classes)
+
+    for stmt in fn_node.body:
+        visit(stmt)
 
 
 def call_target_name(func, class_qn, imports_map):
@@ -349,11 +456,14 @@ def extract_one(relpath, source):
         "end_line": last_line,
     })
 
+    local_classes = collect_local_classes(tree, module)
+    module_types = collect_module_types(tree, imports_map, local_classes)
     collect(
         tree, parent_qn=module, dunder_all=dunder_all,
         line_offsets=line_offsets, source_len=len(source),
         in_class=False, class_qn="", imports_map=imports_map,
         symbols=symbols, edges=edges,
+        module_types=module_types, local_classes=local_classes,
     )
     edges.extend(collect_imports(tree, module))
 
