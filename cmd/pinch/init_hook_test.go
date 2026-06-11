@@ -93,7 +93,10 @@ func TestMergePincherHook_Idempotent(t *testing.T) {
 
 func TestMergePincherHook_DetectsCustomCommand(t *testing.T) {
 	// User may have `pincher hook-check --debug` or
-	// `/usr/local/bin/pincher hook-check`. Idempotency tolerates these.
+	// `/usr/local/bin/pincher hook-check`. Idempotency tolerates these
+	// on the PreToolUse leg: the entry is left untouched. The install
+	// predates PreCompact (precompact-hook), so that registration is
+	// still added — action is "added", not "noop".
 	in := map[string]any{
 		"hooks": map[string]any{
 			"PreToolUse": []any{
@@ -106,12 +109,180 @@ func TestMergePincherHook_DetectsCustomCommand(t *testing.T) {
 			},
 		},
 	}
+	updated, action, err := mergePincherHook(in)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if action != "added" {
+		t.Errorf("legacy install should gain the PreCompact leg; got %q", action)
+	}
+	hooks, _ := updated["hooks"].(map[string]any)
+	pre, _ := hooks["PreToolUse"].([]any)
+	if len(pre) != 1 {
+		t.Fatalf("custom PreToolUse entry must be left alone; len = %d, want 1", len(pre))
+	}
+	entry, _ := pre[0].(map[string]any)
+	if entry["matcher"] != "Read" {
+		t.Errorf("custom matcher clobbered: %v", entry["matcher"])
+	}
+	if hooks["PreCompact"] == nil {
+		t.Error("PreCompact registration missing after legacy upgrade")
+	}
+}
+
+// precompact-hook: init registers the PreCompact event alongside
+// PreToolUse so `pincher hook-check` receives compaction events and
+// can emit the ledger-aware advisory.
+
+func TestMergePincherHook_RegistersPreCompact(t *testing.T) {
+	updated, action, err := mergePincherHook(nil)
+	if err != nil {
+		t.Fatalf("mergePincherHook: %v", err)
+	}
+	if action != "created" {
+		t.Errorf("action = %q, want created", action)
+	}
+	hooks, _ := updated["hooks"].(map[string]any)
+	preCompact, _ := hooks["PreCompact"].([]any)
+	if len(preCompact) != 1 {
+		t.Fatalf("PreCompact len = %d, want 1", len(preCompact))
+	}
+	entry, _ := preCompact[0].(map[string]any)
+	if _, hasMatcher := entry["matcher"]; hasMatcher {
+		t.Errorf("PreCompact entry should carry no matcher (fires on manual AND auto); got %v", entry["matcher"])
+	}
+	hookList, _ := entry["hooks"].([]any)
+	if len(hookList) != 1 {
+		t.Fatalf("PreCompact hooks len = %d, want 1", len(hookList))
+	}
+	first, _ := hookList[0].(map[string]any)
+	if first["command"] != "pincher hook-check" {
+		t.Errorf("command = %v, want pincher hook-check", first["command"])
+	}
+}
+
+func TestMergePincherHook_PreCompactIdempotent(t *testing.T) {
+	// A user-tweaked PreCompact entry still counts as ours.
+	in := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{
+				map[string]any{
+					"matcher": "Read|Grep",
+					"hooks": []any{
+						map[string]any{"type": "command", "command": "pincher hook-check"},
+					},
+				},
+			},
+			"PreCompact": []any{
+				map[string]any{
+					"matcher": "auto",
+					"hooks": []any{
+						map[string]any{"type": "command", "command": "/opt/pincher hook-check --debug"},
+					},
+				},
+			},
+		},
+	}
 	_, action, err := mergePincherHook(in)
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
 	if action != "noop" {
-		t.Errorf("custom command path should still match; got %q", action)
+		t.Errorf("both legs present should noop; got %q", action)
+	}
+}
+
+func TestMergePincherHook_PreservesForeignPreCompactEntries(t *testing.T) {
+	// Someone else's PreCompact hook must be preserved, ours appended.
+	in := map[string]any{
+		"hooks": map[string]any{
+			"PreCompact": []any{
+				map[string]any{
+					"hooks": []any{
+						map[string]any{"type": "command", "command": "my-transcript-backup.sh"},
+					},
+				},
+			},
+		},
+	}
+	updated, _, err := mergePincherHook(in)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	hooks, _ := updated["hooks"].(map[string]any)
+	preCompact, _ := hooks["PreCompact"].([]any)
+	if len(preCompact) != 2 {
+		t.Fatalf("PreCompact len = %d, want 2 (preserved foreign + appended pincher)", len(preCompact))
+	}
+}
+
+func TestInstallClaudeHook_WritesPreCompactRegistration(t *testing.T) {
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	if err := installClaudeHook(&buf, dir, false); err != nil {
+		t.Fatalf("installClaudeHook: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatalf("read written settings: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	hooks, _ := got["hooks"].(map[string]any)
+	if hooks["PreToolUse"] == nil {
+		t.Error("PreToolUse registration missing")
+	}
+	if hooks["PreCompact"] == nil {
+		t.Error("PreCompact registration missing")
+	}
+}
+
+func TestInstallClaudeHook_LegacyInstallGainsPreCompact(t *testing.T) {
+	// Re-running init on a pre-PreCompact install upgrades it
+	// additively: PreToolUse untouched, PreCompact appended.
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	legacy := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{
+				map[string]any{
+					"matcher": "Read|Grep",
+					"hooks": []any{
+						map[string]any{"type": "command", "command": "pincher hook-check"},
+					},
+				},
+			},
+		},
+	}
+	body, _ := json.MarshalIndent(legacy, "", "  ")
+	if err := os.WriteFile(settingsPath, body, 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := installClaudeHook(&buf, dir, false); err != nil {
+		t.Fatalf("installClaudeHook: %v", err)
+	}
+	updated, _ := os.ReadFile(settingsPath)
+	var got map[string]any
+	if err := json.Unmarshal(updated, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	hooks, _ := got["hooks"].(map[string]any)
+	pre, _ := hooks["PreToolUse"].([]any)
+	if len(pre) != 1 {
+		t.Errorf("PreToolUse must be untouched; len = %d, want 1", len(pre))
+	}
+	if hooks["PreCompact"] == nil {
+		t.Error("PreCompact registration not added to legacy install")
+	}
+	if !strings.Contains(buf.String(), "added") {
+		t.Errorf("output should report the additive upgrade; got %q", buf.String())
 	}
 }
 

@@ -5743,6 +5743,17 @@ func (s *Store) ListADRs(projectID string) (map[string]string, error) {
 	return out, rows.Err()
 }
 
+// CountADRs returns the number of ADR entries for a project. One point
+// query — the PreCompact hook (precompact-hook) needs the count only,
+// not the values, so it must not pay ListADRs' full-payload cost.
+// Reader-routed.
+func (s *Store) CountADRs(projectID string) (int, error) {
+	var n int
+	// Reader pool (#51).
+	err := s.ro.QueryRow(`SELECT COUNT(*) FROM adrs WHERE project_id=?`, projectID).Scan(&n)
+	return n, err
+}
+
 // DeleteADR removes an ADR entry. Returns the number of rows actually
 // deleted so the caller can distinguish "key existed and is gone" from
 // "key never existed" — without this, handleADR used to confidently
