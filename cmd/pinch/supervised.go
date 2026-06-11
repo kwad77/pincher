@@ -80,6 +80,14 @@ func runSupervisedCLI(args []string) {
 	// the user already set one (test harnesses, deliberate
 	// multi-supervisor sharing).
 	sup.Env = ensureSessionIDEnv(os.Environ())
+	// #1901: when respawn gives up (binary-swap window outlasting the
+	// retry budget, or the circuit breaker tripping on a flapping
+	// inner), the default is now to degrade — keep the host transport
+	// open, answer requests with JSON-RPC errors, and retry in the
+	// background — because most MCP hosts never reopen a closed
+	// transport without a full session restart. Operators whose host
+	// DOES respawn MCP servers can opt back into exit-on-give-up.
+	sup.ExitOnGiveUp = os.Getenv("PINCHER_SUPERVISED_EXIT_ON_GIVEUP") == "1"
 	sup.Stdin = os.Stdin
 	sup.Stdout = os.Stdout
 	sup.Stderr = os.Stderr
@@ -113,6 +121,10 @@ func printSupervisedUsage(out io.Writer) {
 	fmt.Fprintln(out, "  --inner-binary PATH   Supervise this pincher binary instead of the provider")
 	fmt.Fprintln(out, "                        path. Also configurable with PINCHER_SUPERVISED_INNER_BINARY.")
 	fmt.Fprintln(out, "  Remaining args are forwarded to the inner pincher server.")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "  PINCHER_SUPERVISED_EXIT_ON_GIVEUP=1  Exit (closing the host transport) when")
+	fmt.Fprintln(out, "                        respawn gives up, instead of degrading and retrying in")
+	fmt.Fprintln(out, "                        the background (the default since #1901).")
 }
 
 func supervisedInnerBinary(args []string, defaultPath string, getenv func(string) string) (string, []string, error) {
