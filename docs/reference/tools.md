@@ -38,19 +38,19 @@ Tested latency: ~5 ms.
 
 ### `symbol` {#tool-symbol}
 
-Source for one symbol by stable ID. O(1): 1 SQL + 1 `os.Seek` + 1 `os.Read`. No re-parse. Supports `fields` projection.
+Source for one symbol by stable ID. O(1): 1 SQL + 1 `os.Seek` + 1 `os.Read`. No re-parse. Supports `fields` projection and `detail="skeleton"` ([Skeleton mode](#skeleton-mode)).
 
 Token savings: file size minus symbol size (real BPE).
 
 ### `symbols` {#tool-symbols}
 
-Batch retrieve up to **100** symbols in one call. Hard cap: requests >100 IDs are rejected. Always prefer this over calling `symbol` in a loop.
+Batch retrieve up to **100** symbols in one call. Hard cap: requests >100 IDs are rejected. Always prefer this over calling `symbol` in a loop. Supports `detail="skeleton"` ([Skeleton mode](#skeleton-mode)) — the cheap way to skim several bodies at once.
 
 Token savings: same per symbol.
 
 ### `context` {#tool-context}
 
-Symbol + all direct callees in one call. The preferred tool for understanding a function.
+Symbol + all direct callees in one call. The preferred tool for understanding a function. Supports `detail="skeleton"` ([Skeleton mode](#skeleton-mode)), applied to every source payload (symbol + imports + callees); skeleton mode bypasses the `PINCHER_DIFF_CONTEXT` diff cache so the two representations can't poison each other.
 
 Token savings: ~90% vs reading files.
 
@@ -234,6 +234,18 @@ fields="id,name,source"               # name + full source, skip metadata
 ```
 
 Available fields: `id`, `name`, `qualified_name`, `kind`, `language`, `file_path`, `start_line`, `end_line`, `signature`, `docstring`, `source`, `is_exported`, `extraction_confidence`. Omitting `fields` returns all columns.
+
+### Skeleton mode {#skeleton-mode}
+
+[`symbol`](#tool-symbol), [`symbols`](#tool-symbols), and [`context`](#tool-context) accept `detail="full"` (default) or `detail="skeleton"`. Skeleton mode replaces each `source` payload with a deterministic structural outline: the signature line(s) and top-level control-flow lines (`if`/`for`/`switch`/`select`/`return`/…) are kept verbatim — nesting indicated by the original indentation — and every other run of lines is elided into a marker:
+
+```
+… 12 lines (calls: parseInput, validateOrder)
+```
+
+Call names are harvested from the symbol's outbound CALLS edges (already in the graph — free) intersected with textual occurrence ordering; edge-listed callees that text matching can't place are appended in one trailing `… calls (from graph): …` line, so **every CALLS-edge callee name is guaranteed to appear in the skeleton**. Affected responses carry one top-level `_meta.skeleton: true` marker.
+
+The economics: agents skimming code in the orientation/probe phase need shape, not bodies — a representative 120-line mixed-flow function compresses to under 25% of its full-source tokens. Honest accounting: `tokens_saved` keeps the same file-read baseline; the skeleton's win shows up as a smaller `tokens_used`, not an inflated saving. v1 is a line-classifier pass over the byte-offset-retrieved source — deterministic, language-agnostic, no re-parse; tree-sitter-precise skeletons (exact block boundaries, expression-level elision) are the documented v2 path. In `context`, skeleton mode bypasses the [#655](https://github.com/kwad77/pincher/issues/655) diff cache: the cache only operates on `detail=full` so full and skeleton representations can never poison each other. Documents (fetched URLs) are prose, not code, and always ship full.
 
 ### Empty-response taxonomy
 
