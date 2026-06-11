@@ -6,6 +6,8 @@ All latencies measured on this codebase. Token counts use cl100k_base BPE — th
 
 Tool sections use stable explicit anchors: `#tool-<name>`, where `<name>` is the lowercase MCP tool name. These anchors are the pre-staged target for future `pincher://tools/<name>/runbook` Resource URIs.
 
+> **Schema diet (#2003):** all 34 tools are advertised over MCP `tools/list` by default. Two server-start knobs shrink that advertisement: `PINCHER_TOOLSET=core` (only `search`, `symbol`, `symbols`, `context`, `trace`, `changes`, `batch`, `loop`, `verify_change`, `guide` on `tools/list`; everything stays reachable over HTTP `POST /v1/<tool>` and as `batch` sub-queries) and `PINCHER_SCHEMA_STYLE=lean` (descriptions deterministically cut to their first sentence, arg descriptions capped at ~120 chars). When a description has been leaned, the full pedagogy for each tool is this document. See [`http-api.md`](http-api.md) → "Server-side env knobs" for the measured token weights.
+
 ## Starter
 
 ### `guide` {#tool-guide}
