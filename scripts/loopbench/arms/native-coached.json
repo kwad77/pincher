@@ -1,0 +1,8 @@
+{
+  "name": "native-coached",
+  "description": "Built-in tools plus surgical-grep coaching (the 27.2k-token manual-round winner). No MCP.",
+  "mcp_config": "none",
+  "coaching": "coaching/grep-coached.md",
+  "disallowed_tools": ["mcp__pincher__*"],
+  "allowed_tools": ["Bash(grep:*)", "Bash(rg:*)", "Bash(find:*)", "Bash(ls:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)", "Bash(sed -n:*)", "Bash(cat:*)", "Bash(git log:*)", "Bash(git show:*)"]
+}
