@@ -1,4 +1,4 @@
-# The 31 MCP tools
+# The 32 MCP tools
 
 [Back to reference index](README.md)
 
@@ -91,6 +91,12 @@ Tested latency: ~40-150 ms (BM25 × N frames + trace × maxSuspects).
 **Composite #2 of Phase 4 (#1391 v0.82).** Pre-edit blast-radius composite. Takes `target` (file path, symbol id, or free-form name). Resolves to one or more affected callable symbols, traces inbound callers at depth 1 (CRITICAL) and depth 2 (HIGH), partitions them by package boundary + test-file status, and looks up ADRs whose key/value mentions the target's package, directory, or symbol name. Returns `{target, blast_radius, related_adrs}` with `blast_radius.summary` counts and `blast_radius.test_files_intersecting` (the test files you should run before pushing). Emits `_meta.warnings_v2.blast_radius_high` when depth-1 caller count exceeds 14 (suggests staged refactor). Replaces the typical 4-call pre-edit sequence (`changes` → `trace direction=in` → `context` → `adr list`).
 
 Tested latency: ~20-100 ms (resolve + trace × affected symbols + ADR overlap).
+
+### `verify_change` {#tool-verify_change}
+
+**Loop-substrate PR-10.** The loop's post-edit gate in one call — "did my edit do what I planned, what do I run, what broke." Composes: (1) the `changes` blast-radius analysis over `scope` (`unstaged`/`staged`/`all`/`base:<branch>`); (2) `tests_to_run` ranked by overlap descending — run the top entries first; (3) when `target` matches a prior `plan_change` run, `plan_comparison.{predicted_callers, actual_impacted, unpredicted_impact}` — the plan cache stores each `plan_change` run's full depth-1 caller set (newest 32, in-memory), and verify compares it against the depth-1 callers the diff actually impacts, warning via `warnings_v2 code=unpredicted_impact` when the edit reached callers the plan never saw and `code=plan_stale` when the index generation moved between plan and verify (no bogus diff); (4) `possibly_orphaned` — the `dead_code` SQL path restricted to the changed files, reporting symbols with zero inbound edges now (`possibly_orphaned_by_change`, advisory; Functions only — Methods are interface-dispatch-blind). `max_tokens` bounds the envelope: bulk lists trim first (changed_symbols → possibly_orphaned → tests_to_run with a floor of 3 → plan-comparison id lists), summary counts always ship.
+
+Tested latency: ~20-100 ms (git diff + trace × changed symbols + one orphan SQL pass).
 
 ## Architecture & knowledge
 

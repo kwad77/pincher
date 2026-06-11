@@ -890,6 +890,31 @@
     }
   },
   {
+    "name": "verify_change",
+    "description": "**Use after an edit, before declaring done — \"did my edit do what I planned, what do I run, what broke\" in ONE call.** Composes: (1) the `changes` blast-radius analysis over `scope` (unstaged/staged/all/base:\u003cbranch\u003e); (2) `tests_to_run` ranked by overlap — run the top entries first; (3) when `target` matches a prior `plan_change` run, a predicted-vs-actual comparison: `plan_comparison.{predicted_callers, actual_impacted, unpredicted_impact}` with `warnings_v2 code=unpredicted_impact` when the edit reached callers the plan never saw, and `code=plan_stale` when the index moved between plan and verify (no bogus diff); (4) `possibly_orphaned` — symbols in the changed files with zero inbound edges NOW (advisory `possibly_orphaned_by_change`; Functions only, Methods are interface-dispatch-blind). Pass `max_tokens` to bound the envelope (bulk lists trim first; summary counts always ship). Read-only; the post-edit half of the plan_change → edit → verify_change loop.",
+    "input_schema": {
+      "properties": {
+        "max_tokens": {
+          "description": "Response budget in approximate tokens (same chars/4 heuristic as _meta.tokens_used). Degradation order: changed_symbols, possibly_orphaned, tests_to_run (floor 3), plan_comparison id lists (counts survive). 0/omitted = unlimited. warnings_v2 code=budget_truncated names the trimmed sections.",
+          "type": "integer"
+        },
+        "project": {
+          "description": "Project name or ID. Defaults to session project.",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Which diff to verify: 'unstaged' (default), 'staged', 'all' (includes untracked), or 'base:\u003cbranch\u003e' (committed diff vs merge-base of \u003cbranch\u003e)",
+          "type": "string"
+        },
+        "target": {
+          "description": "Optional — the same target you passed to plan_change (symbol id, file path, or name). When given, the response includes plan_comparison: the plan's predicted depth-1 callers vs the depth-1 callers this diff actually impacts. Omit to skip the comparison.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
     "name": "why_empty",
     "description": "**Use when a previous tool call returned empty.** Pass `prior_empty_reason` (the `_meta.empty_reason` value from the empty response). Returns the matching catalog entry: `{title, when_it_fires, recovery_action, recovery_steps[]}`. Stateless catalog lookup — no DB query, no project scope needed. Replaces 'read the catalog doc + try recovery probes one at a time' with one round-trip. Source: `docs/empty-reasons.md`.",
     "input_schema": {
