@@ -19,7 +19,7 @@ import (
 // Existing settings keys are preserved.
 
 func TestMergePincherHook_FromEmpty_CreatesFreshBlock(t *testing.T) {
-	updated, action, err := mergePincherHook(nil)
+	updated, action, err := mergePincherHook(nil, "pincher hook-check")
 	if err != nil {
 		t.Fatalf("mergePincherHook: %v", err)
 	}
@@ -32,8 +32,8 @@ func TestMergePincherHook_FromEmpty_CreatesFreshBlock(t *testing.T) {
 		t.Fatalf("PreToolUse len = %d, want 1", len(preToolUse))
 	}
 	entry, _ := preToolUse[0].(map[string]any)
-	if entry["matcher"] != "Read|Grep" {
-		t.Errorf("matcher = %v, want Read|Grep", entry["matcher"])
+	if entry["matcher"] != "Read|Grep|Glob" {
+		t.Errorf("matcher = %v, want Read|Grep|Glob", entry["matcher"])
 	}
 	hookList, _ := entry["hooks"].([]any)
 	first, _ := hookList[0].(map[string]any)
@@ -50,7 +50,7 @@ func TestMergePincherHook_PreservesExistingKeys(t *testing.T) {
 			"OtherEvent": []any{map[string]any{"matcher": "Bash"}},
 		},
 	}
-	updated, action, err := mergePincherHook(in)
+	updated, action, err := mergePincherHook(in, "pincher hook-check")
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
@@ -77,12 +77,12 @@ func TestMergePincherHook_PreservesExistingKeys(t *testing.T) {
 
 func TestMergePincherHook_Idempotent(t *testing.T) {
 	// First merge installs the hook.
-	first, _, err := mergePincherHook(nil)
+	first, _, err := mergePincherHook(nil, "pincher hook-check")
 	if err != nil {
 		t.Fatalf("first merge: %v", err)
 	}
 	// Second merge should detect the existing entry and noop.
-	_, action, err := mergePincherHook(first)
+	_, action, err := mergePincherHook(first, "pincher hook-check")
 	if err != nil {
 		t.Fatalf("second merge: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestMergePincherHook_DetectsCustomCommand(t *testing.T) {
 			},
 		},
 	}
-	updated, action, err := mergePincherHook(in)
+	updated, action, err := mergePincherHook(in, "pincher hook-check")
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestMergePincherHook_DetectsCustomCommand(t *testing.T) {
 // can emit the ledger-aware advisory.
 
 func TestMergePincherHook_RegistersPreCompact(t *testing.T) {
-	updated, action, err := mergePincherHook(nil)
+	updated, action, err := mergePincherHook(nil, "pincher hook-check")
 	if err != nil {
 		t.Fatalf("mergePincherHook: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestMergePincherHook_PreCompactIdempotent(t *testing.T) {
 			},
 		},
 	}
-	_, action, err := mergePincherHook(in)
+	_, action, err := mergePincherHook(in, "pincher hook-check")
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestMergePincherHook_PreservesForeignPreCompactEntries(t *testing.T) {
 			},
 		},
 	}
-	updated, _, err := mergePincherHook(in)
+	updated, _, err := mergePincherHook(in, "pincher hook-check")
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestMergePincherHook_ExistingPreToolUseGetsAppendTo(t *testing.T) {
 			},
 		},
 	}
-	updated, action, err := mergePincherHook(in)
+	updated, action, err := mergePincherHook(in, "pincher hook-check")
 	if err != nil {
 		t.Fatalf("merge: %v", err)
 	}
@@ -312,6 +312,44 @@ func TestMergePincherHook_ExistingPreToolUseGetsAppendTo(t *testing.T) {
 	pre, _ := hooks["PreToolUse"].([]any)
 	if len(pre) != 2 {
 		t.Errorf("PreToolUse len = %d, want 2 (preserved Bash + appended pincher)", len(pre))
+	}
+}
+
+func TestHookCheckCommand_Default(t *testing.T) {
+	t.Setenv("PINCHER_DATA_DIR", "")
+	os.Unsetenv("PINCHER_DATA_DIR")
+	if got := hookCheckCommand(); got != "pincher hook-check" {
+		t.Errorf("default command = %q, want bare pincher hook-check", got)
+	}
+}
+
+func TestHookCheckCommand_BakesDataDirFromEnv(t *testing.T) {
+	t.Setenv("PINCHER_DATA_DIR", "/custom/pincher data")
+	got := hookCheckCommand()
+	if !strings.Contains(got, "--data-dir") {
+		t.Errorf("command should bake the data dir; got %q", got)
+	}
+	if !strings.Contains(got, `"/custom/pincher data"`) {
+		t.Errorf("data dir with spaces should be quoted; got %q", got)
+	}
+}
+
+func TestInstallClaudeHook_BakesDataDirIntoSettings(t *testing.T) {
+	// The original symptom: `PINCHER_DATA_DIR=… pincher init` indexed
+	// into a custom dir, but the installed hook entry was a bare
+	// `pincher hook-check` that resolved the platform default — empty —
+	// so the hook passed everything through forever.
+	t.Setenv("PINCHER_DATA_DIR", "/custom/pincher-data")
+	dir := t.TempDir()
+	if err := installClaudeHook(io.Discard, dir, false); err != nil {
+		t.Fatalf("installClaudeHook: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	if !strings.Contains(string(body), "--data-dir") {
+		t.Errorf("installed hook should carry --data-dir when env set; got %s", body)
 	}
 }
 
@@ -329,7 +367,7 @@ func TestInstallClaudeHook_FreshFileCreated(t *testing.T) {
 	if !strings.Contains(string(body), "pincher hook-check") {
 		t.Errorf("written file should contain hook command; got %s", body)
 	}
-	if !strings.Contains(string(body), `"matcher": "Read|Grep"`) {
+	if !strings.Contains(string(body), `"matcher": "Read|Grep|Glob"`) {
 		t.Errorf("written file should contain the matcher; got %s", body)
 	}
 	if !strings.Contains(buf.String(), "created") {
