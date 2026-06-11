@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/kwad77/pincher/internal/db"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -237,6 +238,15 @@ func (s *Server) handleLoop(ctx context.Context, req *mcp.CallToolRequest) (*mcp
 						"why": "pull the convention/recipe entries the keys point at"},
 				},
 			},
+		}
+		// LES (ADR LOOP_EFFICIENCY_METRIC): one-line les_hint when this
+		// loop's iteration_cost is computable from recorded telemetry —
+		// the resume brief tells the agent what its iterations have
+		// been costing before it starts the next one. Empty-decision
+		// checkpoints never count (anti-gaming); no recorded tokens or
+		// no counting checkpoints → no hint, never a guessed number.
+		if hint := s.lesHintForLoop(projectID, name, time.Now()); hint != "" {
+			data["les_hint"] = hint
 		}
 		if indexChanged {
 			attachWarningStructured(data, "index_moved_since_checkpoint", WarningSeverityWarning,

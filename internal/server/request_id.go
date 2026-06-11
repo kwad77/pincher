@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -83,6 +84,15 @@ func (s *Server) withRequestID(handler mcp.ToolHandler) mcp.ToolHandler {
 		slog.Debug("pincher.tool.call", "tool", tool, "request_id", rid)
 		if err == nil && res != nil {
 			injectRequestID(res, rid)
+			// LES (ADR LOOP_EFFICIENCY_METRIC) waste_rate input: error
+			// envelopes never reach jsonResultWithMeta, so the session
+			// counter lives at this middleware — the one chokepoint
+			// every top-level call (stdio AND HTTP) passes through.
+			// Batch sub-calls dispatch raw handlers and are not
+			// counted here; the basis string documents the scope.
+			if res.IsError {
+				atomic.AddInt64(&s.statsErrorEnvelopes, 1)
+			}
 		}
 		return res, err
 	}
