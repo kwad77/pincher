@@ -59,6 +59,7 @@ type TreeSitter struct {
 	languageJava       api.Function
 	languageCSharp     api.Function
 	languagePHP        api.Function
+	languageRuby       api.Function
 	languageSwift      api.Function
 	languageTypeScript api.Function
 	languageTSX        api.Function
@@ -119,6 +120,7 @@ func New(ctx context.Context) (TreeSitter, error) {
 		languageJava:        mod.ExportedFunction("tree_sitter_java"),
 		languageCSharp:      mod.ExportedFunction("tree_sitter_c_sharp"),
 		languagePHP:         mod.ExportedFunction("tree_sitter_php"),
+		languageRuby:        mod.ExportedFunction("tree_sitter_ruby"),
 		languageSwift:       mod.ExportedFunction("tree_sitter_swift"),
 		languageTypeScript:  mod.ExportedFunction("tree_sitter_typescript"),
 		languageTSX:         mod.ExportedFunction("tree_sitter_tsx"),
