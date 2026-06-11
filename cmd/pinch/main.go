@@ -129,6 +129,10 @@ func main() {
 		runVerifyCLI(os.Args[2:])
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "test-impacted" {
+		runTestImpactedCLI(os.Args[2:])
+		return
+	}
 
 	// #796: a first arg that isn't a flag and isn't a recognized
 	// subcommand is a typo (`pincher doctr`, `pincher stat`). Pre-fix it
@@ -465,6 +469,7 @@ func printHelpBanner(out io.Writer) {
 	fmt.Fprintln(out, "  pincher project prune-stale    Drop projects indexed by an old schema and untouched for N days")
 	fmt.Fprintln(out, "  pincher project prune-dead     Drop projects whose indexed path no longer exists")
 	fmt.Fprintln(out, "  pincher verify                 Re-hash every indexed file and report drift vs stored hash (#1399)")
+	fmt.Fprintln(out, "  pincher test-impacted          Run exactly the Go tests the current diff's blast radius implicates")
 	fmt.Fprintln(out, "  pincher completion <shell>     Print a bash/zsh/fish completion script")
 	fmt.Fprintln(out, "  pincher export-graph           Dump the symbol+edge graph (json/graphml/dot)")
 	fmt.Fprintln(out, "  pincher report                 Generate a markdown architecture report from indexed graph evidence")
