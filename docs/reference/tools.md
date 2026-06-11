@@ -1,4 +1,4 @@
-# The 30 MCP tools
+# The 31 MCP tools
 
 [Back to reference index](README.md)
 
@@ -123,6 +123,12 @@ Tested latency: <1 ms.
 Durable work-state for multi-iteration agent loops (loop-substrate PR-8/9). Actions: `start` (open a named loop), `checkpoint` (append one iteration's claim/decision/confidence/reopen_trigger/evidence, stamped with the index watermark), `list`, and `resume` — one bounded brief (default ~800 tokens, `max_tokens` to adjust) with the checkpoint tail, open reopen-triggers, ADR keys, and whether the index changed since the last checkpoint. ADR holds conventions; the loop ledger holds in-flight work.
 
 Tested latency: <1 ms.
+
+### `batch` {#tool-batch}
+
+One envelope, N read-only answers (loop-substrate). Carries up to 12 `{tool, args}` sub-queries — any of `search`, `symbol`, `symbols`, `context`, `trace`, `query`, `neighborhood`, `changes` — answered in order under a shared `max_tokens` budget (default 4000; later sub-queries past the budget return `skipped:"budget_exhausted"` plus a `budget_truncated` warning). Each entry carries a slim per-entry `_meta` (`empty_reason`, `tokens_used`, `warnings_v2` only); the outer envelope carries the single full `_meta` — one watermark/capabilities/stats accumulation per N answers instead of per answer. Sub-errors are isolated per entry (`error` field + a `batch_sub_errors` warning naming the failed indexes); the rest of the batch completes. Top-level `project` is merged into every sub-query that doesn't set its own.
+
+Tested latency: sum of sub-query latencies (in-process dispatch; no per-sub-query transport cost).
 
 ### `health` {#tool-health}
 

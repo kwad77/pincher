@@ -3714,6 +3714,7 @@ var toolComplexityTiers = map[string]string{
 	"architecture":   "standard",
 	"branch_overlap": "standard",
 	"fetch":          "standard",
+	"batch":          "standard", // loop-substrate: envelope of N read-only sub-queries — bounded by the shared max_tokens, medium response
 
 	// heavy — synthesis-style output requiring frontier parsing
 	"guide":               "heavy",
@@ -3759,6 +3760,7 @@ var toolIdempotent = map[string]bool{
 	"audit_unused":        true, // #1391 v0.83 — read-only composite (dead_code + deep-trace confirmation)
 	"onboard_module":      true, // #1391 v0.84 — read-only composite (scope scan + boundary edges)
 	"why_empty":           true, // #1391 v0.85 — stateless catalog lookup
+	"batch":               true, // loop-substrate — envelope over read-only sub-tools only (whitelist enforced per-entry)
 	"trace":               true,
 	"query":               true,
 	"guide":               true,
@@ -4094,6 +4096,7 @@ var toolMetadata = map[string]toolMetadataEntry{
 	"audit_unused":        {Title: "Dead-code composite with deep-trace confirmation", Annotations: annotationsReadOnly}, // #1391 v0.83
 	"onboard_module":      {Title: "New-contributor orientation composite", Annotations: annotationsReadOnly},            // #1391 v0.84
 	"why_empty":           {Title: "Empty-result recovery composite", Annotations: annotationsReadOnly},                  // #1391 v0.85
+	"batch":               {Title: "Multi-query batch envelope", Annotations: annotationsReadOnly},                       // loop-substrate
 
 	// Diagnostics (read-only, idempotent).
 	"health": {Annotations: annotationsReadOnly},
@@ -4197,6 +4200,14 @@ func (s *Server) unknownArgs(tool string, args map[string]any) []unknownArgWarni
 		// Setting PINCHER_META=lite on the MCP child's env achieves the
 		// same effect globally without per-call discipline.
 		if k == "meta" {
+			continue
+		}
+		// batch (loop-substrate): `_nested` is the internal marker the
+		// `batch` envelope tool stamps on every sub-call's args so
+		// jsonResultWithMeta skips session-stats accumulation for it.
+		// Never caller-supplied via a tool's InputSchema; skip it
+		// universally so batched sub-calls don't warn on every entry.
+		if k == "_nested" {
 			continue
 		}
 		if !allowed[k] {
@@ -4466,6 +4477,24 @@ func (s *Server) registerTools() {
 			}
 		}`),
 	}, s.handleLoop)
+
+	// 13c. batch — one envelope, N read-only answers (loop-substrate).
+	// The cost removed is per-call ceremony: one watermark + capabilities
+	// + transport per N answers instead of per answer.
+	s.addTool(&mcp.Tool{
+		Name:        "batch",
+		Description: "**Ask up to 12 read-only questions in ONE call.** Carries an array of {tool, args} sub-queries — any of `search`, `symbol`, `symbols`, `context`, `trace`, `query`, `neighborhood`, `changes` — and answers them in order inside a single envelope under a shared `max_tokens` budget (default 4000; once exhausted, later sub-queries return skipped:\"budget_exhausted\" + a budget_truncated warning instead of blowing the context window). Each entry ships a slim per-entry `_meta` ({empty_reason, tokens_used, warnings_v2} only); the outer envelope carries the one full `_meta` (watermark/capabilities/stats) for the whole batch — that deduplicated ceremony is the point. Sub-errors are isolated: a bad symbol ID or typo'd pinchQL yields a per-entry `error` field (plus a batch_sub_errors warning naming the failed indexes) and the rest of the batch completes normally. Top-level `project` is merged into every sub-query that doesn't set its own. Use when a loop iteration needs several probes at once — three greps' worth of answers for one call's ceremony.",
+		InputSchema: json.RawMessage(`{
+			"type":"object","required":["queries"],"properties":{
+				"queries":{"type":"array","description":"Sub-queries answered in order (max 12). Each is {tool, args} where args matches the sub-tool's own schema.","items":{"type":"object","required":["tool"],"properties":{
+					"tool":{"type":"string","enum":["search","symbol","symbols","context","trace","query","neighborhood","changes"],"description":"Read-only sub-tool to dispatch. Writers and batch-in-batch are rejected per-entry."},
+					"args":{"type":"object","description":"Arguments for the sub-tool — identical schema to calling it directly."}
+				}}},
+				"project":{"type":"string","description":"Default project merged into each sub-query that doesn't set its own. Defaults to session project."},
+				"max_tokens":{"type":"integer","description":"Shared response budget in approximate tokens across ALL sub-queries (default 4000), spent in input order. Budget-aware sub-tools (context, symbols) inherit the remaining budget as their own max_tokens when unset. _meta.warnings_v2 code=budget_truncated reports skipped sub-queries."}
+			}
+		}`),
+	}, s.handleBatch)
 
 	// 13. health — drift signals + extraction coverage. v0.52 reversal of #624.
 	s.addTool(&mcp.Tool{
@@ -13054,7 +13083,23 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 	// #477: skip the tokens_saved increment for "none" tools — adding 0
 	// would be a no-op anyway, but being explicit guards against future
 	// callers passing a non-zero tokensSaved by mistake.
-	newCalls := atomic.AddInt64(&s.statsCalls, 1)
+	//
+	// batch (loop-substrate): `_nested` marks an in-process sub-call
+	// dispatched by the `batch` envelope tool. Nested calls do NOT
+	// accumulate session stats, latency, language attribution, query
+	// metrics, call events, or celebrations — the outer batch call is
+	// the single source of stats truth for batched traffic; counting
+	// both would double every batched answer. The full _meta is still
+	// stamped (the batch handler slims it afterwards).
+	nested := boolArg(args, "_nested")
+	var newCalls int64
+	if nested {
+		// Read-only peek: the watermark's call-seq component reflects
+		// the current outer-call count without consuming a slot.
+		newCalls = atomic.LoadInt64(&s.statsCalls)
+	} else {
+		newCalls = atomic.AddInt64(&s.statsCalls, 1)
+	}
 	// PR-4' (loop-substrate): watermark = index generation + call seq.
 	// Equal gN between two responses ⇒ the symbol graph did not change
 	// in between — loop agents key caches and resume-checkpoints on it.
@@ -13063,59 +13108,61 @@ func (s *Server) jsonResultWithMeta(data map[string]any, start time.Time, tool s
 	if s.indexer != nil {
 		meta["watermark"] = fmt.Sprintf("g%d.c%d", s.indexer.Generation(), newCalls)
 	}
-	atomic.AddInt64(&s.statsTokensUsed, int64(tokensUsed))
-	if baselineMethod != baselineMethodNone {
-		atomic.AddInt64(&s.statsTokensSaved, int64(tokensSaved))
-	}
-	atomic.AddInt64(&s.statsLatencyMS, latency)
+	if !nested {
+		atomic.AddInt64(&s.statsTokensUsed, int64(tokensUsed))
+		if baselineMethod != baselineMethodNone {
+			atomic.AddInt64(&s.statsTokensSaved, int64(tokensSaved))
+		}
+		atomic.AddInt64(&s.statsLatencyMS, latency)
 
-	// #1630 v0.85: per-tool latency aggregation. Records this call's
-	// latency into the per-tool atomic counters so `pincher stats` can
-	// surface "BY TOOL (top-5 by total time)" — the cost × frequency
-	// view that flat avg_latency alone couldn't answer.
-	s.recordToolLatency(tool, latency)
+		// #1630 v0.85: per-tool latency aggregation. Records this call's
+		// latency into the per-tool atomic counters so `pincher stats` can
+		// surface "BY TOOL (top-5 by total time)" — the cost × frequency
+		// view that flat avg_latency alone couldn't answer.
+		s.recordToolLatency(tool, latency)
 
-	// Per-language call attribution (#240). Scans the marshalled
-	// payload for the first `"language":"X"` occurrence; records the
-	// call against that language. Tools that don't yield a language
-	// field (architecture, list, schema, health, stats, guide) are
-	// not attributed and stay invisible to bypass detection — that's
-	// fine because the use case is "agent did X file-type work but
-	// pincher saw 0 X calls" and only the symbol-/search-bearing
-	// tools matter for that signal.
-	if m := languageRE.FindSubmatch(b); len(m) > 1 {
-		s.recordCallLanguage(string(m[1]))
-	}
+		// Per-language call attribution (#240). Scans the marshalled
+		// payload for the first `"language":"X"` occurrence; records the
+		// call against that language. Tools that don't yield a language
+		// field (architecture, list, schema, health, stats, guide) are
+		// not attributed and stay invisible to bypass detection — that's
+		// fine because the use case is "agent did X file-type work but
+		// pincher saw 0 X calls" and only the symbol-/search-bearing
+		// tools matter for that signal.
+		if m := languageRE.FindSubmatch(b); len(m) > 1 {
+			s.recordCallLanguage(string(m[1]))
+		}
 
-	// Query-failure / retry-rate counters (#241). Only the four
-	// query-shaped tools contribute; everything else is a no-op.
-	s.recordQueryMetrics(tool, args, data, tokensUsed)
+		// Query-failure / retry-rate counters (#241). Only the four
+		// query-shaped tools contribute; everything else is a no-op.
+		s.recordQueryMetrics(tool, args, data, tokensUsed)
 
-	// #635 v0.64: append per-call event for dashboard triangulating
-	// panels. Buffer is drained by flushSession every 10s; cap is the
-	// only producer-side gate so a delayed flush (DB busy, paused
-	// session) can't unbounded-grow memory. Overflow is dropped with
-	// a one-shot warning log — the dashboard panels degrade
-	// gracefully (rows < 50 hide the panel), so a partial buffer
-	// drop doesn't corrupt the displayed signal.
-	s.recordToolCallEvent(tool, baselineMethod, tokensUsed, tokensSaved, len(b), meta)
+		// #635 v0.64: append per-call event for dashboard triangulating
+		// panels. Buffer is drained by flushSession every 10s; cap is the
+		// only producer-side gate so a delayed flush (DB busy, paused
+		// session) can't unbounded-grow memory. Overflow is dropped with
+		// a one-shot warning log — the dashboard panels degrade
+		// gracefully (rows < 50 hide the panel), so a partial buffer
+		// drop doesn't corrupt the displayed signal.
+		s.recordToolCallEvent(tool, baselineMethod, tokensUsed, tokensSaved, len(b), meta)
 
-	// First call of a new session: flush immediately so the dashboard sees
-	// the session within milliseconds rather than waiting for the 10s ticker.
-	if newCalls == 1 {
-		go s.flushSession()
-	}
+		// First call of a new session: flush immediately so the dashboard sees
+		// the session within milliseconds rather than waiting for the 10s ticker.
+		if newCalls == 1 {
+			go s.flushSession()
+		}
 
-	// #494: occasional dopamine. Cumulative all-time tokens_saved =
-	// previously-flushed sessions + this in-flight session's running
-	// total (statsTokensSaved). Without the in-flight component, the
-	// celebration would lag by 10s (next flushSession tick), which is
-	// long enough to land on a different unrelated tool call. Adding
-	// it surfaces the milestone on the response that actually crossed
-	// it. MaybeFireCelebration's PRIMARY KEY guarantees one-shot per
-	// installation.
-	if cel := s.maybeFormatCelebration(); cel != "" {
-		meta["celebration"] = cel
+		// #494: occasional dopamine. Cumulative all-time tokens_saved =
+		// previously-flushed sessions + this in-flight session's running
+		// total (statsTokensSaved). Without the in-flight component, the
+		// celebration would lag by 10s (next flushSession tick), which is
+		// long enough to land on a different unrelated tool call. Adding
+		// it surfaces the milestone on the response that actually crossed
+		// it. MaybeFireCelebration's PRIMARY KEY guarantees one-shot per
+		// installation.
+		if cel := s.maybeFormatCelebration(); cel != "" {
+			meta["celebration"] = cel
+		}
 	}
 
 	// #622: drop pedagogy-shape next_steps on the success path. Most
@@ -13340,6 +13387,7 @@ var baselineMethodForTool = map[string]string{
 	"changes":             baselineMethodFullFileRead,
 	"dead_code":           baselineMethodFullFileRead,
 	"neighborhood":        baselineMethodFullFileRead,
+	"batch":               baselineMethodFullFileRead, // loop-substrate: envelope over read-replacing sub-tools; tokens_saved = sum of sub-call savings
 	// Admin / orientation / write-side tools — no Read/Grep alternative.
 	"index":          baselineMethodNone,
 	"architecture":   baselineMethodNone,

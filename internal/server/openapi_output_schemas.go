@@ -310,6 +310,25 @@ var outputSchemas = map[string]string{
 		}
 	}`,
 
+	// 13c. batch — one envelope, N read-only sub-query answers
+	// (loop-substrate). results entries are {index, tool, result, _meta}
+	// on success, {index, tool, error} on isolated sub-error, or
+	// {index, tool, skipped} once the shared budget is exhausted.
+	"batch": `{
+		"type":"object",
+		"required":["results","count","budget"],
+		"properties":{
+			"results":{"type":"array","items":{"type":"object"}},
+			"count":{"type":"integer"},
+			"budget":{"type":"object","properties":{
+				"max_tokens":{"type":"integer"},
+				"spent_approx":{"type":"integer"},
+				"skipped_queries":{"type":"integer"}
+			}},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
 	// 14. health — extraction quality + drift.
 	"health": `{
 		"type":"object",
