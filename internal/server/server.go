@@ -5601,6 +5601,28 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// when source was actually rendered (includeSource and not a Document).
 	if modeSkeleton && includeSource && sym.Kind != "Document" {
 		attachModeSkeletonMeta(data, sym.EndByte-sym.StartByte, source)
+		// #2047: a skeleton renders the signature from the indexed db.Symbol
+		// fields with NO disk read, so a source edit that drifts the
+		// signature without a reindex is served silently as the OLD shape —
+		// no staleness signal (mode=full catches this via its byte-offset
+		// guard, but a skeleton deliberately never reads bytes). Close the
+		// silent-lie with a CHEAP os.Stat (a stat is not a file read, so the
+		// no-file-read fast path + #2043 perf win are preserved):
+		//
+		//  1. Honesty marker, ALWAYS: stamp that the structure is
+		//     index-derived and not byte-verified, so a same-size or GROWN
+		//     edit — which size alone can't detect — is never presented as
+		//     disk-current.
+		//  2. Stale warning, when the stat proves drift: file gone (deleted/
+		//     moved) OR the symbol's indexed EndByte exceeds the current file
+		//     size (the file shrank past the symbol = definitely stale).
+		//
+		// The complete fix for the same-size/grown-edit case needs the
+		// indexed source mtime on the files table (the #2043 follow-up): a
+		// stat mtime-compare would then catch ALL drift. This PR does the
+		// cheap stat-gate + honesty marker; the mtime gate is tracked
+		// separately.
+		s.attachSkeletonStalenessGate(data, sym, root)
 	}
 	if detailWarning != "" {
 		attachWarning(data, detailWarning)
@@ -5706,6 +5728,87 @@ func (s *Server) attachStalenessWarning(data map[string]any, projectID string, s
 	})
 	meta["next_steps"] = steps
 	data["_meta"] = meta
+}
+
+// attachSkeletonStalenessGate is the #2047 honesty layer for mode=skeleton.
+// A skeleton renders the signature/docstring from indexed db.Symbol fields
+// with NO file read, so an on-disk edit that drifts the signature without a
+// reindex is otherwise served silently as the old shape. This closes that
+// silent-lie with a CHEAP os.Stat — NOT a file read, so the no-file-read
+// fast path and the #2043 perf win are preserved, and the delete-survival
+// property holds (a failed stat is a valid signal; the skeleton still
+// renders from the DB, now WITH the stale marker).
+//
+// Two effects:
+//
+//  1. ALWAYS stamp _meta.rendered_from="index" + _meta.disk_verified=false.
+//     A same-size or grown edit can't be caught by size alone, so the
+//     honest marker guarantees a caller can always tell a skeleton is
+//     index-structure, not byte-verified disk-current content.
+//
+//  2. When the stat PROVES drift — file gone, or sym.EndByte exceeds the
+//     current file size (shrunk past the symbol) — attach a
+//     skeleton_index_stale warning (string + warnings_v2) mirroring the
+//     mode=full stale_byte_offset shape, plus a re-index next_step.
+//
+// The complete fix for the same-size/grown-edit case needs the indexed
+// source mtime on the files table (#2043 follow-up); a stat mtime-compare
+// would then catch ALL drift. This gate does the cheap size check today.
+func (s *Server) attachSkeletonStalenessGate(data map[string]any, sym *db.Symbol, root string) {
+	if sym == nil {
+		return
+	}
+	meta, _ := data["_meta"].(map[string]any)
+	if meta == nil {
+		meta = map[string]any{}
+		data["_meta"] = meta
+	}
+	// Honesty marker — unconditional. The skeleton is index-derived and
+	// has NOT been verified against the bytes on disk.
+	meta["rendered_from"] = "index"
+	meta["disk_verified"] = false
+
+	// Without a project root we can't resolve the file to stat; the honesty
+	// marker above already prevents the silent-current lie. Bail.
+	if root == "" {
+		return
+	}
+
+	abs := filepath.Join(root, filepath.FromSlash(sym.FilePath))
+	fi, err := os.Stat(abs)
+	stale := false
+	reason := ""
+	switch {
+	case err != nil:
+		// File gone / moved / unreadable. A failed stat is itself the
+		// signal — definitively no longer the indexed source on disk.
+		stale = true
+		reason = "source file changed/removed since index"
+	case sym.EndByte > 0 && int64(sym.EndByte) > fi.Size():
+		// The file shrank past the symbol's indexed range — the byte
+		// offsets the index recorded can no longer exist on disk, so the
+		// rendered signature is definitely from a prior version.
+		stale = true
+		reason = fmt.Sprintf("source file shrank since index (now %d bytes, symbol ends at byte %d)", fi.Size(), sym.EndByte)
+	}
+	if !stale {
+		return
+	}
+
+	msg := fmt.Sprintf(
+		"file %q: structure rendered from the index; %s — signature may be outdated; re-index to refresh",
+		sym.FilePath, reason)
+	attachWarning(data, msg)
+	attachWarningStructured(data, "skeleton_index_stale", WarningSeverityWarning, msg,
+		map[string]any{"file": sym.FilePath, "reason": reason})
+
+	steps, _ := meta["next_steps"].([]map[string]string)
+	steps = append(steps, map[string]string{
+		"tool": "index",
+		"args": nextStepArgs(map[string]any{"path": root, "force": true}),
+		"why":  "source file changed/removed since index — re-index so the skeleton signature matches the current source",
+	})
+	meta["next_steps"] = steps
 }
 
 // attachStalenessWarningsForPaths checks each unique file path against
@@ -6139,6 +6242,17 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 			data["_meta"] = meta
 		}
 		meta["mode"] = modeSkeletonValue
+		// #2047: every entry in a skeleton batch is rendered from the index
+		// with NO file read, so the whole batch is structure-derived and not
+		// byte-verified. A single call-wide honesty marker (matching the
+		// "one top-level marker" design above) guarantees no batch entry is
+		// ever presented as disk-current. Per-entry stat gating is
+		// deliberately not done here — it would stat N files on a path
+		// designed to touch zero; the call-wide marker is the honest signal,
+		// and a caller who needs byte-current bytes for a specific id
+		// re-fetches it with mode=full (which runs the per-symbol gate).
+		meta["rendered_from"] = "index"
+		meta["disk_verified"] = false
 	}
 	if detailWarning != "" {
 		attachWarning(data, detailWarning)
@@ -6440,6 +6554,10 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		}
 		if modeSkeleton && sym.Kind != "Document" {
 			attachModeSkeletonMeta(liteData, sym.EndByte-sym.StartByte, liteSource)
+			// #2047: the lite path renders the same index-derived skeleton
+			// with no file read, so it carries the same silent-stale risk —
+			// gate it identically (honesty marker + cheap os.Stat).
+			s.attachSkeletonStalenessGate(liteData, sym, root)
 		}
 		if detailWarning != "" {
 			attachWarning(liteData, detailWarning)
@@ -6812,6 +6930,12 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// projection, so this is attached after it.
 	if modeSkeleton && sym.Kind != "Document" {
 		attachModeSkeletonMeta(data, sym.EndByte-sym.StartByte, source)
+		// #2047: the same silent-stale hole the single-symbol path closes
+		// applies here — handleContext also renders the primary symbol's
+		// signature from the index with NO file read. Stamp the honesty
+		// marker (disk_verified=false) and the cheap os.Stat stale-gate so a
+		// drifted source isn't served as byte-current via `context` either.
+		s.attachSkeletonStalenessGate(data, sym, root)
 	}
 	if detailWarning != "" {
 		attachWarning(data, detailWarning)
