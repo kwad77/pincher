@@ -234,6 +234,21 @@ type Server struct {
 	// (canonical-value-only; typo ⇒ absent).
 	routerDetected bool
 
+	// routerMode is the parsed PINCHER_ROUTER value (off|auto|on), read
+	// once at New() alongside routerDetected. The models/route proxy
+	// handlers consult it so PINCHER_ROUTER=off means zero routing
+	// activity of any kind — not just zero advertisement: a direct HTTP
+	// /v1/models|route call under off short-circuits to a structured
+	// error instead of dialing the router (router-loop item B5).
+	routerMode string
+
+	// routerBaseURL is the router service base ("http://<addr>" from
+	// PINCHER_ROUTER_ADDR, default 127.0.0.1:7878) the models/route
+	// tools proxy against. Resolved once at New() from the same config
+	// the detection ladder probes, so the surface and the proxy can
+	// never disagree about which router they mean.
+	routerBaseURL string
+
 	// includeCapabilitiesPerCall gates the per-call _meta.capabilities
 	// stamping in jsonResultWithMeta. Default true (back-compat); set
 	// false via PINCHER_META_CAPABILITIES=off|false|0|none at server
@@ -557,19 +572,27 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 			RootsListChangedHandler: s.onRoots,
 		},
 	)
-	s.registerTools()
-	// #1082: expose `guide` as a user-controlled MCP prompt in addition to
-	// the model-controlled tool. Registering it makes the SDK advertise the
-	// `prompts` capability in initialize; the host surfaces it as a slash
-	// command. Same recommendation core as the tool (computeGuide).
-	s.registerPrompts()
 	// Router-loop item B4: run the pincher-router detection ladder once
 	// at startup (router_detect.go) so computeCapabilities below can
 	// advertise the `router` tag. Best-effort and bounded (≤50ms probe
 	// timeout, no network at all unless rungs 1–2 indicate an install);
 	// every failure mode is "absent" — detection can never error out of
 	// or block New(). Rollback knob: PINCHER_ROUTER=off.
-	s.routerDetected = detectRouter(defaultRouterProbeConfig())
+	//
+	// Item B5: runs BEFORE registerTools because addTool gates the
+	// models/route MCP advertisement on s.routerDetected (registration-
+	// time membership, exactly like the coreToolset narrowing — plan
+	// §A6). routerMode/routerBaseURL feed the proxy handlers.
+	routerCfg := defaultRouterProbeConfig()
+	s.routerMode = routerCfg.mode
+	s.routerBaseURL = routerCfg.baseURL
+	s.routerDetected = detectRouter(routerCfg)
+	s.registerTools()
+	// #1082: expose `guide` as a user-controlled MCP prompt in addition to
+	// the model-controlled tool. Registering it makes the SDK advertise the
+	// `prompts` capability in initialize; the host surfaces it as a slash
+	// command. Same recommendation core as the tool (computeGuide).
+	s.registerPrompts()
 	// #649: compute capability advertisement once at startup. Routers
 	// consume this from _meta.capabilities to make integration decisions
 	// (do I need to fall back to polling, or can I subscribe via SSE?
@@ -3814,6 +3837,8 @@ var toolComplexityTiers = map[string]string{
 	"init":         "lite",
 	"self_test":    "lite",
 	"assert_graph": "lite", // conclusion-density: server-side pass/fail; two-token answer when passing
+	"models":       "lite", // router-loop B5: thin GET /v1/models proxy — registry render, small response
+	"route":        "lite", // router-loop B5: thin POST /v1/route|/v1/outcomes proxy — plan/ack-sized responses
 
 	// standard — pure-data, medium response (agent reasons over)
 	"context":        "standard",
@@ -3899,6 +3924,8 @@ var toolIdempotent = map[string]bool{
 	"init":        false, // writes editor config files (write=true path)
 	"adr":         false, // mixed: get/list idempotent, set/delete not — declare conservatively
 	"loop":        false, // mixed: list/resume idempotent, start/checkpoint append — same conservative stance as adr
+	"models":      false, // router-loop B5 — mixed: list is a pure read, but enable/disable (reserved) mutate router state; conservative like adr
+	"route":       false, // router-loop B5 — mixed: the router logs every route decision + mints a fresh request_id, and action=outcome appends to outcomes.jsonl
 }
 
 // toolIsIdempotent returns the registered idempotency declaration for
@@ -4153,7 +4180,19 @@ func (s *Server) addTool(tool *mcp.Tool, handler mcp.ToolHandler) {
 	// over MCP tools/list. s.handlers and s.tools are ALWAYS populated
 	// regardless — the HTTP /v1/<tool> routes, the OpenAPI spec and
 	// `batch` sub-query dispatch keep the full surface in both modes.
-	if s.toolset != toolsetCore || coreToolset[tool.Name] {
+	advertised := s.toolset != toolsetCore || coreToolset[tool.Name]
+	// Router-loop item B5 (plan §A6, conditional surface discipline):
+	// the models/route tools key the advertisement off the detection
+	// ladder instead of the toolset knob. Detected ⇒ they join the
+	// advertisement in BOTH toolset modes (a routed loop is the core
+	// use-case, so they ride along with coreToolset under the default).
+	// Absent ⇒ zero MCP surface even under PINCHER_TOOLSET=full — the
+	// anti-leverage guarantee that keeps the schema-diet win intact.
+	// Registration underneath is unconditional, same as core mode.
+	if routerConditionalTools[tool.Name] {
+		advertised = s.routerDetected
+	}
+	if advertised {
 		s.mcp.AddTool(tool, wrapped)
 		s.mcpVisible[tool.Name] = true
 	}
@@ -4265,6 +4304,13 @@ var toolMetadata = map[string]toolMetadataEntry{
 	// External-world: fetches HTTP content, repeat calls may return
 	// different bytes.
 	"fetch": {Annotations: annotationsExternal},
+
+	// Router-loop B5 — proxies to the pincher-router HTTP service.
+	// External by nature: the router owns the state behind both
+	// (registry, decision log, outcomes), and repeat calls can answer
+	// differently as it learns.
+	"models": {Title: "Router worker registry", Annotations: annotationsExternal},
+	"route":  {Title: "Router task dispatch", Annotations: annotationsExternal},
 }
 
 // (v0.52: addOperatorTool + makeOperatorRedirectHandler removed. The
@@ -4956,6 +5002,13 @@ func (s *Server) registerTools() {
 			"type":"object","properties":{}
 		}`),
 	}, s.handleSelfTest)
+
+	// 22+. models / route — the conditional pincher-router proxy surface
+	// (router-loop item B5). Registered unconditionally so HTTP
+	// /v1/models|route and the contract golden keep the full surface;
+	// MCP-advertised only when s.routerDetected (see addTool). Lives in
+	// router_tools.go with the proxy client.
+	s.registerRouterTools()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -14380,6 +14433,8 @@ var baselineMethodForTool = map[string]string{
 	"doctor":         baselineMethodNone, // diagnostic report — no Read alternative
 	"rebuild_fts":    baselineMethodNone, // admin: rebuild FTS5 indexes
 	"self_test":      baselineMethodNone, // smoke test — no Read alternative
+	"models":         baselineMethodNone, // router-loop B5: registry render — no Read/Grep alternative
+	"route":          baselineMethodNone, // router-loop B5: routing consult/outcome report — no Read/Grep alternative
 }
 
 // BaselineMethodForTool exposes the server's frozen baseline classification

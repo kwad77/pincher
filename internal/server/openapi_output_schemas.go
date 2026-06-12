@@ -856,4 +856,45 @@ var outputSchemas = map[string]string{
 			"_meta":` + metaRef + `
 		}
 	}`,
+
+	// 23. models — router registry render (router-loop B5; conditional
+	// MCP advertisement, HTTP route always present). Success path is
+	// the router's GET /v1/models body passed through: handshake +
+	// providers (+ registry_error when the router has no readable
+	// registry, + hint when the handshake is pre-v2).
+	"models": `{
+		"type":"object",
+		"required":["handshake","_meta"],
+		"properties":{
+			"handshake":{
+				"type":"object",
+				"description":"Contract-v2 version-skew handshake served by the router.",
+				"properties":{
+					"contract_version":{"type":"integer"},
+					"weights_version":{"type":"string"},
+					"registry_version":{"type":["integer","null"]},
+					"capabilities":{"type":"array","items":{"type":"string"}}
+				}
+			},
+			"providers":{"type":"object","description":"Registry render keyed by provider; auth is the spec string (e.g. env:ANTHROPIC_API_KEY) — resolved credentials never cross this boundary."},
+			"policy":{"type":"object"},
+			"originating_model_passthrough":{"type":"boolean"},
+			"registry_error":{"type":"string"},
+			"hint":{"type":"string","description":"Present when the router's contract_version is below the one this proxy is built against — installed-but-old, upgrade pincher-router."},
+			"_meta":` + metaRef + `
+		}
+	}`,
+
+	// 24. route — mode-tagged ExecutionPlan (action=route) or outcomes
+	// ack (action=outcome). Plan fields beyond mode/request_id are the
+	// router's ExecutionPlan and pass through verbatim.
+	"route": `{
+		"type":"object",
+		"properties":{
+			"mode":{"type":"string","enum":["execute","advise"],"description":"execute = the router owns the work (gate the result); advise = spawn a host subagent at the advised tier with the returned envelope."},
+			"request_id":{"type":"string","description":"Correlation id for the outcomes join — report it back via action='outcome' after the gate verdict."},
+			"ok":{"type":"boolean","description":"action='outcome' acknowledgement."},
+			"_meta":` + metaRef + `
+		}
+	}`,
 }

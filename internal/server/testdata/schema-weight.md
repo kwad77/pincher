@@ -54,3 +54,23 @@ Default since v1.6 (#2005): toolset=core, style=lean. PINCHER_TOOLSET=full
 | rebuild_fts | 180 |  |
 | self_test | 129 |  |
 | schema | 102 |  |
+
+## Router-present surface (router-loop B5)
+
+`models` + `route` join the advertisement only when a live pincher-router
+is detected (in BOTH toolset modes — they ride with the core set). The
+tables above ARE the absent state: zero delta against the pre-router
+surface (plan §A6). The detected-state core+lean total is held to the
+same budget gate (TestSchemaWeight_CoreLean_RouterPresent_UnderBudget).
+
+| toolset | style | tools | total tokens |
+|---|---|--:|--:|
+| full | rich | 36 | 19509 |
+| full | lean | 36 | 7399 |
+| core | rich | 12 | 9852 |
+| core | lean | 12 | 3515 |
+
+| router tool | rich | lean |
+|---|--:|--:|
+| models | 425 | 169 |
+| route | 520 | 252 |
