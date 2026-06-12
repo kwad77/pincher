@@ -155,6 +155,7 @@ func runInitCLI(args []string) {
 	dcoHook := fs.Bool("dco-hook", false, "Install a prepare-commit-msg git hook into .git/hooks that appends a DCO Signed-off-by trailer (from git config user.name/user.email) when the commit message lacks one. Skips merge/squash messages; never duplicates a trailer; an existing non-pincher hook is never overwritten (not even with --force).")
 	quiet := fs.Bool("quiet", false, "Suppress the per-language extraction-tier profile printed after the wiring step (#631). The wiring itself still runs.")
 	skillsWrite := fs.Bool("write", false, "(claude-skills target only) Apply the skills install. claude-skills previews by default — it writes a tree of files into the global ~/.claude/skills/, so mutation is opt-in, mirroring the MCP init tool's write=true contract.")
+	router := fs.Bool("router", false, "Seed the router-aware additions (requires a pincher-router installation; errors with install guidance when none is detected). Runs the detection ladder and prints status; appends the routing subsection to the managed policy block (idempotent, marker-delimited); runs the claude-skills leg so the pincher-loop skill with the dispatch verse is installed (preview by default — add --write to apply); and prints the router's own bootstrap commands when the registry or service is missing. Pincher never writes router-owned files.")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: pincher init [--target=NAME] [--global] [--dry-run] [--force]")
 		fmt.Fprintln(os.Stderr, "  Seed a pincher usage policy file for an editor or agent (idempotent; replace-in-place via marker comments).")
@@ -183,6 +184,24 @@ func runInitCLI(args []string) {
 	if *targetFlag == "" {
 		*targetFlag = autoResolveInitTarget(cwd, out)
 	}
+
+	// --router (plan §A3): detection decides BEFORE anything is
+	// written. Absent ⇒ error with guidance, zero writes — the routing
+	// subsection's "(pincher-router detected)" heading must never lie.
+	// Detected ⇒ the managed block below carries the routing
+	// subsection, and the claude-skills leg runs after the target loop
+	// so the verse-carrying pincher-loop skill lands too.
+	policy := pinit.PolicyMarkdown
+	var routerStatus routerInitStatus
+	if *router {
+		routerStatus = detectRouterForInit(defaultRouterInitProbe())
+		printRouterInitStatus(out, routerStatus)
+		if !routerStatus.installed() {
+			fmt.Fprint(os.Stderr, routerAbsentGuidance(routerStatus))
+			os.Exit(1)
+		}
+		policy = pinit.PolicyWithRouter()
+	}
 	// claude-skills (#shipped-skills): the methodology-skills installer.
 	// Always-global (~/.claude/skills/) and multi-file, so it bypasses
 	// the Target registry. Standalone --target=claude-skills runs only
@@ -191,6 +210,9 @@ func runInitCLI(args []string) {
 		if err := runInitSkillsDefault(out, *skillsWrite && !*dryRun); err != nil {
 			fmt.Fprintf(os.Stderr, "pincher init: %v\n", err)
 			os.Exit(1)
+		}
+		if *router {
+			printRouterBootstrapHints(out, routerStatus)
 		}
 		return
 	}
@@ -202,7 +224,7 @@ func runInitCLI(args []string) {
 	}
 
 	for _, t := range targets {
-		if err := runInitTarget(out, t, cwd, *global, *dryRun); err != nil {
+		if err := runInitTarget(out, t, cwd, *global, *dryRun, policy); err != nil {
 			fmt.Fprintf(os.Stderr, "pincher init: %v\n", err)
 			os.Exit(1)
 		}
@@ -225,15 +247,25 @@ func runInitCLI(args []string) {
 		}
 	}
 
-	// claude-skills rides along with target=all. It keeps its own
-	// dry-run-by-default contract: without --write the leg previews,
-	// so `pincher init --target=all` never silently writes into the
-	// user's home directory.
-	if *targetFlag == "all" {
+	// claude-skills rides along with target=all — and with --router,
+	// whose §A3 contract is "ensure the verse-carrying pincher-loop
+	// skill is installed". Both keep the leg's own dry-run-by-default
+	// contract: without --write it previews, so neither `--target=all`
+	// nor `--router` ever silently writes into the user's home
+	// directory.
+	if *targetFlag == "all" || *router {
 		if err := runInitSkillsDefault(out, *skillsWrite && !*dryRun); err != nil {
 			fmt.Fprintf(os.Stderr, "pincher init: %v\n", err)
 			os.Exit(1)
 		}
+	}
+
+	// --router epilogue: a detected-but-incomplete installation gets
+	// the router's own bootstrap pointers (registry seeding / service
+	// start). Informational only — the seeded artifacts self-inert
+	// until the `router` capability is live.
+	if *router {
+		printRouterBootstrapHints(out, routerStatus)
 	}
 
 	// #1261: git hooks are independent of target — install once when
@@ -279,8 +311,11 @@ func runInitCLI(args []string) {
 //
 // Dry-run action grammar (#803) is handled by pinit.PresentTenseAction,
 // shared with the MCP handler's JSON `action` field (#849).
-func runInitTarget(out io.Writer, t pinit.Target, cwd string, global, dryRun bool) error {
-	plan, err := pinit.Plan(t, cwd, global)
+//
+// policy is the managed-block payload — pinit.PolicyMarkdown normally,
+// pinit.PolicyWithRouter() when --router detection passed.
+func runInitTarget(out io.Writer, t pinit.Target, cwd string, global, dryRun bool, policy string) error {
+	plan, err := pinit.PlanWithPolicy(t, cwd, global, policy)
 	if err != nil {
 		return err
 	}

@@ -201,6 +201,23 @@ Behavior of the installed hook (standard `prepare-commit-msg` semantics):
 
 Install-time safety: like `--git-hooks`, the install is **opt-in**, per-repo, skipped silently on non-git directories, and idempotent on re-runs. Unlike `--git-hooks`, an existing non-pincher `prepare-commit-msg` hook is **never overwritten — not even with `--force`** (sign-off is a legal attestation; replacing a user's own message-policy hook silently is never acceptable). Pincher-managed hooks (the `pincher.io/managed` marker) are refreshed in place when a newer pincher ships an updated body.
 
+### `pincher init --router`
+
+```bash
+pincher init --router                     # detect pincher-router; seed the routing block; preview the skills leg
+pincher init --router --write             # also install/update the shipped skills (incl. pincher-loop with the dispatch verse)
+pincher init --router --dry-run           # preview everything; write nothing
+```
+
+Seeds the router-aware additions once a [pincher-router](https://github.com/kwad77/pincher-router) installation is present:
+
+1. **Detection first.** The same ladder the server runs at startup — `~/.config/pincher-router/workers.yaml` → `pincher-router-serve` on `$PATH` → identity-validated `GET /healthz` requiring `weights_version` in the JSON body — printed as a per-rung status block (installed / serving / contract version). **No installation detected ⇒ the flag errors with install guidance and writes nothing.** The routing block's heading says "(pincher-router detected)", and it must never lie.
+2. **CLAUDE.md managed block.** The policy block gains a short `## Routing (pincher-router detected)` subsection inside the same `<!-- pincher:start --> ... <!-- pincher:end -->` markers — replace-in-place, idempotent, no duplicates. The subsection is deliberately non-load-bearing: the pincher-loop skill's dispatch verse is authoritative for when/how routing happens; the block is a greppable pointer for sessions that never invoke the skill. Re-running `pincher init` without `--router` refreshes the subsection back out.
+3. **Skills leg.** Runs the `claude-skills` install so the pincher-loop skill (v0.4, carrying the dispatch verse) lands in `~/.claude/skills/` — same contract as `--target=claude-skills`: **preview by default, `--write` to apply**, and a newer locally-installed skill is never overwritten. The verse itself is self-inerting: it activates only when `router` appears in `_meta.capabilities`, so seeding it ahead of a serving router is safe.
+4. **Bootstrap pointers.** Binary found but no `workers.yaml` ⇒ prints the router's own bootstrap commands (`pincher-router-init`, then `pincher-router-serve` — there is no bare `pincher-router` binary). Installed but not serving ⇒ prints the start command. Pincher **never writes router-owned files** — the registry belongs to the router.
+
+Unlike the server's capability tag, the flag ignores `PINCHER_ROUTER`: it is an explicit request to seed configuration, and the seeded artifacts self-inert at runtime (where `PINCHER_ROUTER` still governs the surface).
+
 ### `pincher project`
 
 Surface the HTTP `DELETE /v1/projects` and the `list` MCP tool as CLI verbs so users on the stdio binary don't need a SQL or curl one-liner.

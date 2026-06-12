@@ -4,6 +4,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -166,6 +167,20 @@ func detectRouter(cfg routerProbeConfig) bool {
 // pincher-on-7878 instance fails the status/identity check, and the
 // DGX-dashboard 302 is rejected because redirects are not followed.
 func probeRouterHealthz(url string, timeout time.Duration) bool {
+	_, ok := RouterHealthzIdentity(url, timeout)
+	return ok
+}
+
+// RouterHealthzIdentity runs the identity-validated healthz probe and
+// returns the responder's weights_version when — and only when — the
+// responder is a real pincher-router: 200 status (redirects NOT
+// followed), a JSON body, and a `weights_version` key. Exported for
+// out-of-server consumers of the same rung (`pincher init --router`
+// prints the value in its status line; the hook advisory family reuses
+// rungs 1–2 only). The identity rule must stay in one place: both
+// real-world false positives (pincher-on-7878, the DGX-dashboard 302)
+// are rejected here.
+func RouterHealthzIdentity(url string, timeout time.Duration) (string, bool) {
 	client := &http.Client{
 		Timeout: timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -174,20 +189,33 @@ func probeRouterHealthz(url string, timeout time.Duration) bool {
 	}
 	resp, err := client.Get(url)
 	if err != nil {
-		return false
+		return "", false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false
+		return "", false
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if err != nil {
-		return false
+		return "", false
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return false
+		return "", false
 	}
-	_, ok := parsed["weights_version"]
-	return ok
+	wv, ok := parsed["weights_version"]
+	if !ok {
+		return "", false
+	}
+	return fmt.Sprint(wv), true
+}
+
+// RouterDetectionDefaults exposes the production detection-ladder
+// inputs (config path, PATH binary, service base URL, probe timeout)
+// for out-of-server consumers — `pincher init --router` runs the same
+// rungs from the CLI. Reading them from one place keeps the CLI ladder
+// in lockstep with the capability-tag ladder above.
+func RouterDetectionDefaults() (configPath, binary, baseURL string, timeout time.Duration) {
+	cfg := defaultRouterProbeConfig()
+	return cfg.configPath, cfg.binary, cfg.baseURL, cfg.timeout
 }
