@@ -47,8 +47,12 @@ var RouterPolicyMarkdown string
 // policy stays greppable. It lives inside the same marker-delimited
 // block, so a later `pincher init` without --router refreshes it back
 // out — idempotent in both directions, no stale duplicates.
+//
+// Both embeds are normalized to LF before joining (#778/#779: a
+// Windows checkout embeds CRLF, and TrimRight("\n") would otherwise
+// leave a dangling \r at the seam).
 func PolicyWithRouter() string {
-	return strings.TrimRight(PolicyMarkdown, "\n") + "\n\n" + strings.TrimRight(RouterPolicyMarkdown, "\n") + "\n"
+	return strings.TrimRight(normalizeLF(PolicyMarkdown), "\n") + "\n\n" + strings.TrimRight(normalizeLF(RouterPolicyMarkdown), "\n") + "\n"
 }
 
 const (

@@ -26,7 +26,9 @@ func TestPolicyWithRouterCarriesSubsection(t *testing.T) {
 			t.Errorf("PolicyWithRouter missing %q", want)
 		}
 	}
-	if !strings.HasPrefix(got, strings.TrimRight(PolicyMarkdown, "\n")) {
+	// normalizeLF on the expectation: a Windows checkout embeds
+	// policy.md as CRLF, while PolicyWithRouter normalizes (#778).
+	if !strings.HasPrefix(got, strings.TrimRight(normalizeLF(PolicyMarkdown), "\n")) {
 		t.Error("PolicyWithRouter must be the default policy plus the subsection, in that order")
 	}
 }
@@ -50,7 +52,9 @@ func TestShippedLoopSkillCarriesDispatchVerse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read embedded pincher-loop/SKILL.md: %v", err)
 	}
-	src := string(content)
+	// normalizeLF: a Windows checkout embeds SKILL.md as CRLF; the
+	// multi-line assertions below pin LF-relative wrapping (#778).
+	src := normalizeLF(string(content))
 
 	if v := ParseSkillVersion(src); v != "0.4.0" {
 		t.Errorf("shipped pincher-loop version = %q, want 0.4.0 (the verse release)", v)
