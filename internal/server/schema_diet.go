@@ -53,9 +53,12 @@ const (
 // through (search → symbol/symbols/context → trace → edit → changes →
 // verify_change), the envelope dedupe (`batch` — which can still
 // dispatch the read-only non-core tools as sub-queries), the ledger
-// (`loop`), and `guide` — kept because it routes to everything else
-// and can NAME full-mode tools with a restart/HTTP hint (see
-// computeGuide).
+// (`loop`), the decision store (`adr` — added in #2020: `batch`
+// sub-queries dispatch read-only tools only, so an MCP-only client on
+// the core default had NO path to read or write ADRs, and the loop
+// methodology treats the ADR store as first-class memory), and
+// `guide` — kept because it routes to everything else and can NAME
+// full-mode tools with a restart/HTTP hint (see computeGuide).
 var coreToolset = map[string]bool{
 	"search":        true,
 	"symbol":        true,
@@ -67,6 +70,7 @@ var coreToolset = map[string]bool{
 	"loop":          true,
 	"verify_change": true,
 	"guide":         true,
+	"adr":           true,
 }
 
 // ToolAdvertised reports whether the named tool appears on the MCP
