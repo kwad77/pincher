@@ -3367,20 +3367,30 @@ func (s *Store) UpsertProject(p Project) error {
 	// directly in Go (semver-with-commit-count compare is impractical
 	// in SQL — same rationale as UpsertProjectMeta's #1154 guard):
 	// never let an older binary_version displace a newer one.
-	binaryToWrite := p.BinaryVersion
-	if p.BinaryVersion != "" {
-		var existingBV sql.NullString
-		if err := s.ro.QueryRow(
-			`SELECT binary_version FROM projects WHERE id = ?`, p.ID,
-		).Scan(&existingBV); err != nil && err != sql.ErrNoRows {
-			return err
+	// #1154/#1818 TOCTOU fix: the binary_version downgrade-guard is a
+	// read-modify-write (SELECT the existing version, compare in Go, write
+	// the clamped value). Run the SELECT and the conditional write inside a
+	// SINGLE writer transaction so two concurrent writers can't both read a
+	// stale value and let the older one stomp the newer one. The reader pool
+	// (s.ro) is NOT used here — the read MUST observe the writer's own
+	// in-flight state, so it runs on the same *sql.Tx as the write. With the
+	// writer pool pinned to MaxOpenConns(1) this serializes in-process; the
+	// WAL write lock serializes across processes.
+	return s.withTx(func(tx *sql.Tx) error {
+		binaryToWrite := p.BinaryVersion
+		if p.BinaryVersion != "" {
+			var existingBV sql.NullString
+			if err := tx.QueryRow(
+				`SELECT binary_version FROM projects WHERE id = ?`, p.ID,
+			).Scan(&existingBV); err != nil && err != sql.ErrNoRows {
+				return err
+			}
+			if existingBV.Valid && existingBV.String != "" &&
+				CompareBinaryVersion(p.BinaryVersion, existingBV.String) < 0 {
+				binaryToWrite = existingBV.String
+			}
 		}
-		if existingBV.Valid && existingBV.String != "" &&
-			CompareBinaryVersion(p.BinaryVersion, existingBV.String) < 0 {
-			binaryToWrite = existingBV.String
-		}
-	}
-	_, err := s.db.Exec(`
+		_, err := tx.Exec(`
 		INSERT INTO projects(id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version, current_branch, index_state, index_started_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
@@ -3393,10 +3403,11 @@ func (s *Store) UpsertProject(p Project) error {
 			current_branch=excluded.current_branch,
 			index_state='complete',
 			index_started_at=0`,
-		p.ID, p.Path, p.Name, p.IndexedAt.Unix(),
-		p.FileCount, p.SymCount, p.EdgeCount, currentSchema, binaryToWrite, p.CurrentBranch, "complete", 0,
-	)
-	return err
+			p.ID, p.Path, p.Name, p.IndexedAt.Unix(),
+			p.FileCount, p.SymCount, p.EdgeCount, currentSchema, binaryToWrite, p.CurrentBranch, "complete", 0,
+		)
+		return err
+	})
 }
 
 // UpdateProjectCounts writes only the cached file/symbol/edge counts for a
@@ -3491,21 +3502,29 @@ func (s *Store) UpsertProjectMeta(p Project) error {
 	// gdeb797d`) is impractical in pure SQL — the dash-separated
 	// commit count is the deciding bit for dev builds and isn't a
 	// single sortable lexical prefix.
-	var existingBV sql.NullString
-	if err := s.ro.QueryRow(
-		`SELECT binary_version FROM projects WHERE id = ?`, p.ID,
-	).Scan(&existingBV); err != nil && err != sql.ErrNoRows {
-		return err
-	}
-	binaryToWrite := p.BinaryVersion
-	if existingBV.Valid && existingBV.String != "" {
-		if CompareBinaryVersion(p.BinaryVersion, existingBV.String) < 0 {
-			// Incoming is older — don't downgrade. Keep the existing
-			// value by writing back what's already there.
-			binaryToWrite = existingBV.String
+	// #1154/#1818 TOCTOU fix: the read-then-compare downgrade-guard below is
+	// a read-modify-write. Run the SELECT and the conditional write inside a
+	// SINGLE writer transaction (read via tx.QueryRow, NOT s.ro) so two
+	// concurrent UpsertProjectMeta writers can't both observe a stale
+	// existing binary_version and let the older one stomp the newer one. The
+	// writer pool's MaxOpenConns(1) serializes the tx in-process; the WAL
+	// write lock serializes across processes.
+	return s.withTx(func(tx *sql.Tx) error {
+		var existingBV sql.NullString
+		if err := tx.QueryRow(
+			`SELECT binary_version FROM projects WHERE id = ?`, p.ID,
+		).Scan(&existingBV); err != nil && err != sql.ErrNoRows {
+			return err
 		}
-	}
-	_, err := s.db.Exec(`
+		binaryToWrite := p.BinaryVersion
+		if existingBV.Valid && existingBV.String != "" {
+			if CompareBinaryVersion(p.BinaryVersion, existingBV.String) < 0 {
+				// Incoming is older — don't downgrade. Keep the existing
+				// value by writing back what's already there.
+				binaryToWrite = existingBV.String
+			}
+		}
+		_, err := tx.Exec(`
 		INSERT INTO projects(id, path, name, indexed_at, file_count, sym_count, edge_count, schema_version_at_index, binary_version, current_branch)
 		VALUES (?,?,?,?,0,0,0,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
@@ -3531,10 +3550,11 @@ func (s *Store) UpsertProjectMeta(p Project) error {
 			-- post-checkout-then-reindex doctor advisory accurate even if
 			-- the indexing run crashes midway.
 			current_branch=excluded.current_branch`,
-		p.ID, p.Path, p.Name, p.IndexedAt.Unix(),
-		currentSchema, binaryToWrite, p.CurrentBranch,
-	)
-	return err
+			p.ID, p.Path, p.Name, p.IndexedAt.Unix(),
+			currentSchema, binaryToWrite, p.CurrentBranch,
+		)
+		return err
+	})
 }
 
 // CompareBinaryVersion compares pincher build version strings of the
