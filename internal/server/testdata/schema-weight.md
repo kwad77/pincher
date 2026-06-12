@@ -11,10 +11,10 @@ Default since v1.6 (#2005): toolset=core, style=lean. PINCHER_TOOLSET=full
 
 | toolset | style | tools | total tokens |
 |---|---|--:|--:|
-| full | rich | 34 | 18564 |
-| full | lean | 34 | 6978 |
-| core | rich | 11 | 9177 |
-| core | lean | 11 | 3236 |
+| full | rich | 34 | 19028 |
+| full | lean | 34 | 7077 |
+| core | rich | 11 | 9641 |
+| core | lean | 11 | 3335 |
 
 ## Per-tool weight, full/rich (heaviest first)
 
@@ -22,14 +22,14 @@ Default since v1.6 (#2005): toolset=core, style=lean. PINCHER_TOOLSET=full
 |---|--:|:--:|
 | search | 1523 | x |
 | trace | 1505 | x |
+| context | 1222 | x |
 | batch | 1137 | x |
-| context | 1073 | x |
 | loop | 1020 | x |
+| symbol | 820 | x |
 | neighborhood | 807 |  |
+| symbols | 782 | x |
 | dead_code | 682 |  |
 | audit_unused | 663 |  |
-| symbols | 654 | x |
-| symbol | 633 | x |
 | context_for_task | 624 |  |
 | verify_change | 604 | x |
 | query | 601 |  |
@@ -65,10 +65,10 @@ same budget gate (TestSchemaWeight_CoreLean_RouterPresent_UnderBudget).
 
 | toolset | style | tools | total tokens |
 |---|---|--:|--:|
-| full | rich | 36 | 19606 |
-| full | lean | 36 | 7399 |
-| core | rich | 13 | 10219 |
-| core | lean | 13 | 3657 |
+| full | rich | 36 | 20070 |
+| full | lean | 36 | 7498 |
+| core | rich | 13 | 10683 |
+| core | lean | 13 | 3756 |
 
 | router tool | rich | lean |
 |---|--:|--:|

@@ -674,6 +674,7 @@ var readerRoutedStoreMethods = map[string]bool{
 	"EdgesFromScoped":                true,
 	"EdgesTo":                        true,
 	"EdgesToScoped":                  true,
+	"SymbolsByParentScoped":          true, // #2046 mode=skeleton: scoped SELECT of a container's children by Parent QN, reader pool.
 	"GraphStats":                     true,
 	"AvgConfidenceByKind":            true,
 	"GetProject":                     true,
