@@ -397,7 +397,23 @@ jobs:
             echo "::warning::Users will need to install via direct-URL until the tap is updated manually."
             exit 0
           fi
-          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/kwad77/homebrew-pincher.git" tap
+          # The tap mirror is an OPTIONAL convenience — the authoritative
+          # artifacts (binaries, SHA256SUMS, the GitHub release, and the
+          # main-repo packaging/homebrew/pincher.rb commit) have ALL shipped
+          # by this point. So a present-but-invalid HOMEBREW_TAP_TOKEN (an
+          # expired PAT, or one missing contents:write on the tap) must NOT
+          # red the whole release run — it degrades to a loud ::warning:: +
+          # exit 0, exactly like the unset-token branch above (#2050). Without
+          # this, the FIRST stable promotion since v1.0.0 (v1.10.0) failed its
+          # release run purely on the dead tap token while everything else
+          # was green. set +e around the network/auth ops so a failure is
+          # handled here, not fatal under the script-wide `set -e`.
+          set +e
+          if ! git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/kwad77/homebrew-pincher.git" tap; then
+            echo "::warning::tap clone failed — skipping tap mirror. Rotate HOMEBREW_TAP_TOKEN (likely expired/invalid). Authoritative artifacts already shipped; the tap is one release behind. See #2050."
+            exit 0
+          fi
+          set -e
           cp packaging/homebrew/pincher.rb tap/Formula/pincher.rb
           cd tap
           if git diff --quiet Formula/pincher.rb; then
@@ -411,7 +427,10 @@ jobs:
 
           Mirrored from kwad77/pincher@master packaging/homebrew/pincher.rb
           after the ${GITHUB_REF_NAME} release automation ran."
-          git push origin master
+          if ! git push origin master; then
+            echo "::warning::tap mirror push to kwad77/homebrew-pincher FAILED — rotate HOMEBREW_TAP_TOKEN (likely expired/invalid or missing contents:write). Authoritative artifacts already shipped; the tap is one stable-promotion behind. See #2050."
+            exit 0
+          fi
 
   scoop:
     name: Bump Scoop manifest
