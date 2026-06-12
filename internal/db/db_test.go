@@ -700,6 +700,7 @@ var readerRoutedStoreMethods = map[string]bool{
 	"CountRecentExtractionFailuresAcrossProjects": true, // #1205 doctor truncation-count
 	"EstimateProjectBytes":                        true, // #1220 doctor per-project byte estimate (pure SELECT)
 	"EstimateReclaimableBytes":                    true, // doctor/VACUUM freelist estimate; PRAGMA reads only.
+	"MaintenanceStats":                            true, // #2055 — page_count/freelist_count/page_size/auto_vacuum; PRAGMA reads only.
 	"ExtractionFailureCountsByReason":             true,
 	"ListSlowQueries":                             true,
 	// HealthCheck is pure SELECT — previously misclassified under writer
@@ -843,6 +844,7 @@ var writerRoutedStoreMethods = map[string]bool{
 	"Optimize":               true,
 	"EnsurePlannerStats":     true, // #2012 — reader probe of sqlite_stat1, but the one-shot ANALYZE writes; writer-routed by the "err toward writer" rule.
 	"CheckpointTruncate":     true,
+	"IncrementalVacuum":      true, // #2055 — PRAGMA incremental_vacuum, writer-pool op.
 	"RebuildFTS":             true,
 	"RebuildFTSWithProgress": true, // #1950 — same writer tx as RebuildFTS
 	"Vacuum":                 true,

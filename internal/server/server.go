@@ -11788,6 +11788,18 @@ func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*m
 		"db_path":        report.DBPath,
 	}
 
+	// #2055: surface physical DB-maintenance state (freelist bloat, WAL
+	// high-water, auto_vacuum mode) on the per-session DB so the #2055
+	// maintenance defects are visible from health, not just doctor. Cheap
+	// O(1) PRAGMAs on the reader pool + one os.Stat on the -wal file.
+	if ms, err := s.store.MaintenanceStats(); err == nil {
+		var walSizeBytes int64
+		if info, statErr := os.Stat(report.DBPath + "-wal"); statErr == nil {
+			walSizeBytes = info.Size()
+		}
+		data["db_maintenance"] = dbMaintenanceSection(ms, walSizeBytes)
+	}
+
 	// #1023: emit the unresolved-project warning early so it lands in
 	// _meta.warnings regardless of which later block populates _meta
 	// (next_steps, binary_stale, auto-restart drift).

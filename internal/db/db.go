@@ -428,6 +428,20 @@ func Open(dir string) (*Store, error) {
 	}
 
 	s := &Store{db: db, Path: path}
+
+	// #2055: enable INCREMENTAL auto_vacuum on a brand-new DB BEFORE
+	// migrate() creates any tables. SQLite only honours an auto_vacuum mode
+	// change while the database holds no user tables; once migrate() runs
+	// the baseline DDL it's locked in for the file's lifetime (changing it
+	// then needs a full exclusive-lock VACUUM — an operator action, never a
+	// silent Open() side effect). Without this, every freshly-created
+	// pincher DB defaults to auto_vacuum=NONE: freed pages from heavy
+	// re-index churn pile onto the freelist and bloat the file (measured
+	// multi-GB dead space across live stores), reclaimable only by a full
+	// VACUUM. With INCREMENTAL set, IncrementalVacuum() reclaims them cheaply
+	// with no exclusive lock.
+	s.ensureAutoVacuumOnFreshDB()
+
 	// #1784/#1817: migrate() takes a write lock (init schema_version +
 	// IF NOT EXISTS DDL). Another pincher process mid-index can hold the
 	// writer past the 5s busy_timeout — a force-reindex of a large repo
@@ -718,6 +732,123 @@ func (s *Store) EnsurePlannerStats() error {
 func (s *Store) CheckpointTruncate() error {
 	_, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 	return err
+}
+
+// ensureAutoVacuumOnFreshDB sets PRAGMA auto_vacuum=INCREMENTAL on a
+// brand-new database — one with no user tables yet — so freed pages can be
+// reclaimed cheaply later via IncrementalVacuum (#2055). Called from Open
+// BEFORE migrate() runs the baseline DDL, because SQLite only honours an
+// auto_vacuum mode change while the database is empty of user tables.
+//
+// On an EXISTING store (any user table present) this is a deliberate no-op:
+// flipping a live, possibly multi-GB DB to INCREMENTAL requires a full
+// exclusive-lock VACUUM rewrite, which is an operator decision, not a
+// startup side effect.
+//
+// Writer pool only (PRAGMA auto_vacuum is a write). All failures are
+// non-fatal — a DB stuck on auto_vacuum=NONE is merely slower to maintain,
+// never wrong — so errors are swallowed rather than failing Open.
+func (s *Store) ensureAutoVacuumOnFreshDB() {
+	var userTables int
+	if err := s.db.QueryRow(
+		`SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`,
+	).Scan(&userTables); err != nil {
+		return
+	}
+	if userTables > 0 {
+		return // existing store — never auto-VACUUM a live DB
+	}
+	// The DSN's journal_mode(WAL) already committed the file header with
+	// auto_vacuum=NONE, so the PRAGMA alone is silently ignored — SQLite
+	// requires a VACUUM to rewrite the header with the new mode. On this
+	// brand-new, table-less DB that VACUUM is instant (nothing to rewrite),
+	// and the empty-table guard above guarantees we NEVER VACUUM a live
+	// store. Both statements are best-effort: a DB stuck on NONE is slower
+	// to maintain, not wrong.
+	if _, err := s.db.Exec("PRAGMA auto_vacuum=INCREMENTAL"); err != nil {
+		return
+	}
+	_, _ = s.db.Exec("VACUUM")
+}
+
+// IncrementalVacuum reclaims freelist pages cheaply via PRAGMA
+// incremental_vacuum — no exclusive lock, unlike the full Vacuum() rewrite.
+// It only does real work when the database was created with
+// auto_vacuum=INCREMENTAL (see ensureAutoVacuumOnFreshDB); on a NONE/FULL
+// database the PRAGMA is a silent no-op that returns no rows and no error,
+// so this is always safe to call on the periodic maintenance path.
+//
+// Co-located with CheckpointTruncate on the indexer-tail maintenance hook
+// (#2055): after a large Index() churns the freelist, this hands the freed
+// pages back without the exclusive-lock cost of VACUUM. Writer pool only.
+func (s *Store) IncrementalVacuum() error {
+	_, err := s.db.Exec("PRAGMA incremental_vacuum")
+	return err
+}
+
+// DBMaintenanceStats holds cheap O(1) physical-maintenance signals about the
+// database file — the data health/doctor surface so freelist bloat and WAL
+// growth are visible before they bite (#2055).
+type DBMaintenanceStats struct {
+	PageCount     int64  // PRAGMA page_count — total pages in the main DB
+	FreelistCount int64  // PRAGMA freelist_count — free (dead) pages
+	PageSize      int64  // PRAGMA page_size — bytes per page
+	AutoVacuum    string // "NONE" | "FULL" | "INCREMENTAL" | "UNKNOWN"
+}
+
+// FreelistPct is the fraction of the database's pages sitting on the freelist
+// (dead space reclaimable by VACUUM / incremental_vacuum). Clamped to [0,1];
+// 0 when page_count is unknown.
+func (m DBMaintenanceStats) FreelistPct() float64 {
+	if m.PageCount <= 0 {
+		return 0
+	}
+	pct := float64(m.FreelistCount) / float64(m.PageCount)
+	if pct < 0 {
+		return 0
+	}
+	if pct > 1 {
+		return 1
+	}
+	return pct
+}
+
+// autoVacuumModeName maps SQLite's integer auto_vacuum mode to its name.
+func autoVacuumModeName(mode int) string {
+	switch mode {
+	case 0:
+		return "NONE"
+	case 1:
+		return "FULL"
+	case 2:
+		return "INCREMENTAL"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// MaintenanceStats reads the cheap O(1) PRAGMA signals that describe the
+// database's physical maintenance state (#2055). All four PRAGMAs are
+// constant-time header reads — NOT scans like integrity_check / quick_check —
+// so this is safe on the hot health path. Reader pool.
+func (s *Store) MaintenanceStats() (DBMaintenanceStats, error) {
+	var ms DBMaintenanceStats
+	ro := s.RO()
+	if err := ro.QueryRow("PRAGMA page_count").Scan(&ms.PageCount); err != nil {
+		return ms, err
+	}
+	if err := ro.QueryRow("PRAGMA freelist_count").Scan(&ms.FreelistCount); err != nil {
+		return ms, err
+	}
+	if err := ro.QueryRow("PRAGMA page_size").Scan(&ms.PageSize); err != nil {
+		return ms, err
+	}
+	var mode int
+	if err := ro.QueryRow("PRAGMA auto_vacuum").Scan(&mode); err != nil {
+		return ms, err
+	}
+	ms.AutoVacuum = autoVacuumModeName(mode)
+	return ms, nil
 }
 
 // VacuumReclaimThresholdBytes is the shared threshold for surfacing or
