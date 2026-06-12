@@ -7,6 +7,40 @@ minors.
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-06-12 — Default-surface reach + route-outcome observability: the v1.8 routing loop made diagnosable
+
+A focused follow-on to the v1.8 routing GA-candidate, hardening the two
+seams a live dogfood found rough. `adr` joins the **core** toolset, so
+an MCP-only client on the shipped default surface finally has a
+first-class cross-session-memory path (the loop methodology's `adr list`
+at Frame / `adr set` at Capture) instead of an unreachable tool — the
+default advertisement grows to 11 tools (13 with the detected router
+pair), still well under the 4,000-token core+lean schema budget. And the
+v1.8 route-outcome auto-echo (#2026), which 422'd un-echoed on a live
+same-session pair while its whole test family stayed green, is now
+**diagnosable**: every `route action=outcome` response carries
+`echo_source: cache|caller|none`, a cold-cache miss logs loudly instead
+of masquerading as the happy path, and the request_id join is hardened
+against the string-vs-number mismatch that silently disabled the cache
+write. Both changes are additive and detection-conditional with an
+absent default; the frozen v1.0 tool-contract golden and `_meta`
+envelope are untouched.
+
+### Changed
+- **v1.8.0 release prep (#2030).** Changelog assembly (five stubs), frozen-surface review (four-arm live tools/list diff vs the installed v1.7.0 binary — absent arms AND the present core+lean arm byte-identical, present full/rich additive-only per the documented #2026 delta), adversarial review (0 sev-1 / 0 sev-2 across the four deltas: auto-echo cache, advise_route trigger, Models tab proxy, guide/coach dual-state), detection-safety re-run, live smoke against the REAL pincher-router on :7879 — including the first end-to-end live validation of the dispatch verse's minimal-card outcome contract (`echo_autofilled` 7 fields, router `ok:true`) — real-MCP validation, README/docs version currency, bench-baseline skip per the RELEASING.md default. GA `[GATE]` slots published as "measurement in progress" (§C gate at n=2/30). Recorded in docs/release-signoff-v1.8.0.md.
+
+### Fixed
+- **`adr` joins the core toolset — MCP-only clients get an ADR path on the default surface ([#2020](https://github.com/kwad77/pincher/issues/2020)).** On the v1.6 default `PINCHER_TOOLSET=core` advertisement, an MCP-only client could neither read nor write ADRs: `adr` was not advertised, and the documented `batch` escape hatch dispatches the read-only sub-tool set only (search, symbol, symbols, context, trace, query, neighborhood, changes — no writers). The loop methodology treats the ADR store as first-class cross-session memory (`adr list` at Frame, `adr set` at Capture), and a memory tool you can't reach isn't memory. The default surface is now 11 tools (13 with the detected-state router pair); measured core+lean weight 3236 approx tokens router-absent / 3657 router-present, both under the 4000 budget gate. Pinned end-to-end by `TestADR_CoreMode_MCPRoundTrip` (real in-memory MCP session: tools/list carries adr, set → get → list round-trips). Also corrected en route: the v1.6.0 changelog wording that claimed `batch` sub-query dispatch "keeps the full 34-tool surface" — it covers the read-only query set, never write tools.
+- **Route outcome auto-echo made observable and join-hardened — the live un-echoed 422 is now diagnosable ([#2032](https://github.com/kwad77/pincher/issues/2032)).** A live v1.8.0 same-session route→outcome pair forwarded the minimal card un-echoed (router 422 `missing session_id`) while the whole #2026 test family stayed green. Replaying the exact live transcript payloads through the real MCP layer reproduces a correct echo, so the production gap is environmental, not logical: the request_id → echo LRU is in-memory and does not survive a process respawn between the two calls (auto-restart-on-drift, crash, MCP client reconnect — all invisible to the caller, whose stdio session is transparently respawned). Three changes: (1) every `route action=outcome` response now carries `echo_source: cache|caller|none`, so the un-echoed forward names itself instead of masquerading as the tested happy path; (2) `echo_source=none` (cache miss AND no caller-supplied session_id — exactly the body a validating router 422s) logs a loud `pincher.route_outcome.echo_miss` with the request_id; (3) request_id extraction is normalized on both sides of the join (string or JSON number) instead of a silent `.(string)` assertion that disabled the cache write without a trace. The honest-422 posture from #2026 is unchanged — the proxy still never invents echo values it didn't see. Pinned by the `TestIssue2032_*` family, including a real-MCP-session replay of the live unit-10 transcript.
+
+### DOGFOOD
+
+Friction found in this release window, and what happened to it:
+
+- **Dogfood-found and fixed in-window:** both shipped fixes are live-session findings, not planned work. `adr` was discovered unreachable on the v1.6 default `core` surface during a real MCP-only session (#2020) — the documented `batch` escape hatch dispatches read-only sub-tools only, so an agent following the loop methodology's `adr list`/`adr set` prescription hit a wall; option (a) (add `adr` to core) shipped as #2031. The v1.8 route-outcome auto-echo was observed 422'ing un-echoed on a live same-session pair (#2032) while its entire test family stayed green; root-caused as an environmental in-memory-cache loss across a transparent stdio respawn (not a logic bug — the live transcript replays correctly through the real MCP layer), and made self-describing via `echo_source` + a loud miss log + request_id join hardening (#2033).
+- **Honest-diagnosis over silent-green:** #2032's value is that the production failure now *names itself* (`echo_source: none` + `pincher.route_outcome.echo_miss`) instead of masquerading as the tested happy path. The #2026 honest-422 posture is preserved — the proxy still never invents echo values it didn't see.
+- **Process note:** `CHANGELOG.d/2030.changed.md` — the v1.8.0 release PR's own stub-gate entry — folds into this entry by design (each release PR's stub rides the next release, as #2024's rode v1.8.0).
+
 ## [1.8.0] — 2026-06-11 — The routing GA-candidate: the loop closes around the v1.7 surface
 
 v1.7 shipped the routing-*ready* surface; v1.8 closes the loop around
@@ -4409,6 +4443,7 @@ Highlights:
 - CI coverage gate lowered to 83% to match reality.
 
 [Unreleased]: https://github.com/kwad77/pincher/compare/v1.8.0...HEAD
+[1.9.0]: https://github.com/kwad77/pincher/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/kwad77/pincher/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/kwad77/pincher/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/kwad77/pincher/compare/v1.5.0...v1.6.0

@@ -247,7 +247,7 @@ The result is an edit loop with fewer blind reads and better handoffs after cont
 
 ---
 
-## Where Pincher is now (v1.8)
+## Where Pincher is now (v1.9)
 
 Pincher v1.0 froze the core tool/schema surface; everything since has been additive. v1.2 shipped Pincher-native graph intelligence (`pincher report`, rationale symbols, hotspot risk scoring). v1.3 landed the substrate (edge provenance tiers, MCP progress + prompts). v1.4 was the **loop release** — the agent-loop substrate plus the ADR-0008 AST-tier language wave (tree-sitter via WASM: Rust, Java, C#, TS/TSX, Swift, Kotlin, PHP, Ruby, C++ at confidence 1.0). v1.5 made the loop **measure itself** (LES, pointer handoffs, the PreCompact hook, loopbench). v1.6 shipped the **schema diet, measured at scale** (core/lean `tools/list` by default, 1.44M vs 475k total tokens at 10x scale at identical accuracy). v1.7 made pincher **routing-ready** — 5.0× faster fresh indexing (2,177s → 437s at k8s scale), the startup detection ladder gating the conditional `models`/`route` proxy surface, the index-recruiting hook, and `init --router` seeding (full guide: [docs/reference/routing.md](docs/reference/routing.md)). v1.8 is the **routing GA-candidate** — it closes the loop around that surface:
 
@@ -257,13 +257,15 @@ Pincher v1.0 froze the core tool/schema surface; everything since has been addit
 - **The guide/coach adoption loop** — `guide` appends a `route` consult to Make-shaped recommendations (stage policy keeps every other shape unrouted); `coach` reports route-consult coverage, the session consult/outcome split, and a counts-only unrouted-spawns finding (estimated savings deliberately 0 — routing savings are recorded router-side, never invented). Router absent ⇒ both responses byte-identical to the pre-routing surface.
 - **GA status, honestly held** — the program's ship gate (≥30 routed Make-stage task units: sub-tier routing share, S5 pass-rate parity, $/iteration delta) is **measurement in progress**; the [v1.8.0 what's-new](docs/launch/v1.8.0-whats-new.md) carries explicit `[GATE]` slots instead of unmeasured claims.
 
+v1.9 is the **hardening follow-on** that a live dogfood earned: `adr` joins the **core** toolset, so an MCP-only client on the default surface finally has a reachable cross-session-memory path (default advertisement now 11 tools, 13 with the router pair, still under the 4k core+lean budget); and the v1.8 route-outcome auto-echo is made **diagnosable** — every `route action=outcome` response carries `echo_source: cache|caller|none`, a cold-cache miss logs loudly instead of masquerading as the happy path, and the request_id join is hardened against a string-vs-number mismatch. Both additive; the frozen v1.0 tool-contract golden is byte-identical (full guide: [v1.9.0 what's-new](docs/launch/v1.9.0-whats-new.md)).
+
 The boundary is deliberate: no default LLM extraction pipeline, no dashboard-first claims without API/report provenance, and no unsupported savings multipliers. If a report names a symbol or file, it should come with source provenance or say the data is missing.
 
 ---
 
 ## Tool surface
 
-Pincher currently exposes 36 MCP tools (10 advertised over `tools/list` by default — 12 when a live pincher-router is detected, which adds `models` + `route`; see the schema-diet note below. All 36 stay reachable over HTTP, and the read-only query set as `batch` sub-queries). The high-frequency set:
+Pincher currently exposes 36 MCP tools (11 advertised over `tools/list` by default — 13 when a live pincher-router is detected, which adds `models` + `route`; see the schema-diet note below. All 36 stay reachable over HTTP, and the read-only query set as `batch` sub-queries). The high-frequency set:
 
 - `guide` — choose the next Pincher call from a task description
 - `search` — BM25 symbol/config/docs search
