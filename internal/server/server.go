@@ -249,6 +249,14 @@ type Server struct {
 	// never disagree about which router they mean.
 	routerBaseURL string
 
+	// routeEcho caches request_id → outcome-echo fields from each route
+	// consult so `route action=outcome` can auto-fill the envelope/plan
+	// echo the router's OutcomeBody requires but the dispatch verse's
+	// minimal card omits (router-loop item B10, pincher half — the
+	// measured five-422 dogfood finding, request_id 1d41c9e4). Bounded
+	// LRU (routeEchoCacheCap); see router_tools.go.
+	routeEcho routeEchoCache
+
 	// includeCapabilitiesPerCall gates the per-call _meta.capabilities
 	// stamping in jsonResultWithMeta. Default true (back-compat); set
 	// false via PINCHER_META_CAPABILITIES=off|false|0|none at server

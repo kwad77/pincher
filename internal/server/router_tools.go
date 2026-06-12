@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -64,7 +66,157 @@ const (
 	// routerErrBodyMax caps how much of a router error body is echoed
 	// into a structured tool error.
 	routerErrBodyMax = 300
+
+	// routeEchoCacheCap bounds the per-process request_id → echo-fields
+	// cache (item B10 pincher half). 64 in-flight routed task units is
+	// far beyond any real loop's concurrency; the cache exists for the
+	// route → gate → outcome window of a single session, not as a
+	// durable store — older entries evict LRU-first and a miss just
+	// passes the card through unchanged.
+	routeEchoCacheCap = 64
 )
+
+// Outcome auto-echo (router-loop item B10, pincher half). Measured
+// dogfood finding (request_id 1d41c9e4): the router's OutcomeBody
+// requires the full envelope/plan echo — session_id, tool_name,
+// complexity_tier, role, routed_model, lane (and carries tokens_used)
+// — but the dispatch verse promises a minimal card {request_id,
+// outcome_class, gate}, so verse-faithful outcome reports 422'd five
+// times in one session and the GBT starved. The proxy is the one
+// component that SAW the original route call, so it remembers: each
+// successful action="route" caches request_id → echo fields (envelope
+// fields from the request + plan fields from the response), and
+// action="outcome" fills any of those keys MISSING from the card
+// before POSTing /v1/outcomes.
+//
+// Rules (all tested):
+//   - Explicit caller-supplied fields always win — only absent keys
+//     are filled.
+//   - Cache miss (fresh session, evicted entry, foreign request_id) ⇒
+//     the card passes through unchanged and any router 422 surfaces
+//     honestly — the proxy never invents echo values it didn't see.
+//   - routed_model is derived the way the router itself derives it
+//     (router_service_server.py: plan.runtime_model or plan.model):
+//     response `routed_model`, else `runtime_model`, else `model`.
+//   - `mode` is cached for nothing: OutcomeBody has no mode field and
+//     the proxy never injects keys the contract doesn't name.
+
+// routeEchoFields lists the OutcomeBody echo keys the proxy auto-fills,
+// split by source. Envelope keys are read from the route request;
+// lane comes from the ExecutionPlan response (routed_model is derived,
+// see routeEchoFromPlan).
+var routeEchoEnvelopeKeys = []string{
+	"session_id", "tool_name", "complexity_tier", "role", "tokens_used",
+}
+
+// routeEchoCache is a mutex-guarded bounded LRU of request_id → echo
+// fields. Zero value is ready to use (lazy map init); safe for
+// concurrent handlers.
+type routeEchoCache struct {
+	mu      sync.Mutex
+	entries map[string]map[string]any
+	order   []string // front = least recently used
+}
+
+// put inserts (or refreshes) an entry, evicting the least recently
+// used one beyond routeEchoCacheCap.
+func (c *routeEchoCache) put(requestID string, fields map[string]any) {
+	if requestID == "" || len(fields) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = make(map[string]map[string]any, routeEchoCacheCap)
+	}
+	if _, exists := c.entries[requestID]; exists {
+		c.touchLocked(requestID)
+	} else {
+		c.order = append(c.order, requestID)
+	}
+	c.entries[requestID] = fields
+	for len(c.order) > routeEchoCacheCap {
+		evict := c.order[0]
+		c.order = c.order[1:]
+		delete(c.entries, evict)
+	}
+}
+
+// get returns the cached echo fields and marks the entry recently
+// used. ok=false on a miss.
+func (c *routeEchoCache) get(requestID string) (map[string]any, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	fields, ok := c.entries[requestID]
+	if ok {
+		c.touchLocked(requestID)
+	}
+	return fields, ok
+}
+
+// touchLocked moves requestID to the most-recently-used end. Caller
+// holds c.mu.
+func (c *routeEchoCache) touchLocked(requestID string) {
+	for i, id := range c.order {
+		if id == requestID {
+			c.order = append(append(c.order[:i:i], c.order[i+1:]...), requestID)
+			return
+		}
+	}
+}
+
+// routeEchoFromCall extracts the echo fields one route consult pins:
+// envelope keys from the request, lane + derived routed_model from the
+// mode-tagged ExecutionPlan response. Only present, non-empty values
+// are cached — the auto-fill must never write a key the proxy didn't
+// actually see.
+func routeEchoFromCall(envelope, plan map[string]any) map[string]any {
+	fields := make(map[string]any, len(routeEchoEnvelopeKeys)+2)
+	for _, k := range routeEchoEnvelopeKeys {
+		if v, ok := envelope[k]; ok && v != nil && v != "" {
+			fields[k] = v
+		}
+	}
+	// routed_model: same derivation the router applies to its own
+	// telemetry (plan.runtime_model or plan.model), with an explicit
+	// routed_model field winning if a future contract adds one.
+	for _, k := range []string{"routed_model", "runtime_model", "model"} {
+		if v, ok := plan[k].(string); ok && v != "" {
+			fields["routed_model"] = v
+			break
+		}
+	}
+	if v, ok := plan["lane"].(string); ok && v != "" {
+		fields["lane"] = v
+	}
+	return fields
+}
+
+// autofillOutcomeEcho completes a minimal OutcomeCard from the cached
+// route call with the same request_id. Explicit caller fields always
+// win; a cache miss returns nil and leaves the card untouched (the
+// honest-422 path). Returns the sorted list of filled keys for the
+// response note.
+func (s *Server) autofillOutcomeEcho(card map[string]any) []string {
+	requestID, _ := card["request_id"].(string)
+	if requestID == "" {
+		return nil
+	}
+	cached, ok := s.routeEcho.get(requestID)
+	if !ok {
+		return nil
+	}
+	var filled []string
+	for k, v := range cached {
+		if _, present := card[k]; present {
+			continue
+		}
+		card[k] = v
+		filled = append(filled, k)
+	}
+	sort.Strings(filled)
+	return filled
+}
 
 // routerConditionalTools names the tools whose MCP advertisement is
 // gated on s.routerDetected instead of the toolset knob (plan §A6).
@@ -103,12 +255,12 @@ func (s *Server) registerRouterTools() {
 
 	s.addTool(&mcp.Tool{
 		Name:        "route",
-		Description: "**Consult the pincher-router before spawning a Make-stage task unit, and report the gated outcome back afterwards** (thin proxy: action=\"route\" → POST /v1/route, action=\"outcome\" → POST /v1/outcomes). The route response is mode-tagged: `mode: \"execute\"` means the router ran (or will run) the worker — treat the result as an untrusted maker artifact and send it to the gate; `mode: \"advise\"` means spawn a host subagent at the advised tier, passing the returned envelope verbatim. Every route response carries a `request_id`; after the gate verdict, report `{request_id, outcome_class: clean|errored|shallow, gate}` via action=\"outcome\" — the loop trains the router as a side effect of working, and skipping the report starves its model. Routing NEVER blocks the loop: an unreachable or slow router returns a structured error within the call budget (~250ms) — proceed at the originating model and log the miss in the loop checkpoint. Stage policy is binding (pincher-loop dispatch verse): Make routes, Probe may route a bounded question, Frame/Decide/Capture never route, and the gate never routes below the originating tier.",
+		Description: "**Consult the pincher-router before spawning a Make-stage task unit, and report the gated outcome back afterwards** (thin proxy: action=\"route\" → POST /v1/route, action=\"outcome\" → POST /v1/outcomes). The route response is mode-tagged: `mode: \"execute\"` means the router ran (or will run) the worker — treat the result as an untrusted maker artifact and send it to the gate; `mode: \"advise\"` means spawn a host subagent at the advised tier, passing the returned envelope verbatim. Every route response carries a `request_id`; after the gate verdict, report `{request_id, outcome_class: clean|errored|shallow, gate}` via action=\"outcome\" — the loop trains the router as a side effect of working, and skipping the report starves its model. The minimal card suffices: the proxy auto-fills the OutcomeBody echo (session_id, tool_name, complexity_tier, role, tokens_used, routed_model, lane) from the route call it proxied for the same request_id — explicit fields always win, and on a cache miss the card passes through unchanged. Routing NEVER blocks the loop: an unreachable or slow router returns a structured error within the call budget (~250ms) — proceed at the originating model and log the miss in the loop checkpoint. Stage policy is binding (pincher-loop dispatch verse): Make routes, Probe may route a bounded question, Frame/Decide/Capture never route, and the gate never routes below the originating tier.",
 		InputSchema: json.RawMessage(`{
 			"type":"object","properties":{
 				"action":{"type":"string","enum":["route","outcome"],"description":"'route' (default) POSTs the envelope to /v1/route and returns the mode-tagged ExecutionPlan + request_id. 'outcome' reports a gated result to POST /v1/outcomes."},
 				"envelope":{"type":"object","description":"TaskEnvelope for action='route', POSTed to the router verbatim — the envelope composer's output (intent + pointers + pre-cut slices + probe _meta features such as tool_name, complexity_tier, role, session_id), never raw files."},
-				"outcome":{"type":"object","description":"OutcomeCard for action='outcome': {request_id, outcome_class: clean|errored|shallow, gate, quality_score, ...}. request_id comes from the prior route response — it is the join key the router's learner trains on."}
+				"outcome":{"type":"object","description":"OutcomeCard for action='outcome': {request_id, outcome_class: clean|errored|shallow, gate, quality_score, ...}. request_id comes from the prior route response — it is the join key the router's learner trains on; missing envelope/plan echo fields are auto-filled from that route call (explicit values win)."}
 			}
 		}`),
 	}, s.handleRoute)
@@ -196,6 +348,13 @@ func (s *Server) handleRoute(ctx context.Context, req *mcp.CallToolRequest) (*mc
 				"router response was not mode-tagged (pre-contract-v2 router) — treated as mode=execute; upgrade pincher-router for ADVISE support and the request_id outcomes join",
 			}
 		}
+		// Outcome auto-echo (item B10): remember what this consult
+		// looked like so the eventual minimal outcome card can be
+		// completed to the full OutcomeBody echo. Best-effort — a
+		// response without a request_id (pre-v2 router) caches nothing.
+		if rid, ok := body["request_id"].(string); ok {
+			s.routeEcho.put(rid, routeEchoFromCall(envelope, body))
+		}
 		return s.jsonResultWithMeta(body, start, tool, args, 0), nil
 	case "outcome":
 		card, ok := args["outcome"].(map[string]any)
@@ -206,9 +365,18 @@ func (s *Server) handleRoute(ctx context.Context, req *mcp.CallToolRequest) (*mc
 						"why": "request_id joins the outcome to the routing decision — the router's learner trains on this row"},
 				}), nil
 		}
+		// Outcome auto-echo (item B10): complete the verse's minimal
+		// card from the cached route call before POSTing. Explicit
+		// caller fields always win; a cache miss (fresh session,
+		// evicted, foreign request_id) passes the card through
+		// unchanged so a router 422 surfaces honestly.
+		filled := s.autofillOutcomeEcho(card)
 		body, errRes := s.routerDo(ctx, http.MethodPost, "/v1/outcomes", card)
 		if errRes != nil {
 			return errRes, nil
+		}
+		if len(filled) > 0 {
+			body["echo_autofilled"] = filled
 		}
 		return s.jsonResultWithMeta(body, start, tool, args, 0), nil
 	default:
