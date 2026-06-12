@@ -133,32 +133,49 @@ func TestToolContract_GoldenFile(t *testing.T) {
 }
 
 // TestToolContract_DefaultSurface pins what a tools/list client gets
-// with NO env set — the shipped default, core/lean since v1.6 (#2005:
-// full/rich at scale = 1.44M tokens vs 475k core+lean at identical
-// accuracy). The advertisement is exactly coreToolset, every
-// description is the lean transform of its rich counterpart, and the
-// full surface stays registered underneath (HTTP /v1/<tool>, OpenAPI,
-// `batch` dispatch). Restoring the old default is an explicit opt-out:
-// PINCHER_TOOLSET=full PINCHER_SCHEMA_STYLE=rich.
+// with NO env set — the shipped default, full/lean since #2054. The
+// pre-#2054 core default omitted the bootstrap/diagnose-essential tools
+// (index/init/health/architecture/adr/…), so a fresh MCP client could
+// neither index nor diagnose a project. #2054 flips the toolset default
+// back to `full` (every registered tool advertised) while keeping the
+// schema-style default `lean` — the lever that carries the dominant
+// token saving (full/lean ≈ 7.1k tools/list tokens vs ≈ 19k full/rich).
+// The advertisement is now every registered tool except the
+// detection-gated router pair (router off here), every description is
+// the lean transform of its rich counterpart, and PINCHER_TOOLSET=core
+// is the explicit opt-in for token-tight setups.
 func TestToolContract_DefaultSurface(t *testing.T) {
 	t.Setenv("PINCHER_TOOLSET", "")
 	t.Setenv("PINCHER_SCHEMA_STYLE", "")
-	// Router-absent state (router-loop B5, plan §A6): the shipped
-	// default advertisement must be byte-identical to the pre-router
-	// surface — exactly coreToolset, no models/route, zero delta. The
-	// detected-state twin is TestToolContract_DefaultSurface_RouterPresent.
+	// Router-absent state (router-loop B5, plan §A6): the router pair is
+	// detection-gated, not toolset-gated, so it stays off the
+	// advertisement here even under the full default. The detected-state
+	// twin is TestToolContract_DefaultSurface_RouterPresent.
 	t.Setenv("PINCHER_ROUTER", "off")
 	srv, _, _ := newTestServer(t)
 
-	// Advertisement == coreToolset, both directions.
+	// Advertisement == every registered tool minus the detection-gated
+	// router pair, both directions.
 	for name := range srv.mcpVisible {
-		if !coreToolset[name] {
-			t.Errorf("default surface advertises %q over MCP — not in coreToolset", name)
+		if routerConditionalTools[name] {
+			t.Errorf("default surface advertises detection-gated %q with router off", name)
 		}
 	}
-	for name := range coreToolset {
+	for name := range expectedMCPTools {
+		if routerConditionalTools[name] {
+			continue // detection-gated, not toolset-gated
+		}
 		if !srv.mcpVisible[name] {
-			t.Errorf("default surface does not advertise core tool %q over MCP", name)
+			t.Errorf("default (full) surface does not advertise %q over MCP — #2054 regressed", name)
+		}
+	}
+
+	// #2054 regression guard: the bootstrap/diagnose-essential tools a
+	// fresh MCP client needs to onboard and diagnose MUST be on the
+	// default advertisement (they were absent under the old core default).
+	for _, name := range []string{"index", "init", "health", "architecture", "doctor"} {
+		if !srv.mcpVisible[name] {
+			t.Errorf("#2054: bootstrap/diagnose-essential tool %q is not advertised on the default surface — a fresh MCP client cannot %s", name, name)
 		}
 	}
 
@@ -172,7 +189,8 @@ func TestToolContract_DefaultSurface(t *testing.T) {
 		}
 	}
 
-	// Descriptions are the lean transform of the rich ones.
+	// Descriptions are the lean transform of the rich ones — the style
+	// lever still defaults lean, independent of the toolset flip.
 	t.Setenv("PINCHER_TOOLSET", "full")
 	t.Setenv("PINCHER_SCHEMA_STYLE", "rich")
 	rich, _, _ := newTestServer(t)
@@ -193,31 +211,32 @@ func TestToolContract_DefaultSurface(t *testing.T) {
 // twin of TestToolContract_DefaultSurface (router-loop B5 dual-state
 // goldens, plan §A6). PINCHER_ROUTER=on forces detection without a
 // live router (the item-B4 override: `on` short-circuits the ladder,
-// zero network). The advertisement must be EXACTLY coreToolset plus
-// the two router tools — they join the core advertisement when
-// detected (a routed loop is the core use-case) — with lean
-// descriptions like every other advertised tool, and the full
-// registration underneath unchanged.
+// zero network). Under the #2054 full default the advertisement is
+// EVERY registered tool — the router pair joins it when detected, so
+// the detected-state default surface is the complete registered
+// surface, with lean descriptions like every other advertised tool and
+// the full registration underneath unchanged.
 func TestToolContract_DefaultSurface_RouterPresent(t *testing.T) {
 	t.Setenv("PINCHER_TOOLSET", "")
 	t.Setenv("PINCHER_SCHEMA_STYLE", "")
 	t.Setenv("PINCHER_ROUTER", "on")
 	srv, _, _ := newTestServer(t)
 
-	// Advertisement == coreToolset ∪ routerConditionalTools, both directions.
+	// Advertisement == every registered tool (full default + router
+	// detected), both directions.
 	for name := range srv.mcpVisible {
-		if !coreToolset[name] && !routerConditionalTools[name] {
-			t.Errorf("router-present default surface advertises %q over MCP — not in coreToolset or routerConditionalTools", name)
+		if !expectedMCPTools[name] {
+			t.Errorf("router-present default surface advertises %q over MCP — not in expectedMCPTools", name)
 		}
 	}
-	for name := range coreToolset {
+	for name := range expectedMCPTools {
 		if !srv.mcpVisible[name] {
-			t.Errorf("router-present default surface does not advertise core tool %q over MCP", name)
+			t.Errorf("router-present default (full) surface does not advertise %q over MCP", name)
 		}
 	}
 	for name := range routerConditionalTools {
 		if !srv.mcpVisible[name] {
-			t.Errorf("router detected but %q is not advertised over MCP — the conditional surface must join the core advertisement when present", name)
+			t.Errorf("router detected but %q is not advertised over MCP — the conditional surface must join the advertisement when present", name)
 		}
 	}
 

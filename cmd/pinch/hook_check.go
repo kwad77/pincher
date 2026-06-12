@@ -558,10 +558,10 @@ func decideGlobHook(store *db.Store, in hookCheckInput, debug bool) hookDecision
 	}
 
 	// #2011: resolve the recommendation against the active toolset.
-	// Under the v1.6 core-toolset default, onboard_module is not on
-	// the session's tools/list and a tools/call against it returns
-	// -32602 — an advisory must never recommend a tool the agent
-	// cannot call. The hook is a subprocess and can only read its OWN
+	// Under the opt-in PINCHER_TOOLSET=core (the default is `full`
+	// since #2054), onboard_module is not on the session's tools/list
+	// and a tools/call against it returns -32602 — an advisory must
+	// never recommend a tool the agent cannot call. The hook is a subprocess and can only read its OWN
 	// $PINCHER_TOOLSET; normally that matches the server's (both
 	// inherit the user environment), but they can diverge when the
 	// server was launched with an explicit --toolset/env override the

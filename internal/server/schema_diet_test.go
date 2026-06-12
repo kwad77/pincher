@@ -17,13 +17,13 @@ import (
 func TestParseToolsetEnv(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{
-		"":      toolsetCore, // v1.6 default flip (#2005)
+		"":      toolsetFull, // #2054 default flip back to full (core omitted bootstrap-essential tools)
 		"full":  toolsetFull,
 		" FULL": toolsetFull,
-		"core":  toolsetCore,
+		"core":  toolsetCore, // explicit opt-in for token-tight setups
 		" CORE": toolsetCore,
-		"fulll": toolsetCore, // unknown values land on the default, never a third state
-		"lean":  toolsetCore,
+		"coree": toolsetFull, // unknown values land on the default (full), never a third state
+		"lean":  toolsetFull,
 	}
 	for in, want := range cases {
 		if got := parseToolsetEnv(in); got != want {

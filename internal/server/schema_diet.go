@@ -19,11 +19,19 @@ import (
 //     EVERY tool stays registered on s.handlers/s.tools, so the HTTP
 //     /v1/<tool> routes, the OpenAPI spec, the tool-contract golden and
 //     `batch` sub-query dispatch are unaffected — core mode narrows the
-//     tools/list advertisement only. Default is `core` since v1.6: the
-//     scale round (PR #2005) measured full/rich at 1.44M total tokens
-//     vs 475k for core+lean over the same 8-question run at identical
-//     accuracy — 3.0x waste. PINCHER_TOOLSET=full restores the full
-//     advertisement (see docs/reference/http-api.md).
+//     tools/list advertisement only. Default is `full` since #2054: the
+//     core default (shipped v1.6) omitted the bootstrap/diagnose-
+//     essential tools (index/init/health/architecture/adr/
+//     context_for_task/plan_change/investigate_failure/doctor/
+//     why_empty), so a fresh MCP client could neither index nor
+//     diagnose a project. The token win was always dominated by the
+//     SCHEMA-STYLE lever, not the toolset lever: full/rich tools/list
+//     ≈ 19k approx tokens, full/lean ≈ 7.1k (the lean transform alone
+//     captures ~12k), core/lean ≈ 3.3k — narrowing to core only saves
+//     a further ~3.7k, not worth breaking onboarding. The shipped
+//     default is now full+lean: every tool advertised, most of the
+//     saving retained. PINCHER_TOOLSET=core re-narrows for token-tight
+//     setups (see docs/reference/http-api.md).
 //
 //  2. Schema style (PINCHER_SCHEMA_STYLE=rich|lean): `lean` applies a
 //     deterministic transform at registration time — each tool
@@ -48,8 +56,9 @@ const (
 	schemaStyleLean = "lean"
 )
 
-// coreToolset is the loop-essential MCP surface registered under
-// PINCHER_TOOLSET=core: the probe set a delivery loop actually cycles
+// coreToolset is the loop-essential MCP surface advertised under the
+// opt-in PINCHER_TOOLSET=core (the default is `full` since #2054): the
+// probe set a delivery loop actually cycles
 // through (search → symbol/symbols/context → trace → edit → changes →
 // verify_change), the envelope dedupe (`batch` — which can still
 // dispatch the read-only non-core tools as sub-queries), the ledger
@@ -75,11 +84,11 @@ var coreToolset = map[string]bool{
 
 // ToolAdvertised reports whether the named tool appears on the MCP
 // tools/list advertisement under the toolset resolved from this
-// process's $PINCHER_TOOLSET (#2011): full advertises every tool,
-// core (the default) advertises only coreToolset. Used by the
+// process's $PINCHER_TOOLSET (#2011): full (the default since #2054)
+// advertises every tool, core advertises only coreToolset. Used by the
 // hook-check CLI to keep PreToolUse advisory recommendations
-// callable — a session running under the core default never saw the
-// non-core tools on tools/list, so a tools/call against one returns
+// callable — a session running under the opt-in core toolset never saw
+// the non-core tools on tools/list, so a tools/call against one returns
 // -32602. The resolution is against the CALLING process's
 // environment; for the hook subprocess that is a best-effort proxy
 // for the server's env (see cmd/pinch/hook_check.go decideGlobHook
@@ -92,18 +101,25 @@ func ToolAdvertised(name string) bool {
 }
 
 // parseToolsetEnv reads PINCHER_TOOLSET and returns the effective
-// toolset mode. Only the canonical "full" restores the full
-// advertisement; anything else (unset, "core", a typo) gets the core
-// default — same unknown-value rule as parseToolDescriptionsEnv
-// (#1088) and parseSchemaStyleEnv: only the canonical non-default
-// value switches, unknowns land on the default, never a third state.
-// A typo'd "fulll" still keeps every tool reachable over HTTP
-// /v1/<tool> and `batch` — core narrows tools/list only.
+// toolset mode. The default is `full` since #2054: only the explicit
+// canonical "core" narrows the advertisement; anything else (unset,
+// "full", a typo) gets the full surface. This is the inverse of the
+// pre-#2054 rule — the core default was measured to omit the
+// bootstrap/diagnose-essential tools (index/init/health/architecture/
+// adr/…), so a fresh MCP client literally could not onboard or
+// diagnose a project. The schema-style lever (parseSchemaStyleEnv,
+// still lean by default) keeps the dominant token saving: full+lean
+// is ~7.1k tools/list tokens vs ~19k full/rich (the lean transform
+// captures ~12k), while narrowing to core+lean only shaves a further
+// ~3.7k — not worth breaking onboarding for. `core` stays selectable
+// for token-tight setups. Unknown values land on the default (full),
+// never a third state — same single-switch discipline as
+// parseSchemaStyleEnv.
 func parseToolsetEnv(v string) string {
-	if strings.ToLower(strings.TrimSpace(v)) == toolsetFull {
-		return toolsetFull
+	if strings.ToLower(strings.TrimSpace(v)) == toolsetCore {
+		return toolsetCore
 	}
-	return toolsetCore
+	return toolsetFull
 }
 
 // parseSchemaStyleEnv reads PINCHER_SCHEMA_STYLE and returns the

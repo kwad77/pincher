@@ -142,7 +142,7 @@ func TestGuide_RouterPresent_NonMakeShapesStayUnrouted(t *testing.T) {
 // would be FALSE for it and must not be attached.
 func TestGuide_RouterPresent_CoreToolset_NoFalseEscapeHatchNote(t *testing.T) {
 	t.Setenv("PINCHER_ROUTER", "on")
-	t.Setenv("PINCHER_TOOLSET", "") // shipped default = core
+	t.Setenv("PINCHER_TOOLSET", "core") // opt-in core surface (#2054 made full the default)
 	srv, _, _ := newTestServer(t)
 
 	recs := guideRecs(t, callGuide(t, srv, "implement INI file support in the indexer"))
