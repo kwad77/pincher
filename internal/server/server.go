@@ -4499,6 +4499,7 @@ func (s *Server) registerTools() {
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project."},
 				"fields":{"type":"string","description":"Comma-separated allow-list of response keys (e.g. 'id,signature'). Omit for all fields. Skipping 'source' avoids the byte-offset disk read."},
 				"detail":{"type":"string","enum":["full","skeleton"],"description":"'full' (default) returns source verbatim. 'skeleton' replaces the source payload with a deterministic structural outline: signature + top-level control-flow lines kept verbatim (nesting shown by indentation), other runs elided as '… N lines (calls: A, B)' with call names harvested from the symbol's outbound CALLS edges. Use when you need a function's shape, not its body — large bodies compress to well under 30% of full-source tokens. Line-classifier based: language-agnostic and deterministic (tree-sitter-precise skeletons are the documented v2 path). Responses are marked with _meta.skeleton:true."},
+				"mode":{"type":"string","enum":["full","skeleton"],"description":"'full' (default) reads the symbol's source bytes from disk. 'skeleton' renders the symbol from ALREADY-INDEXED metadata with NO file read — the signature + return type, the docstring as a leading comment, and an elided body ('{ ... }' / '...' per language). For containers (Class/Interface/Enum/Module/Type) it lists each member's signature (bodies elided) via the Parent linkage. Because it never opens the file, a skeleton is immune to the byte-offset staleness path — it renders correctly even after the source file is edited or deleted. Marked _meta.mode:'skeleton' with token-savings vs full. (Distinct from detail='skeleton', which compresses already-read source bytes.)"},
 				"cross_project":{"type":"boolean","description":"#1232 opt-in: when the requested ID isn't in the session project but exists in another indexed project, default behavior is to error (rich-error with next_steps) instead of silently returning the other project's row. Pass cross_project=true to opt back into the legacy silent-fallback-with-warning behavior. Default false. Has no effect when project= is set explicitly."}
 			}
 		}`),
@@ -4514,6 +4515,7 @@ func (s *Server) registerTools() {
 				"project":{"type":"string","description":"Project name or ID. Defaults to session project. Pass '*' to look every ID up unscoped (cross-repo)."},
 				"fields":{"type":"string","description":"Comma-separated fields to include per result, e.g. 'id,name,signature'. Omit for all fields. Skipping 'source' avoids the per-symbol disk read entirely — major win on 50+ ID batches where the agent only needs metadata."},
 				"detail":{"type":"string","enum":["full","skeleton"],"description":"'full' (default) returns each source verbatim. 'skeleton' replaces every entry's source with a deterministic structural outline (signature + control-flow lines verbatim, other runs elided as '… N lines (calls: A, B)' using each symbol's CALLS edges). Shape-not-body skims of multi-symbol batches at a fraction of the token cost. One top-level _meta.skeleton:true marks the whole response (detail applies call-wide)."},
+				"mode":{"type":"string","enum":["full","skeleton"],"description":"'full' (default) reads each symbol's source bytes. 'skeleton' renders every entry from ALREADY-INDEXED metadata with NO file read — signature + docstring + elided body, or member signatures for containers (via the Parent linkage). Never opens a file, so each skeleton is immune to byte-offset staleness. One top-level _meta.mode:'skeleton' marks the whole batch. (Distinct from detail='skeleton', which compresses already-read source bytes.)"},
 				"cross_project":{"type":"boolean","description":"#1799 opt-in: the batch is session-scoped by default (an ID is path+QN+kind, so an unscoped lookup can resolve it from an indexed mirror of the session repo). An ID absent from the session project surfaces as not_found. Pass cross_project=true to fall back to an unscoped lookup for those missed IDs. Default false. Ignored when project= is set."},
 				"max_tokens":{"type":"integer","description":"Response budget in approximate tokens across the whole batch, applied in input order: entries past the budget keep metadata but set source_omitted:true and skip the disk read entirely (span-estimate gate). 0/omitted = unlimited. _meta.warnings_v2 code=budget_truncated reports how many entries were trimmed. Pair with fields= to drop unused keys per entry. Loop-substrate PR-5."}
 			}
@@ -4530,6 +4532,7 @@ func (s *Server) registerTools() {
 				"project":{"type":"string"},
 				"fields":{"type":"string","description":"Comma-separated top-level keys to include, e.g. 'symbol,callees' to drop imports. Omit for all. _meta is preserved unconditionally."},
 				"detail":{"type":"string","enum":["full","skeleton"],"description":"'full' (default) returns sources verbatim. 'skeleton' replaces EVERY source payload in the response — the primary symbol's and each import's/callee's — with a deterministic structural outline (signature + control-flow lines verbatim, other runs elided as '… N lines (calls: A, B)' using each symbol's CALLS edges). Marked _meta.skeleton:true. Note: skeleton mode bypasses the PINCHER_DIFF_CONTEXT diff cache — the cache only operates on detail=full so the two representations can't poison each other."},
+				"mode":{"type":"string","enum":["full","skeleton"],"description":"'full' (default) reads source bytes for the primary symbol + every import/callee. 'skeleton' renders EVERY source payload from ALREADY-INDEXED metadata with NO file read — signature + docstring + elided body, or member signatures for containers (via the Parent linkage). Never opens a file, so the whole call is immune to byte-offset staleness; it also bypasses the diff cache (a DB render has no on-disk hash to diff). Marked _meta.mode:'skeleton'. (Distinct from detail='skeleton', which compresses already-read source bytes.)"},
 				"lite":{"type":"boolean","description":"When true, return only {id, source} — no imports, no callees, no next_steps. Used by PreToolUse hook to land on minimum-envelope shape when redirecting a Read call. Default false."},
 				"diff":{"type":"boolean","description":"Default true. Gates the #655 diff-encoded repeat-read cache: a repeat context(id) on an unchanged file short-circuits to {unchanged:true}; a changed file ships a line diff against what was last served on this connection. Pass diff=false to bypass the cache (no read, no write) and always receive the full body — the recovery path when you do NOT have the prior response in your context (fresh session against a long-lived server, subagent sharing a parent connection). The cache only engages on full-fidelity serves: max_tokens-budgeted, fields-projected, skeleton, and HTTP-REST calls never read or write it."},
 				"cross_project":{"type":"boolean","description":"#1232 opt-in: when the requested ID isn't in the session project but exists in another indexed project, default behavior is to error (rich-error with next_steps) instead of silently returning the other project's data — including its callees + imports, which would also belong to the wrong tree. Pass cross_project=true to opt back into the legacy silent-fallback-with-warning behavior. Default false. Has no effect when project= is set explicitly."},
@@ -5287,6 +5290,9 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// deterministic structural outline (see skeleton.go). Unknown values
 	// degrade to full with a warning.
 	detailSkeleton, detailWarning := parseDetailArg(args)
+	// mode="skeleton" renders the symbol from indexed fields with NO file
+	// read (see dbskeleton.go) — the staleness-immune AST-compressor.
+	modeSkeleton, modeWarning := parseModeArg(args)
 	// #1232: opt-in to the legacy silent-cross-project-fallback
 	// behaviour. Pre-#1232, when projectArg was omitted AND the ID
 	// happened to resolve in some indexed project other than the
@@ -5485,7 +5491,18 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// read). Capture it so the handler ships an explicit staleness signal
 	// with an EMPTY source rather than arbitrary wrong content.
 	var staleReadErr error
-	if includeSource {
+	// mode=skeleton: render the source field from indexed fields ONLY — no
+	// byte-offset read, no staleness validation (a skeleton is immune to
+	// the staleness path because it never opens the file). Container kinds
+	// list their Parent-linked children's signatures. This branch returns
+	// before the file-read path below.
+	if includeSource && modeSkeleton && sym.Kind != "Document" {
+		var children []db.Symbol
+		if skeletonContainerKinds[sym.Kind] {
+			children, _ = s.store.SymbolsByParentScoped(sym.ProjectID, sym.QualifiedName)
+		}
+		source, _ = renderDBSkeleton(sym, children, maxTokens)
+	} else if includeSource {
 		if root != "" {
 			var readErr error
 			source, readErr = index.ReadSymbolSource(root, *sym)
@@ -5516,7 +5533,10 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// skeleton step so the cut applies to whatever shape ships.
 	srcBudgetDropped := 0
 	srcBudgetTruncated := false
-	if maxTokens > 0 && source != "" {
+	// mode=skeleton already budgeted its own child list at a line boundary
+	// (renderDBSkeleton) — re-cutting here could chop the closing brace or a
+	// "+N more" note mid-structure, so skip the generic line truncation.
+	if maxTokens > 0 && source != "" && !modeSkeleton {
 		source, srcBudgetDropped, srcBudgetTruncated = truncateSourceToTokens(source, maxTokens)
 	}
 
@@ -5577,8 +5597,16 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	if detailSkeleton {
 		attachSkeletonMeta(data)
 	}
+	// mode=skeleton: stamp the DB-only render marker + token savings. Only
+	// when source was actually rendered (includeSource and not a Document).
+	if modeSkeleton && includeSource && sym.Kind != "Document" {
+		attachModeSkeletonMeta(data, sym.EndByte-sym.StartByte, source)
+	}
 	if detailWarning != "" {
 		attachWarning(data, detailWarning)
+	}
+	if modeWarning != "" {
+		attachWarning(data, modeWarning)
 	}
 	// #1026: surface the project-resolve failure when project was
 	// explicitly passed but didn't match. attachWarning merges into
@@ -5839,6 +5867,9 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 	// Skeleton mode: detail="skeleton" applies the structural-outline
 	// compression to every entry's source (see skeleton.go).
 	detailSkeleton, detailWarning := parseDetailArg(args)
+	// mode="skeleton": render each entry from indexed fields, no file read
+	// (see dbskeleton.go).
+	modeSkeleton, modeWarning := parseModeArg(args)
 	root := s.sessionRoot
 	// #1048: skip resolution when projectArg=="*" — documented
 	// cross-project sentinel. Batch lookups with "*" map to "look
@@ -5960,7 +5991,19 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 		source := ""
 		sourceOmitted := false
 		symRoot := rootForProject(sym.ProjectID)
-		if includeSource {
+		if includeSource && modeSkeleton && sym.Kind != "Document" {
+			// mode=skeleton: render from indexed fields, NO file read. No
+			// budget-omit gate — a skeleton is small by construction, and
+			// renderDBSkeleton self-truncates a huge container's child list.
+			var children []db.Symbol
+			if skeletonContainerKinds[sym.Kind] {
+				children, _ = s.store.SymbolsByParentScoped(sym.ProjectID, sym.QualifiedName)
+			}
+			source, _ = renderDBSkeleton(sym, children, maxTokens)
+			if maxTokens > 0 {
+				budgetRemaining -= db.ApproxTokens(source)
+			}
+		} else if includeSource {
 			// PR-5 budget gate: span-based estimate, no disk read for
 			// entries that can't fit.
 			if maxTokens > 0 && (sym.EndByte-sym.StartByte+3)/4 > budgetRemaining {
@@ -6022,8 +6065,10 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 		// #317 staleness warning, per-entry. Each batch result carries its
 		// own _meta when the file's on-disk hash diverges from the indexed
 		// one. Mirrors the per-symbol path so a mixed batch (some stale,
-		// some fresh) reports accurately at the entry level.
-		if symRoot != "" && sym.Kind != "Document" {
+		// some fresh) reports accurately at the entry level. Skipped for
+		// mode=skeleton: that entry was rendered from the DB, never read
+		// from disk, so on-disk staleness is irrelevant to it.
+		if symRoot != "" && sym.Kind != "Document" && !modeSkeleton {
 			s.attachStalenessWarning(entry, sym.ProjectID, sym, symRoot)
 		}
 		// Apply per-entry projection. _meta (the staleness warning
@@ -6085,8 +6130,21 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 	if detailSkeleton {
 		attachSkeletonMeta(data)
 	}
+	// mode=skeleton: ONE top-level marker for the whole batch (same
+	// rationale as attachSkeletonMeta — mode applies call-wide).
+	if modeSkeleton {
+		meta, _ := data["_meta"].(map[string]any)
+		if meta == nil {
+			meta = map[string]any{}
+			data["_meta"] = meta
+		}
+		meta["mode"] = modeSkeletonValue
+	}
 	if detailWarning != "" {
 		attachWarning(data, detailWarning)
+	}
+	if modeWarning != "" {
+		attachWarning(data, modeWarning)
 	}
 	// #1066: surface batch-level not-found summary so a partial-hit
 	// response is obviously partial. `count` historically lumps
@@ -6174,6 +6232,9 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// the primary symbol's AND its imports'/callees' — with the
 	// structural outline (see skeleton.go).
 	detailSkeleton, detailWarning := parseDetailArg(args)
+	// mode="skeleton": render every source payload from indexed fields with
+	// NO file read (see dbskeleton.go).
+	modeSkeleton, modeWarning := parseModeArg(args)
 
 	// #1039: context's schema declares a `project` arg ("Project name
 	// or ID. Defaults to session project.") but the handler used to
@@ -6281,7 +6342,20 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	}
 
 	root, _ := s.resolveProjectRoot(sym.ProjectID)
-	source, _ := index.ReadSymbolSource(root, *sym)
+	// mode=skeleton: render the primary symbol from indexed fields, NO file
+	// read. Returns before the byte-offset reader, so the whole context call
+	// is staleness-immune (the diff cache below is also bypassed for
+	// skeleton modes — a DB render has no on-disk hash to diff against).
+	source := ""
+	if modeSkeleton && sym.Kind != "Document" {
+		var children []db.Symbol
+		if skeletonContainerKinds[sym.Kind] {
+			children, _ = s.store.SymbolsByParentScoped(sym.ProjectID, sym.QualifiedName)
+		}
+		source, _ = renderDBSkeleton(sym, children, maxTokens)
+	} else {
+		source, _ = index.ReadSymbolSource(root, *sym)
+	}
 	// Skeleton mode: compress the primary symbol's body before any
 	// downstream path (lite / diff / full) sees it. Placed ABOVE the
 	// #655 diff block, which is additionally gated on !detailSkeleton —
@@ -6345,8 +6419,9 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		// an edit with zero indication the bytes don't match the
 		// current file (same silent-confidently-wrong family as #317
 		// + #960). attachStalenessWarning is a hash compare — cheap
-		// enough to keep on the lite path.
-		if root != "" {
+		// enough to keep on the lite path. Skipped for mode=skeleton —
+		// the lite source was rendered from the DB, never read from disk.
+		if root != "" && !modeSkeleton {
 			s.attachStalenessWarning(liteData, sym.ProjectID, sym, root)
 		}
 		// #1039: lite-path also surfaces project-resolve failure.
@@ -6363,8 +6438,14 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		if detailSkeleton {
 			attachSkeletonMeta(liteData)
 		}
+		if modeSkeleton && sym.Kind != "Document" {
+			attachModeSkeletonMeta(liteData, sym.EndByte-sym.StartByte, liteSource)
+		}
 		if detailWarning != "" {
 			attachWarning(liteData, detailWarning)
+		}
+		if modeWarning != "" {
+			attachWarning(liteData, modeWarning)
 		}
 		liteResponseJSON, _ := json.Marshal(liteData)
 		return s.jsonResultWithMeta(liteData, start, tool, args,
@@ -6420,7 +6501,7 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 			diffConnKey = "stdio" // stdio transport: one connection per process lifetime
 		}
 	}
-	diffEligible := s.diffContext && root != "" && !detailSkeleton &&
+	diffEligible := s.diffContext && root != "" && !detailSkeleton && !modeSkeleton &&
 		boolArgDefault(args, "diff", true) &&
 		maxTokens == 0 &&
 		(fieldSet == nil || fieldSet["symbol"]) &&
@@ -6523,6 +6604,27 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		if imp == nil {
 			continue
 		}
+		// mode=skeleton: render this import from indexed fields, NO file
+		// read. No budget-omit gate (skeletons are small by construction).
+		if modeSkeleton && imp.Kind != "Document" {
+			var impChildren []db.Symbol
+			if skeletonContainerKinds[imp.Kind] {
+				impChildren, _ = s.store.SymbolsByParentScoped(imp.ProjectID, imp.QualifiedName)
+			}
+			impSkel, _ := renderDBSkeleton(imp, impChildren, maxTokens)
+			if maxTokens > 0 {
+				budgetRemaining -= db.ApproxTokens(impSkel)
+			}
+			imports = append(imports, map[string]any{
+				"id":        imp.ID,
+				"name":      imp.Name,
+				"kind":      imp.Kind,
+				"file_path": imp.FilePath,
+				"source":    impSkel,
+			})
+			importPaths = append(importPaths, imp.FilePath)
+			continue
+		}
 		// Budget gate (PR-5): span-based estimate avoids the disk read
 		// when the entry can't fit anyway. Metadata survives so the
 		// agent can fetch the bodies it needs via symbol/symbols.
@@ -6560,6 +6662,27 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	for _, id := range calleeIDs {
 		callee := dependencySyms[id]
 		if callee == nil {
+			continue
+		}
+		// mode=skeleton: render this callee from indexed fields, NO file
+		// read — same shape as the imports loop above.
+		if modeSkeleton && callee.Kind != "Document" {
+			var calleeChildren []db.Symbol
+			if skeletonContainerKinds[callee.Kind] {
+				calleeChildren, _ = s.store.SymbolsByParentScoped(callee.ProjectID, callee.QualifiedName)
+			}
+			calleeSkel, _ := renderDBSkeleton(callee, calleeChildren, maxTokens)
+			if maxTokens > 0 {
+				budgetRemaining -= db.ApproxTokens(calleeSkel)
+			}
+			callees = append(callees, map[string]any{
+				"id":        callee.ID,
+				"name":      callee.Name,
+				"kind":      callee.Kind,
+				"file_path": callee.FilePath,
+				"source":    calleeSkel,
+			})
+			calleePaths = append(calleePaths, callee.FilePath)
 			continue
 		}
 		// Budget gate (PR-5) — same shape as the imports loop above.
@@ -6643,7 +6766,10 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// The original "checking imports multiplies cost without much
 	// value" trade was invalidated by #978/#979's audit: stale-bytes
 	// warnings are the contract for byte-offset reads, full stop.
-	if root != "" {
+	// Skipped entirely for mode=skeleton: no source payload in this
+	// response was read from disk, so there is no byte-offset staleness to
+	// warn about — the whole call is staleness-immune.
+	if root != "" && !modeSkeleton {
 		s.attachStalenessWarning(data, sym.ProjectID, sym, root)
 		depPaths := make([]string, 0, len(importPaths)+len(calleePaths))
 		depPaths = append(depPaths, importPaths...)
@@ -6681,8 +6807,17 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	if detailSkeleton {
 		attachSkeletonMeta(data)
 	}
+	// mode=skeleton: one top-level marker + token savings on the primary
+	// symbol (the per-section bodies are all skeletons too). _meta survives
+	// projection, so this is attached after it.
+	if modeSkeleton && sym.Kind != "Document" {
+		attachModeSkeletonMeta(data, sym.EndByte-sym.StartByte, source)
+	}
 	if detailWarning != "" {
 		attachWarning(data, detailWarning)
+	}
+	if modeWarning != "" {
+		attachWarning(data, modeWarning)
 	}
 	// #1039: surface the project-resolve failure on success too — the
 	// caller's scope hint was ignored but the symbol resolved via the

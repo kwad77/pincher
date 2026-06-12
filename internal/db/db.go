@@ -4288,6 +4288,26 @@ func (s *Store) GetSymbolsByQN(projectID, qn string) ([]Symbol, error) {
 	return s.querySymbols(symSelectFrom+` WHERE project_id=? AND qualified_name=?`, projectID, qn)
 }
 
+// SymbolsByParentScoped returns the child symbols of a container — every
+// symbol whose Parent field equals parentQN, scoped to projectID. The
+// indexer populates child.Parent with the enclosing type's QualifiedName
+// (Go: pkg.Type; Rust/TS/Java/etc. tree-sitter tiers follow the same
+// QN/Parent convention — see internal/ast extractors), so a class's
+// methods/fields are exactly the rows whose Parent matches the class QN.
+//
+// Used by mode=skeleton to render a container as its members' signatures
+// without reading the file. Ordered by start_byte for source-order
+// stability (the order a reader would see members declared). Empty parentQN
+// returns no rows rather than scanning every orphan symbol.
+func (s *Store) SymbolsByParentScoped(projectID, parentQN string) ([]Symbol, error) {
+	if projectID == "" || parentQN == "" {
+		return nil, nil
+	}
+	return s.querySymbols(
+		symSelectFrom+` WHERE project_id=? AND parent=? ORDER BY start_byte`,
+		projectID, parentQN)
+}
+
 // LoadAllSymbolsByQN returns every symbol in projectID grouped by
 // qualified_name. Used by the index resolve pass to avoid one DB
 // query per unique QN — pre-#1338 the indexer ran N GetSymbolsByQN
