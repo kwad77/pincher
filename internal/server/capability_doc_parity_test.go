@@ -96,6 +96,10 @@ func TestCapability_EveryAdvertisedTagDocumented(t *testing.T) {
 		"streamable_http": true,
 		"closure_tables":  true,
 		"traces_otlp":     true,
+		// Router-loop item B4: advertised only when the detection
+		// ladder (router_detect.go) finds a live, identity-validated
+		// pincher-router — never on a default test server.
+		"router": true,
 	}
 	for tag := range documented {
 		if strings.HasPrefix(tag, "schema_v") {

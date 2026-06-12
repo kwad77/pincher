@@ -224,6 +224,16 @@ type Server struct {
 	// its capability tag is added/removed in lockstep.
 	capabilities []string
 
+	// routerDetected caches the pincher-router detection ladder result
+	// (router_detect.go): config-dir stat → LookPath(pincher-router-serve)
+	// → identity-validated GET /healthz requiring weights_version in
+	// the body. Read once at New() — like PINCHER_META_CAPABILITIES it
+	// cannot toggle mid-process. Gates the `router` capability tag;
+	// the conditional models/route tool surface (plan item B5) gates
+	// on the same field. Override: PINCHER_ROUTER=off|auto|on
+	// (canonical-value-only; typo ⇒ absent).
+	routerDetected bool
+
 	// includeCapabilitiesPerCall gates the per-call _meta.capabilities
 	// stamping in jsonResultWithMeta. Default true (back-compat); set
 	// false via PINCHER_META_CAPABILITIES=off|false|0|none at server
@@ -553,6 +563,13 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 	// `prompts` capability in initialize; the host surfaces it as a slash
 	// command. Same recommendation core as the tool (computeGuide).
 	s.registerPrompts()
+	// Router-loop item B4: run the pincher-router detection ladder once
+	// at startup (router_detect.go) so computeCapabilities below can
+	// advertise the `router` tag. Best-effort and bounded (≤50ms probe
+	// timeout, no network at all unless rungs 1–2 indicate an install);
+	// every failure mode is "absent" — detection can never error out of
+	// or block New(). Rollback knob: PINCHER_ROUTER=off.
+	s.routerDetected = detectRouter(defaultRouterProbeConfig())
 	// #649: compute capability advertisement once at startup. Routers
 	// consume this from _meta.capabilities to make integration decisions
 	// (do I need to fall back to polling, or can I subscribe via SSE?
@@ -4061,6 +4078,18 @@ func computeCapabilities(s *Server) []string {
 	// + working" from "best-effort no-op fallback."
 	if s.tracer != nil && s.tracer.Enabled() {
 		caps = append(caps, "traces_otlp")
+	}
+
+	// Router-loop item B4: pincher-router detected by the startup
+	// ladder (router_detect.go — config-dir stat → LookPath →
+	// identity-validated healthz requiring weights_version). Hosts and
+	// the pincher-loop skill's dispatch verse gate ALL routing behavior
+	// on this tag: absent ⇒ zero routing surface, zero probing. The
+	// conditional models/route tools (plan item B5) advertise under the
+	// same flag. Addition is a minor SemVer event per the tag-vocabulary
+	// contract above.
+	if s.routerDetected {
+		caps = append(caps, "router")
 	}
 
 	return caps

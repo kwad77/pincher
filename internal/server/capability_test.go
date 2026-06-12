@@ -301,6 +301,21 @@ var capabilityProbes = []capProbe{
 		},
 	},
 	{
+		// Router-loop item B4: conditional `router` tag — advertised only
+		// when the startup detection ladder (router_detect.go) found a
+		// live, identity-validated pincher-router. Lockstep probe: the
+		// tag must agree with the cached detection field that the rest
+		// of the routing surface (item B5) gates on. The ladder's own
+		// behavior (rungs, identity validation, env override) is covered
+		// by router_detect_test.go.
+		tag: "router",
+		probe: func(t *testing.T, srv *Server) {
+			if !srv.routerDetected {
+				t.Errorf("router advertised but srv.routerDetected is false — tag/detection out of lockstep")
+			}
+		},
+	},
+	{
 		tag: "sse",
 		probe: func(t *testing.T, srv *Server) {
 			// GET /v1/events must answer 200 with a text/event-stream
@@ -349,7 +364,7 @@ func TestCapability_EveryAdvertisedTagHasRuntimeProbe(t *testing.T) {
 
 	for tag := range probed {
 		// Skip conditional capabilities not present on this server.
-		if tag == "http_auth" || tag == "streamable_http" || tag == "closure_tables" || tag == "traces_otlp" {
+		if tag == "http_auth" || tag == "streamable_http" || tag == "closure_tables" || tag == "traces_otlp" || tag == "router" {
 			continue
 		}
 		if !advertised[tag] {
