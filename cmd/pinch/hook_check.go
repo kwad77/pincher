@@ -323,7 +323,13 @@ func decideReadHook(store *db.Store, in hookCheckInput, debug bool) hookDecision
 
 	relPath, fileBytes, projectID, ok := matchIndexedFile(store, path)
 	if !ok {
-		return debugPass(debug, "not in any indexed project", hookDecision{FilePathParsed: path})
+		// #2014: the dominant production case (725/726 audited
+		// invocations) — the path is outside every indexed root, so no
+		// redirect is possible. When the path sits inside an UNINDEXED
+		// git repo that the session keeps reading, recruit the index
+		// with a one-time advisory instead of passing through silently
+		// forever. Still advisory-only: every branch continues.
+		return decideUnindexedRead(store, in, path, debug)
 	}
 
 	// Tiny files: Read wins on tokens. Threshold matches the lite-mode

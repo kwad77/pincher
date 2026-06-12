@@ -7327,6 +7327,66 @@ func (s *Store) HookFileSeenInSession(sessionID, filePath string) bool {
 	return n > 0
 }
 
+// HookReadPathsUnderRoot returns the file_path of every Read-tool
+// hook_invocations row in the session whose path sits at or under
+// root. Backs the #2014 advise-index threshold: the hook subprocess
+// keeps no state of its own, but every prior invocation already wrote
+// a row carrying (session_id, tool_name, file_path) — a prefix match
+// over those rows IS the per-(session, repo-root) event counter, with
+// no new table or migration. The caller applies the code-file
+// extension filter (cmd-side knowledge). Character-based substr/length
+// keep the prefix comparison consistent inside SQLite regardless of
+// non-ASCII path bytes. Cheap: idx_hook_session narrows to the
+// session first. Reader-routed; best-effort (nil on error — the
+// advisory is supplementary, never load-bearing).
+func (s *Store) HookReadPathsUnderRoot(sessionID, root string) []string {
+	if sessionID == "" || root == "" {
+		return nil
+	}
+	prefix := filepath.Clean(root) + string(filepath.Separator)
+	rows, err := s.ro.Query(
+		`SELECT file_path FROM hook_invocations
+		  WHERE session_id = ? AND tool_name = 'Read'
+		    AND substr(file_path, 1, length(?)) = ?`,
+		sessionID, prefix, prefix,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var paths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil
+		}
+		paths = append(paths, p)
+	}
+	return paths
+}
+
+// HookIndexAdvisedForRoot reports whether the #2014 advise-index
+// advisory already fired for (sessionID, root) — the once-per-root-
+// per-session suppression check. advise_index rows store the repo
+// ROOT in file_path (the suppression key and the take-rate join key
+// against projects.path), so this is an exact match, not a prefix
+// scan. Reader-routed; best-effort (false on error, which at worst
+// repeats an advisory).
+func (s *Store) HookIndexAdvisedForRoot(sessionID, root string) bool {
+	if sessionID == "" || root == "" {
+		return false
+	}
+	var n int
+	if err := s.ro.QueryRow(
+		`SELECT COUNT(1) FROM hook_invocations
+		  WHERE session_id = ? AND decision = 'advise_index' AND file_path = ?`,
+		sessionID, root,
+	).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
+}
+
 // HookSavings7d sums the v41 per-redirect savings telemetry over the
 // trailing 7 days: estServed = estimated tokens of the suggested
 // `context lite=true` responses, baseline = estimated tokens the
