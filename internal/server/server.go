@@ -607,6 +607,21 @@ func New(store *db.Store, indexer *index.Indexer, version string) *Server {
 	s.routerMode = routerCfg.mode
 	s.routerBaseURL = routerCfg.baseURL
 	s.routerDetected = detectRouter(routerCfg)
+	// #2036 (durability half of #2032): mirror the route-outcome echo LRU
+	// to a data-dir-keyed JSON sidecar so a same-session route→outcome
+	// pair survives an auto-restart-on-drift respawn, a crash, or an MCP
+	// client reconnect — the three causes that wiped the in-process cache
+	// and made the minimal outcome card 422 invisibly. Keyed off the
+	// SQLite store's directory (one data-dir ⇒ one sidecar, shared across
+	// the HTTP daemon and the stdio MCP process the same way the DB is).
+	// Skipped when routing is fully off (no activity to remember) and
+	// when the store path is unknown (embedded test stores) — both leave
+	// the pre-#2036 in-process-only behaviour. Best-effort: a load/write
+	// error degrades to echo_source:none, never blocks startup.
+	if s.routerMode != routerModeOff && s.store != nil && s.store.Path != "" {
+		dataDir := filepath.Dir(s.store.Path)
+		s.routeEcho.enablePersistence(filepath.Join(dataDir, routeEchoPersistFile))
+	}
 	s.registerTools()
 	// #1082: expose `guide` as a user-controlled MCP prompt in addition to
 	// the model-controlled tool. Registering it makes the SDK advertise the
