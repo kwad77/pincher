@@ -2193,20 +2193,38 @@ func ReadSymbolSourceCapped(projectRoot string, sym db.Symbol, maxBytes int) (st
 	// Staleness validation BEFORE trusting the offsets. The byte range was
 	// captured against the indexed file; if that file has changed, seeking
 	// to StartByte/EndByte returns content that no longer corresponds to
-	// this symbol. Two cheap-to-strong checks, both fail closed:
+	// this symbol. Two checks, both fail closed:
 	//
-	//  1. Size guard (always): EndByte must be within the current file
-	//     size. A shrunk file would otherwise yield a silent short read.
-	//  2. Hash guard (when sym.FileHash is recorded): the on-disk content
-	//     hash must equal the indexed hash. Catches same-size edits that
-	//     shift the offsets to a different symbol's bytes — which the size
-	//     guard alone can't see.
+	//  1. Size guard (ALWAYS): EndByte must be within the current file
+	//     size. A shrunk/truncated file would otherwise yield a silent
+	//     short read. One os.Stat — O(1), independent of file size.
+	//  2. Hash guard (UNBOUNDED reads only — maxBytes <= 0): the on-disk
+	//     content hash must equal the indexed hash. Catches same-LENGTH
+	//     edits that shift the offsets to a different symbol's bytes —
+	//     which the size guard alone can't see.
 	//
-	// The hash read costs one os.ReadFile; it's only paid when a hash was
-	// recorded (Document/URL kinds and pre-#236 rows have none and fall
-	// through to the size guard only). Pincher's seek-read happens once per
-	// retrieve, not in a hot loop, so the extra read is acceptable for the
-	// correctness guarantee it buys.
+	// #2043: the hash guard costs one whole-file os.ReadFile, which is
+	// fine on the authoritative unbounded retrieve paths (symbol/context
+	// via ReadSymbolSource, maxBytes == 0) that happen once per request.
+	// But it BYPASSES maxBytes — so on the capped search-snippet hot path
+	// (server.go render, once per hit, no budget pre-gate) it turned a
+	// bounded ~240-byte seek into a full read of every hit file, 8x slower
+	// and ~387x more memory on a 200KB file (#2040 regression).
+	//
+	// The indexed mtime that would let us cheaply gate the hash read
+	// (stat-mtime vs indexed-mtime) is NOT carried on db.Symbol, and the
+	// files table stores only second-precision indexed_at (wall-clock at
+	// index time), not the source mtime — and this is a pure func with no
+	// store handle. So we gate on the cap instead: capped callers ask for
+	// a bounded preview, so we give them the cheap size-guard-only path.
+	//
+	// Correctness tradeoff: on the capped path a same-length edit could
+	// ship wrong bytes into an ephemeral search SNIPPET (preview only,
+	// lower stakes — and shrink/truncation is still caught by the size
+	// guard). The authoritative symbol/context reads are unbounded and
+	// keep the full hash guard, so cached IDs never resolve to wrong
+	// bytes without an error. A genuinely stale capped read past EOF
+	// still returns ErrStaleByteOffset.
 	fi, err := f.Stat()
 	if err != nil {
 		return "", fmt.Errorf("stat %s: %w", sym.FilePath, err)
@@ -2215,7 +2233,7 @@ func ReadSymbolSourceCapped(projectRoot string, sym db.Symbol, maxBytes int) (st
 		return "", fmt.Errorf("%w: %s end_byte %d > current size %d (file shrunk)",
 			ErrStaleByteOffset, sym.FilePath, sym.EndByte, fi.Size())
 	}
-	if sym.FileHash != "" {
+	if maxBytes <= 0 && sym.FileHash != "" {
 		content, rerr := os.ReadFile(absPath)
 		if rerr != nil {
 			return "", fmt.Errorf("read for hash %s: %w", sym.FilePath, rerr)
