@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -193,19 +195,38 @@ func routeEchoFromCall(envelope, plan map[string]any) map[string]any {
 	return fields
 }
 
+// routerRequestID normalizes a request_id value from either side of
+// the outcomes join (route response, outcome card) to its string form.
+// Contract v2 specifies a string, but a silent type-assertion miss
+// here disables the auto-echo with no observable trace (#2032), so
+// scalar shapes a JSON decoder can produce are stringified instead of
+// dropped. Non-scalars stay "" — the proxy never fabricates a join key.
+func routerRequestID(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
+	case json.Number:
+		return t.String()
+	}
+	return ""
+}
+
 // autofillOutcomeEcho completes a minimal OutcomeCard from the cached
 // route call with the same request_id. Explicit caller fields always
-// win; a cache miss returns nil and leaves the card untouched (the
-// honest-422 path). Returns the sorted list of filled keys for the
-// response note.
-func (s *Server) autofillOutcomeEcho(card map[string]any) []string {
-	requestID, _ := card["request_id"].(string)
+// win; a cache miss returns (nil, false) and leaves the card untouched
+// (the honest-422 path). Returns the sorted list of filled keys for
+// the response note, plus whether the cache held the request_id at all
+// (a hit that fills nothing means the caller echoed everything itself).
+func (s *Server) autofillOutcomeEcho(card map[string]any) ([]string, bool) {
+	requestID := routerRequestID(card["request_id"])
 	if requestID == "" {
-		return nil
+		return nil, false
 	}
 	cached, ok := s.routeEcho.get(requestID)
 	if !ok {
-		return nil
+		return nil, false
 	}
 	var filled []string
 	for k, v := range cached {
@@ -216,7 +237,7 @@ func (s *Server) autofillOutcomeEcho(card map[string]any) []string {
 		filled = append(filled, k)
 	}
 	sort.Strings(filled)
-	return filled
+	return filled, true
 }
 
 // routerConditionalTools names the tools whose MCP advertisement is
@@ -358,9 +379,13 @@ func (s *Server) handleRoute(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		}
 		// Outcome auto-echo (item B10): remember what this consult
 		// looked like so the eventual minimal outcome card can be
-		// completed to the full OutcomeBody echo. Best-effort — a
-		// response without a request_id (pre-v2 router) caches nothing.
-		if rid, ok := body["request_id"].(string); ok {
+		// completed to the full OutcomeBody echo. Keyed by the ROUTER
+		// RESPONSE's request_id (the join key the outcome card carries
+		// back), merged from the submitted envelope + the parsed plan.
+		// Best-effort — a response without a request_id (pre-v2
+		// router) caches nothing, and non-string ids are normalized
+		// instead of silently skipping the write (#2032).
+		if rid := routerRequestID(body["request_id"]); rid != "" {
 			s.routeEcho.put(rid, routeEchoFromCall(envelope, body))
 		}
 		return s.jsonResultWithMeta(body, start, tool, args, 0), nil
@@ -382,7 +407,32 @@ func (s *Server) handleRoute(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		// time, symmetrically with consults (coach's outcomes-reported
 		// ÷ consults adherence ratio).
 		atomic.AddInt64(&s.statsRouteOutcomes, 1)
-		filled := s.autofillOutcomeEcho(card)
+		filled, cacheHit := s.autofillOutcomeEcho(card)
+		// #2032 production observability: name where the echo came
+		// from, so a live un-echoed 422 is diagnosable instead of
+		// indistinguishable from the tested happy path.
+		//   cache  — ≥1 field auto-filled from the cached route call;
+		//   caller — nothing needed filling (cache hit with a complete
+		//            card, or the caller echoed session_id itself);
+		//   none   — cache miss AND no caller echo: exactly the body
+		//            a validating router 422s. The dominant production
+		//            cause is process churn — the request_id → echo
+		//            LRU is in-memory and does not survive an MCP
+		//            respawn (auto-restart-on-drift, crash, client
+		//            reconnect), which the caller cannot see. Logged
+		//            loudly for that reason.
+		echoSource := "none"
+		callerSession, _ := card["session_id"].(string)
+		switch {
+		case len(filled) > 0:
+			echoSource = "cache"
+		case cacheHit || callerSession != "":
+			echoSource = "caller"
+		default:
+			slog.Warn("pincher.route_outcome.echo_miss",
+				"request_id", routerRequestID(card["request_id"]),
+				"hint", "no cached route call for this request_id (process restart? LRU eviction? foreign id) and the card carries no session_id — a validating router will 422 this body; echo the envelope fields explicitly or re-route")
+		}
 		body, errRes := s.routerDo(ctx, http.MethodPost, "/v1/outcomes", card)
 		if errRes != nil {
 			return errRes, nil
@@ -390,6 +440,7 @@ func (s *Server) handleRoute(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		if len(filled) > 0 {
 			body["echo_autofilled"] = filled
 		}
+		body["echo_source"] = echoSource
 		return s.jsonResultWithMeta(body, start, tool, args, 0), nil
 	default:
 		return s.errResultRich(fmt.Sprintf("unknown route action %q — valid: route (default), outcome", action),
