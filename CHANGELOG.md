@@ -7,6 +7,19 @@ minors.
 
 ## [Unreleased]
 
+## [1.9.3] — 2026-06-12 — Staleness-guard perf fix: bounded reads stop re-reading the whole file
+
+A single-fix patch carrying the perf-regression fix for the byte-offset
+staleness guard shipped in v1.9.2 (#2040). The capped search-snippet hot
+path regained its pre-#2040 bounded fast path — a ~240-byte seek no
+longer balloons into a whole-file read per hit. No schema migration, no
+new dependency, no tool-contract change. PATCH bump (version is
+git-describe stamped at build time). v1.9.3 supersedes v1.9.2, which
+shipped with this regression.
+
+### Fixed
+- **Stop whole-file read on every capped symbol read ([#2043](https://github.com/kwad77/pincher/issues/2043)).** The #2040 byte-offset staleness guard recomputed the file's xxh3 hash with a full `os.ReadFile` whenever a symbol carried a `FileHash` — which the indexer stamps on every symbol — and the read bypassed `maxBytes`. On the capped search-snippet hot path that turned a bounded ~240-byte seek into a whole-file read per hit (200KB file: 214234 B/op → 584 B/op, ~8x slower / ~367x more memory). The expensive whole-file hash guard now runs only for unbounded reads (the authoritative `symbol`/`context` paths); capped callers keep the cheap always-on size guard (shrink/truncation still caught), restoring the pre-#2040 bounded fast path. A same-length edit on the unbounded path still returns `ErrStaleByteOffset`.
+
 ## [1.9.2] — 2026-06-12 — Adversarial-hunt fixes: TOCTOU guard, byte-offset safety, echo-cache hardening
 
 A patch release folding the bug fixes that came out of the post-v1.9.1
