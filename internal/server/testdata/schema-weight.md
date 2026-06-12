@@ -13,8 +13,8 @@ Default since v1.6 (#2005): toolset=core, style=lean. PINCHER_TOOLSET=full
 |---|---|--:|--:|
 | full | rich | 34 | 18564 |
 | full | lean | 34 | 6978 |
-| core | rich | 10 | 8907 |
-| core | lean | 10 | 3094 |
+| core | rich | 11 | 9177 |
+| core | lean | 11 | 3236 |
 
 ## Per-tool weight, full/rich (heaviest first)
 
@@ -46,7 +46,7 @@ Default since v1.6 (#2005): toolset=core, style=lean. PINCHER_TOOLSET=full
 | guide | 350 | x |
 | architecture | 318 |  |
 | branch_overlap | 304 |  |
-| adr | 270 |  |
+| adr | 270 | x |
 | why_empty | 263 |  |
 | fetch | 239 |  |
 | health | 198 |  |
@@ -67,8 +67,8 @@ same budget gate (TestSchemaWeight_CoreLean_RouterPresent_UnderBudget).
 |---|---|--:|--:|
 | full | rich | 36 | 19606 |
 | full | lean | 36 | 7399 |
-| core | rich | 12 | 9949 |
-| core | lean | 12 | 3515 |
+| core | rich | 13 | 10219 |
+| core | lean | 13 | 3657 |
 
 | router tool | rich | lean |
 |---|--:|--:|
