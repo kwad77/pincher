@@ -32,8 +32,8 @@ func TestMergePincherHook_FromEmpty_CreatesFreshBlock(t *testing.T) {
 		t.Fatalf("PreToolUse len = %d, want 1", len(preToolUse))
 	}
 	entry, _ := preToolUse[0].(map[string]any)
-	if entry["matcher"] != "Read|Grep|Glob" {
-		t.Errorf("matcher = %v, want Read|Grep|Glob", entry["matcher"])
+	if entry["matcher"] != pincherHookMatcher {
+		t.Errorf("matcher = %v, want %v", entry["matcher"], pincherHookMatcher)
 	}
 	hookList, _ := entry["hooks"].([]any)
 	first, _ := hookList[0].(map[string]any)
@@ -167,7 +167,7 @@ func TestMergePincherHook_PreCompactIdempotent(t *testing.T) {
 		"hooks": map[string]any{
 			"PreToolUse": []any{
 				map[string]any{
-					"matcher": "Read|Grep",
+					"matcher": pincherHookMatcher,
 					"hooks": []any{
 						map[string]any{"type": "command", "command": "pincher hook-check"},
 					},
@@ -241,7 +241,9 @@ func TestInstallClaudeHook_WritesPreCompactRegistration(t *testing.T) {
 
 func TestInstallClaudeHook_LegacyInstallGainsPreCompact(t *testing.T) {
 	// Re-running init on a pre-PreCompact install upgrades it
-	// additively: PreToolUse untouched, PreCompact appended.
+	// additively: PreToolUse entry kept (matcher migrated to the
+	// current managed value — it carried the exact old managed value,
+	// so it is ours-and-untweaked), PreCompact appended.
 	dir := t.TempDir()
 	settingsPath := filepath.Join(dir, ".claude", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
@@ -276,7 +278,10 @@ func TestInstallClaudeHook_LegacyInstallGainsPreCompact(t *testing.T) {
 	hooks, _ := got["hooks"].(map[string]any)
 	pre, _ := hooks["PreToolUse"].([]any)
 	if len(pre) != 1 {
-		t.Errorf("PreToolUse must be untouched; len = %d, want 1", len(pre))
+		t.Errorf("PreToolUse must keep a single entry; len = %d, want 1", len(pre))
+	}
+	if entry, _ := pre[0].(map[string]any); entry["matcher"] != pincherHookMatcher {
+		t.Errorf("old managed matcher should migrate to %q; got %v", pincherHookMatcher, entry["matcher"])
 	}
 	if hooks["PreCompact"] == nil {
 		t.Error("PreCompact registration not added to legacy install")
@@ -284,6 +289,105 @@ func TestInstallClaudeHook_LegacyInstallGainsPreCompact(t *testing.T) {
 	if !strings.Contains(buf.String(), "added") {
 		t.Errorf("output should report the additive upgrade; got %q", buf.String())
 	}
+}
+
+// TestMergePincherHook_MatcherMigration covers the router-loop §A2
+// matcher migration: an owned PreToolUse entry still carrying an exact
+// PREVIOUS managed matcher value is upgraded in place to gain `Task`
+// (the advise_route trigger tool); any other matcher is a user tweak
+// and is never touched.
+func TestMergePincherHook_MatcherMigration(t *testing.T) {
+	seed := func(matcher string) map[string]any {
+		return map[string]any{
+			"hooks": map[string]any{
+				"PreToolUse": []any{
+					map[string]any{
+						"matcher": matcher,
+						"hooks": []any{
+							map[string]any{"type": "command", "command": "pincher hook-check"},
+						},
+					},
+				},
+				"PreCompact": []any{
+					map[string]any{
+						"hooks": []any{
+							map[string]any{"type": "command", "command": "pincher hook-check"},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("old managed value migrates, action=updated", func(t *testing.T) {
+		for _, old := range []string{"Read|Grep", "Read|Grep|Glob"} {
+			updated, action, err := mergePincherHook(seed(old), "pincher hook-check")
+			if err != nil {
+				t.Fatalf("merge(%q): %v", old, err)
+			}
+			if action != "updated" {
+				t.Errorf("merge(%q) action = %q, want updated (pure matcher migration)", old, action)
+			}
+			hooks, _ := updated["hooks"].(map[string]any)
+			pre, _ := hooks["PreToolUse"].([]any)
+			entry, _ := pre[0].(map[string]any)
+			if entry["matcher"] != pincherHookMatcher {
+				t.Errorf("merge(%q) matcher = %v, want %q", old, entry["matcher"], pincherHookMatcher)
+			}
+		}
+	})
+
+	t.Run("tweaked matcher left alone, noop", func(t *testing.T) {
+		updated, action, err := mergePincherHook(seed("Read"), "pincher hook-check")
+		if err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		if action != "noop" {
+			t.Errorf("tweaked matcher should noop; got %q", action)
+		}
+		hooks, _ := updated["hooks"].(map[string]any)
+		pre, _ := hooks["PreToolUse"].([]any)
+		entry, _ := pre[0].(map[string]any)
+		if entry["matcher"] != "Read" {
+			t.Errorf("user-tweaked matcher clobbered: %v", entry["matcher"])
+		}
+	})
+
+	t.Run("current value is idempotent", func(t *testing.T) {
+		_, action, err := mergePincherHook(seed(pincherHookMatcher), "pincher hook-check")
+		if err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		if action != "noop" {
+			t.Errorf("current matcher should noop; got %q", action)
+		}
+	})
+
+	t.Run("foreign entries never migrated", func(t *testing.T) {
+		in := seed(pincherHookMatcher)
+		hooks, _ := in["hooks"].(map[string]any)
+		pre, _ := hooks["PreToolUse"].([]any)
+		pre = append(pre, map[string]any{
+			"matcher": "Read|Grep|Glob", // old managed VALUE but a foreign command
+			"hooks": []any{
+				map[string]any{"type": "command", "command": "my-audit-logger.sh"},
+			},
+		})
+		hooks["PreToolUse"] = pre
+		updated, action, err := mergePincherHook(in, "pincher hook-check")
+		if err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		if action != "noop" {
+			t.Errorf("foreign entry must not trigger migration; got %q", action)
+		}
+		uh, _ := updated["hooks"].(map[string]any)
+		upre, _ := uh["PreToolUse"].([]any)
+		foreign, _ := upre[1].(map[string]any)
+		if foreign["matcher"] != "Read|Grep|Glob" {
+			t.Errorf("foreign matcher migrated (ownership breach): %v", foreign["matcher"])
+		}
+	})
 }
 
 func TestMergePincherHook_ExistingPreToolUseGetsAppendTo(t *testing.T) {
@@ -367,7 +471,7 @@ func TestInstallClaudeHook_FreshFileCreated(t *testing.T) {
 	if !strings.Contains(string(body), "pincher hook-check") {
 		t.Errorf("written file should contain hook command; got %s", body)
 	}
-	if !strings.Contains(string(body), `"matcher": "Read|Grep|Glob"`) {
+	if !strings.Contains(string(body), `"matcher": "Read|Grep|Glob|Task"`) {
 		t.Errorf("written file should contain the matcher; got %s", body)
 	}
 	if !strings.Contains(buf.String(), "created") {

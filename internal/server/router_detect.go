@@ -140,19 +140,9 @@ func detectRouter(cfg routerProbeConfig) bool {
 		return true
 	}
 	// auto: rungs 1–2 establish installation intent; without either,
-	// answer "absent" with zero network traffic.
-	installed := false
-	if cfg.configPath != "" {
-		if _, err := os.Stat(cfg.configPath); err == nil {
-			installed = true
-		}
-	}
-	if !installed && cfg.lookPath != nil {
-		if _, err := cfg.lookPath(cfg.binary); err == nil {
-			installed = true
-		}
-	}
-	if !installed {
+	// answer "absent" with zero network traffic. Same walk the hook
+	// advisory family runs via RouterInstalledNoProbe — one ladder.
+	if !routerInstalledRungs12(cfg) {
 		return false
 	}
 	// Rung 3: identity-validated liveness. Installed-but-not-serving
@@ -208,6 +198,44 @@ func RouterHealthzIdentity(url string, timeout time.Duration) (string, bool) {
 		return "", false
 	}
 	return fmt.Sprint(wv), true
+}
+
+// RouterInstalledNoProbe runs rungs 1–2 of the detection ladder ONLY
+// — config-dir stat + PATH lookup, zero network — and reports whether
+// a pincher-router installation is present on this machine. Exported
+// for the hook advisory family (plan §A2 / item B8): the PreToolUse
+// hook has a <50ms total budget and no business dialing ports, so its
+// `advise_route` recruitment advisory keys off installation intent,
+// not liveness (an installed-but-idle router is exactly the state the
+// advisory exists to convert). Honors PINCHER_ROUTER the same way the
+// full ladder does: off (and every typo — fail direction absent) ⇒
+// false, on ⇒ true, auto ⇒ rungs 1–2. Best-effort: any error on any
+// rung means "absent".
+func RouterInstalledNoProbe() bool {
+	return routerInstalledRungs12(defaultRouterProbeConfig())
+}
+
+// routerInstalledRungs12 is the injectable core of
+// RouterInstalledNoProbe — the same rung-1/rung-2 walk detectRouter
+// performs before deciding whether to dial rung 3, minus the dial.
+func routerInstalledRungs12(cfg routerProbeConfig) bool {
+	switch cfg.mode {
+	case routerModeOff:
+		return false
+	case routerModeOn:
+		return true
+	}
+	if cfg.configPath != "" {
+		if _, err := os.Stat(cfg.configPath); err == nil {
+			return true
+		}
+	}
+	if cfg.lookPath != nil {
+		if _, err := cfg.lookPath(cfg.binary); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // RouterDetectionDefaults exposes the production detection-ladder

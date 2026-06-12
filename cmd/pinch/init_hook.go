@@ -12,7 +12,8 @@ import (
 
 // installClaudeHook writes (or merges into) the project's
 // .claude/settings.json hooks so that `pincher hook-check` fires on
-// Read/Grep/Glob tool calls (PreToolUse, #627) and on context
+// Read/Grep/Glob/Task tool calls (PreToolUse, #627; Task carries the
+// advise_route recruitment advisory, router-loop §A2) and on context
 // compaction (PreCompact, precompact-hook — the ledger-aware
 // compaction advisory). One install — `pincher init --target=claude` —
 // wires both the MCP server registration AND the hook interception.
@@ -92,7 +93,8 @@ func hookCheckCommand() string {
 // set at install time).
 //
 // Two entries are managed (precompact-hook):
-//   - PreToolUse matcher=Read|Grep|Glob → `pincher hook-check` (#627)
+//   - PreToolUse matcher=Read|Grep|Glob|Task → `pincher hook-check`
+//     (#627; Task added for the advise_route advisory, router-loop §A2)
 //   - PreCompact (no matcher — fires on manual AND auto compaction)
 //     → the same `pincher hook-check` command; event routing happens
 //     inside the CLI via hook_event_name
@@ -110,16 +112,22 @@ func mergePincherHook(settings map[string]any, command string) (map[string]any, 
 	}
 
 	changed := false
+	legAdded := false
+	matcherUpgraded := false
 	action := "added"
 
-	// Leg 1: PreToolUse (Read|Grep|Glob redirect advisories, #627).
+	// Leg 1: PreToolUse (Read|Grep|Glob redirect advisories, #627;
+	// Task carries the one-time advise_route recruitment advisory,
+	// router-loop §A2 — without it on the matcher the hook never
+	// observes subagent spawns and the per-session Task counter
+	// stays empty).
 	preToolUse, _ := hooks["PreToolUse"].([]any)
 	if !hasPincherHookEntry(preToolUse) {
 		if len(preToolUse) == 0 {
 			action = "created"
 		}
 		preToolUse = append(preToolUse, map[string]any{
-			"matcher": "Read|Grep|Glob",
+			"matcher": pincherHookMatcher,
 			"hooks": []any{
 				map[string]any{
 					"type":    "command",
@@ -128,6 +136,17 @@ func mergePincherHook(settings map[string]any, command string) (map[string]any, 
 			},
 		})
 		hooks["PreToolUse"] = preToolUse
+		changed = true
+		legAdded = true
+	} else if upgradePincherHookMatcher(preToolUse) {
+		// Additive matcher migration: a pincher-owned entry still
+		// carrying an exact PREVIOUS managed matcher value is upgraded
+		// in place so existing installs start observing Task spawns
+		// (advise_route, router-loop §A2) on the next re-run of init.
+		// Entries whose matcher the user tweaked are left alone — only
+		// the exact prior managed values are recognized as ours.
+		hooks["PreToolUse"] = preToolUse
+		matcherUpgraded = true
 		changed = true
 	}
 
@@ -148,13 +167,52 @@ func mergePincherHook(settings map[string]any, command string) (map[string]any, 
 		})
 		hooks["PreCompact"] = preCompact
 		changed = true
+		legAdded = true
 	}
 
 	if !changed {
 		return settings, "noop", nil
 	}
+	// A pure matcher migration (no leg added) reports "updated"; any
+	// added leg keeps the established created/added labels.
+	if matcherUpgraded && !legAdded {
+		action = "updated"
+	}
 	settings["hooks"] = hooks
 	return settings, action, nil
+}
+
+// pincherHookMatcher is the managed PreToolUse matcher value. History:
+// "Read|Grep" (#627) → "Read|Grep|Glob" (#2006 era) → current (Task
+// added for the advise_route recruitment advisory, router-loop §A2).
+const pincherHookMatcher = "Read|Grep|Glob|Task"
+
+// previousPincherHookMatchers are managed matcher values from earlier
+// releases. An owned entry still carrying one of these EXACT values is
+// safely ours-and-untweaked, so init may upgrade it in place; any
+// other value is treated as a user tweak and left alone.
+var previousPincherHookMatchers = map[string]bool{
+	"Read|Grep":      true,
+	"Read|Grep|Glob": true,
+}
+
+// upgradePincherHookMatcher rewrites the matcher of pincher-owned
+// PreToolUse entries that still carry an exact previous managed value.
+// Returns true when anything changed. Mutates the entry maps in place
+// (they alias the caller's settings tree).
+func upgradePincherHookMatcher(entries []any) bool {
+	changed := false
+	for _, raw := range entries {
+		entry, _ := raw.(map[string]any)
+		if entry == nil || !hasPincherHookEntry([]any{entry}) {
+			continue
+		}
+		if m, _ := entry["matcher"].(string); previousPincherHookMatchers[m] {
+			entry["matcher"] = pincherHookMatcher
+			changed = true
+		}
+	}
+	return changed
 }
 
 // hasPincherHookEntry reports whether any entry in a hook-event list
@@ -301,6 +359,8 @@ func hookPresentTense(action string) string {
 		return "create"
 	case "added":
 		return "add"
+	case "updated":
+		return "update"
 	}
 	return action
 }
