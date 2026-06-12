@@ -48,7 +48,7 @@ func TestRunInitTarget_WritesAndIsIdempotent(t *testing.T) {
 	withCWD(t, tmp)
 
 	var buf strings.Builder
-	if err := runInitTarget(&buf, pinit.CursorTarget, tmp, false, false); err != nil {
+	if err := runInitTarget(&buf, pinit.CursorTarget, tmp, false, false, pinit.PolicyMarkdown); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(tmp, ".cursor", "rules", "pincher.mdc"))
@@ -60,7 +60,7 @@ func TestRunInitTarget_WritesAndIsIdempotent(t *testing.T) {
 	}
 	first := string(got)
 
-	if err := runInitTarget(&buf, pinit.CursorTarget, tmp, false, false); err != nil {
+	if err := runInitTarget(&buf, pinit.CursorTarget, tmp, false, false, pinit.PolicyMarkdown); err != nil {
 		t.Fatalf("second write: %v", err)
 	}
 	got2, _ := os.ReadFile(filepath.Join(tmp, ".cursor", "rules", "pincher.mdc"))
@@ -74,7 +74,7 @@ func TestRunInitTarget_DryRunDoesNotWrite(t *testing.T) {
 	withCWD(t, tmp)
 
 	var buf strings.Builder
-	if err := runInitTarget(&buf, pinit.WindsurfTarget, tmp, false, true); err != nil {
+	if err := runInitTarget(&buf, pinit.WindsurfTarget, tmp, false, true, pinit.PolicyMarkdown); err != nil {
 		t.Fatalf("dry run: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(tmp, ".windsurf", "rules", "pincher.md")); !os.IsNotExist(err) {
@@ -94,7 +94,7 @@ func TestRunInitTarget_GlobalIgnoredForUnsupportedTargets(t *testing.T) {
 	var buf strings.Builder
 	// windsurf has SupportsGlobal=false; passing global=true should
 	// silently fall back to project-local rather than erroring.
-	if err := runInitTarget(&buf, pinit.WindsurfTarget, tmp, true, false); err != nil {
+	if err := runInitTarget(&buf, pinit.WindsurfTarget, tmp, true, false, pinit.PolicyMarkdown); err != nil {
 		t.Fatalf("windsurf with --global should not error: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(tmp, ".windsurf", "rules", "pincher.md")); err != nil {
@@ -107,7 +107,7 @@ func TestRunInitTarget_ContinueAlwaysGlobal(t *testing.T) {
 	withHome(t, tmp)
 
 	var buf strings.Builder
-	if err := runInitTarget(&buf, pinit.ContinueTarget, tmp, false, false); err != nil {
+	if err := runInitTarget(&buf, pinit.ContinueTarget, tmp, false, false, pinit.PolicyMarkdown); err != nil {
 		t.Fatalf("continue: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(tmp, ".continue", "config.json"))

@@ -29,6 +29,28 @@ import (
 //go:embed policy.md
 var PolicyMarkdown string
 
+// RouterPolicyMarkdown is the routing subsection of the managed block
+// (router-loop plan §A5) — four lines plus a heading, appended to the
+// policy payload by `pincher init --router` AFTER the detection ladder
+// found a pincher-router installation, so the "(pincher-router
+// detected)" heading can never lie about an absent router.
+//
+//go:embed policy_router.md
+var RouterPolicyMarkdown string
+
+// PolicyWithRouter returns the managed-block payload with the routing
+// subsection appended. The subsection is deliberately non-load-bearing
+// (measured: a CLAUDE.md block alone is ignored 4/5 — selection-time
+// mechanisms decide adoption): the pincher-loop skill's dispatch verse
+// is the authoritative when/how; this block exists so a non-loop
+// session that reads CLAUDE.md gets a pointer to the skill and the
+// policy stays greppable. It lives inside the same marker-delimited
+// block, so a later `pincher init` without --router refreshes it back
+// out — idempotent in both directions, no stale duplicates.
+func PolicyWithRouter() string {
+	return strings.TrimRight(PolicyMarkdown, "\n") + "\n\n" + strings.TrimRight(RouterPolicyMarkdown, "\n") + "\n"
+}
+
 const (
 	// MarkerStart and MarkerEnd bracket the pincher-managed section
 	// of CLAUDE.md so re-running `pincher init` (CLI or MCP) replaces
@@ -95,6 +117,15 @@ func PresentTenseAction(action string) string {
 // the project root paths resolve relative to; CLI passes os.Getwd(),
 // MCP passes the session project root.
 func Plan(t Target, cwd string, global bool) (TargetPlan, error) {
+	return PlanWithPolicy(t, cwd, global, PolicyMarkdown)
+}
+
+// PlanWithPolicy is Plan with a caller-supplied managed-block payload.
+// The CLI's `init --router` passes PolicyWithRouter() so the routing
+// subsection rides inside the same marker block; every other caller
+// (including the MCP init tool) goes through Plan and gets the
+// embedded default.
+func PlanWithPolicy(t Target, cwd string, global bool, policy string) (TargetPlan, error) {
 	useGlobal := global
 	if t.AlwaysGlobal {
 		useGlobal = true
@@ -108,7 +139,7 @@ func Plan(t Target, cwd string, global bool) (TargetPlan, error) {
 	}
 
 	existing := ReadFileIfExists(path)
-	updated, action := t.WriteFn(existing, PolicyMarkdown)
+	updated, action := t.WriteFn(existing, policy)
 	if action == "error" {
 		return TargetPlan{}, fmt.Errorf("[%s] cannot merge into %s: file exists but is not valid for this target (malformed JSON?)", t.Name, path)
 	}
@@ -278,6 +309,9 @@ func BuildPolicyBlock(policy string) string {
 // to the binary's startup.
 func init() {
 	if bytes.TrimSpace([]byte(PolicyMarkdown)) == nil {
+		panic(ErrEmptyPolicy)
+	}
+	if bytes.TrimSpace([]byte(RouterPolicyMarkdown)) == nil {
 		panic(ErrEmptyPolicy)
 	}
 }
