@@ -2,15 +2,15 @@ goos: linux
 goarch: amd64
 pkg: github.com/kwad77/pincher/internal/index
 cpu: AMD EPYC 9V74 80-Core Processor                
-BenchmarkIndex_Cold_GoProject-4                      	     722	  16771449 ns/op	  398821 B/op	    7013 allocs/op
-BenchmarkIndex_Cold_K8sOps-4                         	     608	  19478980 ns/op	  402818 B/op	    4842 allocs/op
-BenchmarkIndex_Cold_NodeMonorepo-4                   	     652	  18496836 ns/op	  480709 B/op	    5352 allocs/op
-BenchmarkIndex_Incremental_NoChange_GoProject-4      	   15918	    754194 ns/op	   30294 B/op	     588 allocs/op
-BenchmarkIndex_Incremental_NoChange_K8sOps-4         	   15452	    777410 ns/op	   29568 B/op	     556 allocs/op
-BenchmarkIndex_Incremental_NoChange_NodeMonorepo-4   	   14839	    807220 ns/op	   35378 B/op	     642 allocs/op
-BenchmarkIndex_Force_GoProject-4                     	     920	  12961376 ns/op	  386900 B/op	    6855 allocs/op
-BenchmarkRebuildFTS_GoProject-4                      	    3685	   3215445 ns/op	    1998 B/op	      86 allocs/op
-BenchmarkRebuildFTS_K8sOps-4                         	    3560	   3294544 ns/op	    1994 B/op	      86 allocs/op
-BenchmarkRebuildFTS_NodeMonorepo-4                   	    3542	   3347424 ns/op	    1996 B/op	      86 allocs/op
+BenchmarkIndex_Cold_GoProject-4                      	     685	  17058117 ns/op	  425711 B/op	    7433 allocs/op
+BenchmarkIndex_Cold_K8sOps-4                         	     613	  19472893 ns/op	  419773 B/op	    5117 allocs/op
+BenchmarkIndex_Cold_NodeMonorepo-4                   	     638	  18508003 ns/op	  528634 B/op	    8761 allocs/op
+BenchmarkIndex_Incremental_NoChange_GoProject-4      	    7017	   1721837 ns/op	   31834 B/op	     642 allocs/op
+BenchmarkIndex_Incremental_NoChange_K8sOps-4         	    6794	   1765057 ns/op	   31144 B/op	     610 allocs/op
+BenchmarkIndex_Incremental_NoChange_NodeMonorepo-4   	    6673	   1782159 ns/op	   36860 B/op	     696 allocs/op
+BenchmarkIndex_Force_GoProject-4                     	     954	  12450233 ns/op	  396313 B/op	    6978 allocs/op
+BenchmarkRebuildFTS_GoProject-4                      	    3594	   3220564 ns/op	    2204 B/op	      98 allocs/op
+BenchmarkRebuildFTS_K8sOps-4                         	    3547	   3307429 ns/op	    2201 B/op	      98 allocs/op
+BenchmarkRebuildFTS_NodeMonorepo-4                   	    3504	   3355199 ns/op	    2201 B/op	      98 allocs/op
 PASS
-ok  	github.com/kwad77/pincher/internal/index	273.830s
+ok  	github.com/kwad77/pincher/internal/index	244.002s
