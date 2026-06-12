@@ -7,6 +7,19 @@ minors.
 
 ## [Unreleased]
 
+## [1.9.2] — 2026-06-12 — Adversarial-hunt fixes: TOCTOU guard, byte-offset safety, echo-cache hardening
+
+A patch release folding the bug fixes that came out of the post-v1.9.1
+adversarial hunt — three independently-verified correctness fixes on the
+SQLite write path, the `symbol` byte-offset reader, and the route-outcome
+echo sidecar. No schema migration, no new dependency, no tool-contract
+change. PATCH bump (version is git-describe stamped at build time).
+
+### Fixed
+- **Atomic `binary_version` downgrade-guard ([#2038](https://github.com/kwad77/pincher/pull/2038)).** `UpsertProjectMeta` and `UpsertProject` ran the #1154/#1818 downgrade-guard as a non-atomic read-modify-write — the `SELECT binary_version` on the reader pool (`s.ro`), the conditional `INSERT…ON CONFLICT` on the writer pool (`s.db`), with no transaction. Two concurrent writers could both read the same stale value, letting an older writer's re-stamp clobber a newer one and downgrade the recorded version (re-triggering the drift ping-pong the guard was meant to stop). Both functions now run the read and the conditional write inside one writer transaction (`s.withTx`, reading via `tx.QueryRow`), making the guard atomic; the writer pool's `MaxOpenConns(1)` serializes in-process and the WAL write lock serializes across processes.
+- **`symbol` now honours `max_tokens` and byte-offset reads fail closed on stale files ([#2039](https://github.com/kwad77/pincher/issues/2039)).** `handleSymbol` previously returned the full body regardless of the per-call `max_tokens` budget; it now truncates at a line boundary and emits a `budget_truncated` warning, matching `context`/`symbols`/lite. The byte-offset readers (`ReadSymbolSource`/`ReadSymbolSourceCapped`, and `neighborhood`'s reader) now validate the file against the indexed state before trusting `StartByte`/`EndByte`: a size guard rejects an `EndByte` past EOF and a hash guard (when a file hash is recorded) rejects same-size edits that would shift the offsets onto a different symbol's bytes. Both fail closed with the new typed `ErrStaleByteOffset` instead of shipping wrong bytes or a silent short read, and `symbol` surfaces a `stale_byte_offset` warning plus a re-index next-step — including for no-hash files caught by the size guard.
+- **Bug-hunt: route echo cache + router-identity detection — four confirmed defects fixed ([#2041](https://github.com/kwad77/pincher/issues/2041)).** Follow-up hardening on the #2036 echo-durability surface. (1) *Sidecar cross-process corruption* — `saveLocked` wrote a fixed temp name (`route_echo_cache.json.tmp`) before renaming, so two processes sharing one data-dir sidecar raced the same temp and the loser's `os.Remove` deleted the winner's, producing torn JSON on load and a `persist_rename_failed` log flood that broke the #2036 durability guarantee; each write now mints a unique temp via `os.CreateTemp` (write + fsync + atomic rename), so only the rename competes (a finder repro saw 34 torn reads with the fixed name → 0 after the fix, verified under `-race`). (2) *`echo_source` honesty* — on a cache miss the proxy claimed `echo_source: caller` (and suppressed the `echo_miss` warning) whenever the caller supplied `session_id` alone, so a real un-echoed 422 looked identical to the happy path; `caller` now requires a complete card (all of session_id, tool_name, complexity_tier, role, routed_model, lane) or a genuine cache hit, and a partial echo is `echo_source: none` with the miss warning firing. (3) *Identity gate* — `RouterHealthzIdentity` checked only key presence, so `{"weights_version": null}` (or any arbitrary value) identified as a router with `wv="<nil>"`; a nil/empty/non-scalar value is now rejected while a real non-empty string/number is still accepted. (4) *LRU order dedup* — `loadLocked` appended every persisted `Order` id without guarding duplicates, so a duplicated id made `len(order) > len(entries)` and the cap loop early-evicted a live entry; a `seen` set now keeps `order` a true permutation of `entries`. Each fix carries a fail-before/pass-after Go test (`router_bughunt_echo_detect_test.go`); no schema migration, no new dependency, no tool-contract change.
+
 ## [1.9.1] — 2026-06-12 — Echo-durability: the route-outcome cache survives a respawn
 
 A single-fix patch carrying the *fix* for the gap v1.9.0 made
@@ -4460,7 +4473,8 @@ Highlights:
 - `docs/index.html`: single-file GitHub Pages landing page.
 - CI coverage gate lowered to 83% to match reality.
 
-[Unreleased]: https://github.com/kwad77/pincher/compare/v1.9.1...HEAD
+[Unreleased]: https://github.com/kwad77/pincher/compare/v1.9.2...HEAD
+[1.9.2]: https://github.com/kwad77/pincher/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/kwad77/pincher/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/kwad77/pincher/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/kwad77/pincher/compare/v1.7.0...v1.8.0
