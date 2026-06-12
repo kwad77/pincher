@@ -6095,16 +6095,30 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 		sourceOmitted := false
 		symRoot := rootForProject(sym.ProjectID)
 		if includeSource && modeSkeleton && sym.Kind != "Document" {
-			// mode=skeleton: render from indexed fields, NO file read. No
-			// budget-omit gate — a skeleton is small by construction, and
-			// renderDBSkeleton self-truncates a huge container's child list.
-			var children []db.Symbol
-			if skeletonContainerKinds[sym.Kind] {
-				children, _ = s.store.SymbolsByParentScoped(sym.ProjectID, sym.QualifiedName)
-			}
-			source, _ = renderDBSkeleton(sym, children, maxTokens)
-			if maxTokens > 0 {
-				budgetRemaining -= db.ApproxTokens(source)
+			// mode=skeleton: render from indexed fields, NO file read. #2052 H1:
+			// budget against the RUNNING budgetRemaining — not the full
+			// maxTokens — so an N-container skeleton batch can't ship ~N× the
+			// budget. When the budget is exhausted, take the same source_omitted
+			// path as the non-skeleton branch below (no render, metadata-only).
+			if maxTokens > 0 && budgetRemaining <= 0 {
+				sourceOmitted = true
+				budgetSourceOmitted++
+			} else {
+				var children []db.Symbol
+				if skeletonContainerKinds[sym.Kind] {
+					children, _ = s.store.SymbolsByParentScoped(sym.ProjectID, sym.QualifiedName)
+				}
+				// Pass the remaining budget as the cap so renderDBSkeleton
+				// self-truncates each entry's child list against what's left,
+				// not the full max_tokens.
+				skelCap := maxTokens
+				if maxTokens > 0 {
+					skelCap = budgetRemaining
+				}
+				source, _ = renderDBSkeleton(sym, children, skelCap)
+				if maxTokens > 0 {
+					budgetRemaining -= db.ApproxTokens(source)
+				}
 			}
 		} else if includeSource {
 			// PR-5 budget gate: span-based estimate, no disk read for
@@ -6235,7 +6249,12 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 	}
 	// mode=skeleton: ONE top-level marker for the whole batch (same
 	// rationale as attachSkeletonMeta — mode applies call-wide).
-	if modeSkeleton {
+	// #2052 H1b: gate on includeSource (parallel to handleSymbol gating
+	// attachModeSkeletonMeta on includeSource) — the default compact fieldset
+	// excludes "source", so when no source-bearing field is requested
+	// renderDBSkeleton never ran and the batch must NOT stamp rendered_from /
+	// disk_verified markers advertising an index render that produced nothing.
+	if modeSkeleton && includeSource {
 		meta, _ := data["_meta"].(map[string]any)
 		if meta == nil {
 			meta = map[string]any{}
@@ -6501,7 +6520,11 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		liteSource := source
 		liteDropped := 0
 		liteTruncated := false
-		if maxTokens > 0 {
+		// #2052 H4: skip the generic line truncation for mode=skeleton — the
+		// skeleton already self-budgeted its child list at a line boundary in
+		// renderDBSkeleton above. Re-cutting here drops trailing lines incl.
+		// the closing "}" / "+N more" note (matching handleSymbol:5539).
+		if maxTokens > 0 && !modeSkeleton {
 			liteSource, liteDropped, liteTruncated = truncateSourceToTokens(source, maxTokens)
 		}
 		liteData := map[string]any{
