@@ -322,6 +322,71 @@ func TestCheckpointTruncate_Idempotent(t *testing.T) {
 	}
 }
 
+// TestEnsurePlannerStats is the #2012 guarantee: a fresh DB's open-time
+// ANALYZE ran against EMPTY tables (no sqlite_stat1 rows for the graph
+// tables), and EnsurePlannerStats — called by the indexer after the first
+// batch flush — must populate them so the planner stops degrading
+// FilesWithEdgesToFile into a per-file full edges-index scan.
+func TestEnsurePlannerStats(t *testing.T) {
+	s := newTestStore(t)
+
+	statRows := func() int {
+		t.Helper()
+		var n int
+		if err := s.ro.QueryRow(
+			`SELECT COUNT(*) FROM sqlite_stat1 WHERE tbl IN ('symbols', 'edges')`,
+		).Scan(&n); err != nil {
+			t.Fatalf("count sqlite_stat1: %v", err)
+		}
+		return n
+	}
+
+	// Precondition: open-time ANALYZE on the empty DB left no graph-table
+	// stat rows — this is exactly the state that produced the bad plan.
+	if got := statRows(); got != 0 {
+		t.Fatalf("fresh DB sqlite_stat1 rows for symbols/edges = %d, want 0 (precondition)", got)
+	}
+
+	// Simulate the first batch flush: real rows exist now.
+	if err := s.UpsertProject(testProject("stats")); err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	if err := s.BulkUpsertSymbols([]Symbol{
+		testSymbol("stats::a#Function", "a", "Function", "stats", "a.go"),
+		testSymbol("stats::b#Function", "b", "Function", "stats", "b.go"),
+	}); err != nil {
+		t.Fatalf("BulkUpsertSymbols: %v", err)
+	}
+
+	if err := s.EnsurePlannerStats(); err != nil {
+		t.Fatalf("EnsurePlannerStats: %v", err)
+	}
+	if got := statRows(); got == 0 {
+		t.Fatalf("after EnsurePlannerStats: no sqlite_stat1 rows for symbols/edges")
+	}
+
+	// Idempotent and cheap thereafter (cached one-shot).
+	for i := 0; i < 3; i++ {
+		if err := s.EnsurePlannerStats(); err != nil {
+			t.Fatalf("EnsurePlannerStats (call %d): %v", i+2, err)
+		}
+	}
+
+	// A second Store handle on the same DB file must see the existing
+	// stats via the probe and NOT need another ANALYZE to short-circuit.
+	s2, err := Open(filepath.Dir(s.Path))
+	if err != nil {
+		t.Fatalf("re-open: %v", err)
+	}
+	defer s2.Close()
+	if err := s2.EnsurePlannerStats(); err != nil {
+		t.Fatalf("EnsurePlannerStats (re-open): %v", err)
+	}
+	if !s2.plannerStatsSeeded.Load() {
+		t.Fatalf("re-opened store did not cache the seeded flag")
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Reader pool (#51) — single-writer preservation + RO enforcement
 // ─────────────────────────────────────────────────────────────────────────────
@@ -761,6 +826,7 @@ var writerRoutedStoreMethods = map[string]bool{
 	"BuildClosure": true, // #652 phase 1 — DELETE + INSERT in a tx
 	// Pragmas / lifecycle (writer-pool by definition).
 	"Optimize":               true,
+	"EnsurePlannerStats":     true, // #2012 — reader probe of sqlite_stat1, but the one-shot ANALYZE writes; writer-routed by the "err toward writer" rule.
 	"CheckpointTruncate":     true,
 	"RebuildFTS":             true,
 	"RebuildFTSWithProgress": true, // #1950 — same writer tx as RebuildFTS
