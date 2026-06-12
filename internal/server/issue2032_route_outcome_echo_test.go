@@ -109,7 +109,10 @@ func TestIssue2032_SameSessionMinimalCard_ForwardsSessionID(t *testing.T) {
 
 // TestIssue2032_EchoSource_CallerWhenCardCarriesEcho: cold cache (no
 // prior route call — the post-respawn shape) but the caller echoed the
-// envelope itself, i.e. the live workaround. Observable as "caller".
+// FULL required envelope itself, i.e. the live workaround. Observable as
+// "caller" because the body the router receives is complete and will not
+// 422. #2036 MED-2 narrowed "caller" to a COMPLETE card (or cache hit):
+// the card therefore carries every required echo key here.
 func TestIssue2032_EchoSource_CallerWhenCardCarriesEcho(t *testing.T) {
 	fake := defaultFakeRouter(t)
 	srv := newRouterToolServer(t, fake)
@@ -117,11 +120,15 @@ func TestIssue2032_EchoSource_CallerWhenCardCarriesEcho(t *testing.T) {
 	res := callRoute(t, srv, map[string]any{
 		"action": "outcome",
 		"outcome": map[string]any{
-			"request_id":    "358ac63f54904cf3bd23f63305d19269",
-			"outcome_class": "clean",
-			"gate":          "S5",
-			"session_id":    "router-loop-dogfood-unit-10",
-			"tool_name":     "auto_echo_validation_unit",
+			"request_id":      "358ac63f54904cf3bd23f63305d19269",
+			"outcome_class":   "clean",
+			"gate":            "S5",
+			"session_id":      "router-loop-dogfood-unit-10",
+			"tool_name":       "auto_echo_validation_unit",
+			"complexity_tier": "lite",
+			"role":            "fix",
+			"routed_model":    "qwen3.6-35b-a3b",
+			"lane":            "fast",
 		},
 	})
 	if res.IsError {
