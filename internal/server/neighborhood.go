@@ -9,8 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/kwad77/pincher/internal/db"
+	"github.com/kwad77/pincher/internal/index"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // handleNeighborhood implements #247 #1: given a seed symbol ID,
@@ -562,23 +563,14 @@ func neighborhoodEntryCostBytes(entry map[string]any) int {
 }
 
 func readSymbolSourceForNeighbor(root string, sym db.Symbol) (string, error) {
-	abs := filepath.Join(root, filepath.FromSlash(sym.FilePath))
-	f, err := os.Open(abs)
+	// Route through the validated reader so a stale file (edited or shrunk
+	// since index) yields index.ErrStaleByteOffset instead of a different
+	// symbol's bytes or a silent short read — same guarantee handleSymbol
+	// gets. The caller swallows the error and omits the neighbor's source,
+	// which is strictly safer than shipping wrong bytes.
+	src, err := index.ReadSymbolSource(root, sym)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
-	if _, err := f.Seek(int64(sym.StartByte), 0); err != nil {
-		return "", err
-	}
-	length := sym.EndByte - sym.StartByte
-	if length <= 0 {
-		return "", nil
-	}
-	buf := make([]byte, length)
-	n, err := f.Read(buf)
-	if err != nil {
-		return "", err
-	}
-	return strings.ReplaceAll(string(buf[:n]), "\r\n", "\n"), nil
+	return strings.ReplaceAll(src, "\r\n", "\n"), nil
 }

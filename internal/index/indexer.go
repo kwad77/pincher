@@ -14,6 +14,7 @@ package index
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -31,6 +32,15 @@ import (
 	"github.com/kwad77/pincher/internal/db"
 	"github.com/zeebo/xxh3"
 )
+
+// ErrStaleByteOffset is returned by the byte-offset readers when the file
+// on disk no longer matches the indexed state the offsets were captured
+// against. Seeking to a stored StartByte/EndByte in a file that has since
+// changed yields *some other content* — at best a different symbol's bytes,
+// at worst a silent short read past a shrunk EOF. Rather than ship those
+// wrong bytes, the reader fails closed so callers surface a staleness
+// signal and re-index. Use errors.Is(err, ErrStaleByteOffset) to detect it.
+var ErrStaleByteOffset = errors.New("byte offset stale: file changed since index")
 
 // IndexProgress tracks live file-processing progress for a running index job.
 //
@@ -2171,10 +2181,51 @@ func ReadSymbolSourceCapped(projectRoot string, sym db.Symbol, maxBytes int) (st
 	}
 	defer f.Close()
 
+	// Degenerate span (StartByte > EndByte): negative-size metadata, not a
+	// stale read. Preserve the legacy empty-string contract before the
+	// staleness guards below — the file exists (Open succeeded) but there's
+	// no real byte range to validate.
 	size := sym.EndByte - sym.StartByte
 	if size <= 0 {
 		return "", nil
 	}
+
+	// Staleness validation BEFORE trusting the offsets. The byte range was
+	// captured against the indexed file; if that file has changed, seeking
+	// to StartByte/EndByte returns content that no longer corresponds to
+	// this symbol. Two cheap-to-strong checks, both fail closed:
+	//
+	//  1. Size guard (always): EndByte must be within the current file
+	//     size. A shrunk file would otherwise yield a silent short read.
+	//  2. Hash guard (when sym.FileHash is recorded): the on-disk content
+	//     hash must equal the indexed hash. Catches same-size edits that
+	//     shift the offsets to a different symbol's bytes — which the size
+	//     guard alone can't see.
+	//
+	// The hash read costs one os.ReadFile; it's only paid when a hash was
+	// recorded (Document/URL kinds and pre-#236 rows have none and fall
+	// through to the size guard only). Pincher's seek-read happens once per
+	// retrieve, not in a hot loop, so the extra read is acceptable for the
+	// correctness guarantee it buys.
+	fi, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat %s: %w", sym.FilePath, err)
+	}
+	if int64(sym.EndByte) > fi.Size() {
+		return "", fmt.Errorf("%w: %s end_byte %d > current size %d (file shrunk)",
+			ErrStaleByteOffset, sym.FilePath, sym.EndByte, fi.Size())
+	}
+	if sym.FileHash != "" {
+		content, rerr := os.ReadFile(absPath)
+		if rerr != nil {
+			return "", fmt.Errorf("read for hash %s: %w", sym.FilePath, rerr)
+		}
+		if live := fmt.Sprintf("%x", xxh3.Hash(content)); live != sym.FileHash {
+			return "", fmt.Errorf("%w: %s indexed hash %s != on-disk hash %s",
+				ErrStaleByteOffset, sym.FilePath, sym.FileHash, live)
+		}
+	}
+
 	if maxBytes > 0 && size > maxBytes {
 		size = maxBytes
 	}

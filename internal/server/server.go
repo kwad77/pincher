@@ -25,6 +25,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -5467,14 +5468,31 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 		}
 	}
 	includeSource := fieldSet == nil || fieldSet["source"]
+	// #2039 PR-5 parity: handleSymbol must honour the per-call token
+	// budget just like handleContext / handleSymbols / lite. Pre-fix it
+	// read and returned the full body regardless of max_tokens, so a
+	// caller that budgeted ~49 tokens still got the whole ~500-token
+	// function — the one read path that ignored the budget.
+	maxTokens := maxTokensArg(args)
 
 	// O(1) byte-offset retrieval — the pincherMCP core innovation. Skip the
 	// disk read when the projection excludes source (Document fallback also
 	// pulls from sym.Docstring, which is already in memory).
 	source := ""
+	// #2039 HIGH-2: the byte-offset reader now validates the file against
+	// the indexed state and returns index.ErrStaleByteOffset when the file
+	// changed since index (edited → wrong bytes; shrunk → silent short
+	// read). Capture it so the handler ships an explicit staleness signal
+	// with an EMPTY source rather than arbitrary wrong content.
+	var staleReadErr error
 	if includeSource {
 		if root != "" {
-			source, _ = index.ReadSymbolSource(root, *sym)
+			var readErr error
+			source, readErr = index.ReadSymbolSource(root, *sym)
+			if errors.Is(readErr, index.ErrStaleByteOffset) {
+				staleReadErr = readErr
+				source = ""
+			}
 		}
 		// Document symbols (fetched URLs) store their content in Docstring —
 		// no local file to seek.
@@ -5490,6 +5508,16 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 		if detailSkeleton && source != "" && sym.Kind != "Document" {
 			source = skeletonize(source, s.calleeShortNames(sym.ProjectID, sym.ID))
 		}
+	}
+
+	// #2039 PR-5 parity: apply the token budget to the single-symbol body,
+	// cutting at a line boundary (truncateSourceToTokens) the same way
+	// handleContext's primary source and lite do. Deferred to after the
+	// skeleton step so the cut applies to whatever shape ships.
+	srcBudgetDropped := 0
+	srcBudgetTruncated := false
+	if maxTokens > 0 && source != "" {
+		source, srcBudgetDropped, srcBudgetTruncated = truncateSourceToTokens(source, maxTokens)
 	}
 
 	// #766: for a Document the content is returned in `source`; its
@@ -5563,12 +5591,54 @@ func (s *Server) handleSymbol(ctx context.Context, req *mcp.CallToolRequest) (*m
 	if symbolCrossProjectWarning != "" {
 		attachWarning(data, symbolCrossProjectWarning)
 	}
+	// #2039 PR-5 parity: announce the budget cut with the same structured
+	// code (budget_truncated) the sibling read tools use, so an agent can
+	// detect a trimmed body programmatically and fetch the rest via a
+	// higher max_tokens.
+	if srcBudgetTruncated {
+		attachWarning(data, fmt.Sprintf(
+			"source cut at a line boundary to fit max_tokens=%d (-%d lines) — raise max_tokens for the full body",
+			maxTokens, srcBudgetDropped))
+		attachWarningStructured(data, "budget_truncated", WarningSeverityWarning,
+			fmt.Sprintf("source cut at a line boundary to fit max_tokens=%d (-%d lines) — raise max_tokens for the full body",
+				maxTokens, srcBudgetDropped),
+			map[string]any{"max_tokens": maxTokens, "source_lines_dropped": srcBudgetDropped})
+	}
+	// #2039 HIGH-2/MED-3: the byte-offset read failed staleness validation
+	// (file edited or shrunk since index). Source is empty rather than
+	// wrong; tell the agent why and how to recover. This fires regardless
+	// of whether a file-hash row exists (MED-3): the reader's size/hash
+	// guards both surface as ErrStaleByteOffset, so a no-hash file that
+	// shrank past EndByte still gets a signal here.
+	if staleReadErr != nil {
+		attachWarning(data, fmt.Sprintf(
+			"file %q modified since last index — byte offsets no longer match the symbol; source omitted to avoid shipping wrong bytes; re-index to refresh",
+			sym.FilePath))
+		attachWarningStructured(data, "stale_byte_offset", WarningSeverityWarning,
+			fmt.Sprintf("file %q modified since last index — byte offsets no longer match the symbol; source omitted (would be wrong bytes). Re-index to refresh.", sym.FilePath),
+			map[string]any{"file": sym.FilePath, "reason": staleReadErr.Error()})
+		meta, _ := data["_meta"].(map[string]any)
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		steps, _ := meta["next_steps"].([]map[string]string)
+		steps = append(steps, map[string]string{
+			"tool": "index",
+			"args": nextStepArgs(map[string]any{"path": root, "force": true}),
+			"why":  "file changed since last index — re-index so byte offsets match the current source",
+		})
+		meta["next_steps"] = steps
+		data["_meta"] = meta
+	}
 	// #317: warn when the file on disk has changed since indexing —
 	// byte offsets we just used point at content that no longer
 	// matches the indexed symbol. Only emitted when source was
 	// actually requested (offset-driven reads are the only path
-	// where a stale offset produces visible wrongness).
-	if includeSource && root != "" {
+	// where a stale offset produces visible wrongness). Skip when the
+	// hard staleness gate (#2039) already fired — it would be a duplicate
+	// of the same fact, and the hash-compare below can't add anything the
+	// reader's own validation didn't already detect.
+	if includeSource && root != "" && staleReadErr == nil {
 		s.attachStalenessWarning(data, projectID, sym, root)
 	}
 	return s.jsonResultWithMeta(data, start, tool, args, tokensSaved), nil
