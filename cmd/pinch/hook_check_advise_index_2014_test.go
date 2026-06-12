@@ -45,6 +45,20 @@ func newUnindexedGitRepo(t *testing.T, files ...string) string {
 	return repo
 }
 
+// suggestedArgsPath unmarshals an advise_index SuggestedArgs JSON blob
+// and returns its "path" value. JSON-escapes Windows backslashes, so
+// tests must decode rather than substring-match the raw blob.
+func suggestedArgsPath(t *testing.T, raw string) string {
+	t.Helper()
+	var args struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		t.Fatalf("suggested args not JSON: %v (%q)", err, raw)
+	}
+	return args.Path
+}
+
 // fireReadHook runs one full hook cycle the way runHookCheckCLI does:
 // decide, then log. Logging matters here — the #2014 threshold counter
 // IS the hook_invocations rows prior invocations wrote.
@@ -86,8 +100,10 @@ func TestDecideHook_Read_UnindexedGitRepo_ThirdEventAdvises_FourthSilent(t *test
 	if d.SuggestedTool != "index" {
 		t.Errorf("suggested tool = %q, want index", d.SuggestedTool)
 	}
-	if !strings.Contains(d.SuggestedArgs, repo) {
-		t.Errorf("suggested args should carry the repo root; got %s", d.SuggestedArgs)
+	// SuggestedArgs is JSON — on Windows the path's backslashes are
+	// escaped, so unmarshal rather than substring-match.
+	if got := suggestedArgsPath(t, d.SuggestedArgs); got != repo {
+		t.Errorf("suggested args path = %q, want repo root %q", got, repo)
 	}
 	// Telemetry contract: the advisory row's file_path is the repo
 	// root — the suppression key and the take-rate join key.
@@ -247,7 +263,7 @@ func TestDecideHook_Read_AdviseIndexGuards(t *testing.T) {
 		}
 		// Repo A's third event advises for root A specifically.
 		d := fireReadHook(t, store, "sess-roots", filepath.Join(repoA, "a.go"))
-		if d.Decision != "advise_index" || !strings.Contains(d.SuggestedArgs, repoA) {
+		if d.Decision != "advise_index" || suggestedArgsPath(t, d.SuggestedArgs) != repoA {
 			t.Fatalf("repo A third event should advise for root A: %+v", d)
 		}
 	})
