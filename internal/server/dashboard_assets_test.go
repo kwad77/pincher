@@ -230,7 +230,7 @@ func TestDashboardJS_RendersPerCallSavingsBreakdown(t *testing.T) {
 func TestDashboardJS_BasepathSubstitution_HTMLAndJSAgree(t *testing.T) {
 	t.Parallel()
 	for _, prefix := range []string{"", "/pincher", "/pincher/", "/a/b/c"} {
-		html := renderDashboard(prefix)
+		html := renderDashboard(prefix, false)
 		js := renderDashboardJS(prefix)
 
 		// Extract whatever appears in the script-src tag: `<script src="<X>/v1/dashboard.js"`

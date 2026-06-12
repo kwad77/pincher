@@ -2087,7 +2087,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"base-uri 'self'; "+
 			"form-action 'self'; "+
 			"frame-ancestors 'none'")
-		w.Write([]byte(renderDashboard(s.effectivePrefix(r))))
+		// The Models tab is router-gated (router-loop B12): rendered only
+		// when the startup detection ladder found a live pincher-router —
+		// the same conditional-surface discipline as the models/route MCP
+		// advertisement. Absent ⇒ byte-identical router-less dashboard.
+		w.Write([]byte(renderDashboard(s.effectivePrefix(r), s.routerDetected)))
 		return
 	}
 	if path == "dashboard.js" && r.Method == http.MethodGet {

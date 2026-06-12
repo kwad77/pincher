@@ -67,7 +67,7 @@ func TestDashboardJS_PollManagerAndStaleness(t *testing.T) {
 	}
 
 	// Staleness indicator must appear in the header markup.
-	html := renderDashboard("")
+	html := renderDashboard("", false)
 	if !strings.Contains(html, `class="badge badge-muted updated-ago" data-source="overview"`) {
 		t.Errorf("header missing .updated-ago indicator for overview source (#545)")
 	}
@@ -89,7 +89,7 @@ func TestDashboardJS_ThemeToggle(t *testing.T) {
 		}
 	}
 
-	html := renderDashboard("")
+	html := renderDashboard("", false)
 	if !strings.Contains(html, `id="theme-btn"`) {
 		t.Errorf("header missing #theme-btn — #549 toggle button not present")
 	}

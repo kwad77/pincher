@@ -65,7 +65,7 @@ func TestDashboardJS_ExportButtons(t *testing.T) {
 			t.Errorf("dashboard JS missing %q — #551 export incomplete", needle)
 		}
 	}
-	html := renderDashboard("")
+	html := renderDashboard("", false)
 	for _, needle := range []string{
 		`data-action="exportTable" data-args='["csv","projects"]'`,
 		`data-action="exportTable" data-args='["json","projects"]'`,
