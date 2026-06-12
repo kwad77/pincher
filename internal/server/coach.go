@@ -52,6 +52,21 @@ package server
 //     continuation_fidelity are counts-only (est 0 — their token cost
 //     isn't recorded). See les.go.
 //
+//  7. unrouted_task_spawns (router-loop item B11, plan §A4) — gated on
+//     s.routerDetected, like every routing surface: a live router plus
+//     subagent spawns outnumbering route consults means Make-stage
+//     task units are spawning without the dispatch verse's consult.
+//     Counts-only by design (est 0): pincher's telemetry records no
+//     per-unit token or dollar delta for routing — cost rows live
+//     router-side in outcomes.jsonl — so a real count beats an
+//     invented token figure, the same rule pattern 5 applies on a
+//     pre-v41 schema. The companion `routing` section on the response
+//     carries the A1 adoption metric (route-consult coverage) with its
+//     approximations spelled out in the basis. Router absent ⇒ neither
+//     the section nor the finding exists and the response is
+//     byte-identical to the pre-routing shape (plan §A6 zero-surface
+//     applies to response text too).
+//
 // Fewer than coachMinCallsForFindings calls in the window returns empty
 // findings plus a note — small samples would price noise, not patterns.
 
@@ -59,6 +74,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"sync/atomic"
 	"time"
@@ -209,6 +225,19 @@ func (s *Server) handleCoach(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	if f := s.coachLESRegression(now); f != nil {
 		findings = append(findings, f)
 	}
+	// Routing adoption (router-loop item B11, plan §A4): coach is the
+	// measurement organ for the A1 adoption signal. Gated on the same
+	// startup detection the tools/list advertisement uses — router
+	// absent means neither the section nor the verse-skip finding
+	// exists and the response stays byte-identical to the pre-routing
+	// shape (plan §A6).
+	if s.routerDetected {
+		routing, taskSpawns, consults, scope := s.coachRoutingAdoption(window, since, events)
+		data["routing"] = routing
+		if f := coachVerseSkips(taskSpawns, consults, scope); f != nil {
+			findings = append(findings, f)
+		}
+	}
 
 	// Biggest measured win first; ties broken by pattern name so the
 	// order is deterministic for tests and diffs.
@@ -355,5 +384,105 @@ func (s *Server) coachHookFallThrough(window string, since time.Time) map[string
 		"est_tokens_left_on_table": est,
 		"recommendation":           "When the PreToolUse hook suggests a redirect (e.g. `context {\"id\":...,\"lite\":true}` instead of Read on an indexed file), take it — the suggestion is only emitted when the index already covers the file.",
 		"basis":                    basis,
+	}
+}
+
+// coachRoutingAdoption builds the `routing` section of the coach
+// response (router-loop item B11, plan §A4) — the A1 adoption metric,
+// route-consult coverage, computed from what is actually recorded.
+// Only called when s.routerDetected.
+//
+// Approximations (each named in the basis string — the plan's exact
+// metric needs telemetry that doesn't exist):
+//
+//   - Denominator: the A1 metric divides by Make-stage task units in
+//     the loop ledger, but checkpoint stage tags are free text inside
+//     `claim` and not session-joinable. The closest recorded proxy is
+//     hook-observed subagent spawns — hook_invocations rows with
+//     tool_name='Task'. Sessions without the hook installed record no
+//     spawns; coverage degrades to absent rather than inventing a
+//     denominator.
+//   - Numerator, session window: the live in-process counters split
+//     action="route" consults from action="outcome" reports
+//     (session_tool_calls stores no arguments, so persisted rows
+//     can't). Counted at attempt time: consulting an unreachable
+//     router is still verse adherence.
+//   - Numerator, 7d window: recorded `route` rows in
+//     session_tool_calls, which combine consults and outcome reports —
+//     coverage is an UPPER bound on consult coverage there.
+//   - advise_route advisories are counted; the advisory→consult
+//     take-rate join stays an offline analysis because hook rows carry
+//     the host session key while tool-call rows carry pincher's.
+//
+// Returns the section plus the (taskSpawns, consults, scope) triple the
+// verse-skip finding prices its count from.
+func (s *Server) coachRoutingAdoption(window string, since time.Time, events []db.ToolCallEvent) (section map[string]any, taskSpawns int, consults int64, scope string) {
+	routeCalls := 0
+	for _, e := range events {
+		if e.Tool == "route" {
+			routeCalls++
+		}
+	}
+	sessionID := ""
+	scope = "trailing 7 days"
+	if window == "session" {
+		sessionID = s.persistentSessionID
+		scope = "this session"
+	}
+	taskSpawns, _ = s.store.HookTaskSpawns(sessionID, since)
+	advisories, _ := s.store.HookRouteAdvisories(sessionID, since)
+
+	section = map[string]any{
+		"route_tool_calls":        routeCalls,
+		"task_spawns_observed":    taskSpawns,
+		"advise_route_advisories": advisories,
+	}
+	var basis string
+	if window == "session" {
+		consults = atomic.LoadInt64(&s.statsRouteConsults)
+		outcomes := atomic.LoadInt64(&s.statsRouteOutcomes)
+		section["route_consults"] = consults
+		section["outcome_reports"] = outcomes
+		basis = fmt.Sprintf(
+			"coverage = route consults ÷ subagent spawns. Consults = %d action=\"route\" attempts from this process's live counters (counted at attempt time — consulting an unreachable router is still verse adherence); outcome reports = %d action=\"outcome\" attempts; the recorded session_tool_calls rows (%d) can't split the two because arguments are not persisted. Spawns = %d hook_invocations rows with tool_name='Task' in %s — the closest recorded proxy for Make-stage task units (loop-ledger stage tags are free text and not session-joinable); without the PreToolUse hook installed no spawns are recorded and coverage is omitted. advise_route advisories counted; the advisory→consult take-rate join is offline-only (hook rows carry the host session key, tool calls pincher's).",
+			consults, outcomes, routeCalls, taskSpawns, scope)
+	} else {
+		consults = int64(routeCalls)
+		basis = fmt.Sprintf(
+			"coverage = recorded `route` tool calls ÷ subagent spawns over the trailing 7 days. The %d route rows in session_tool_calls combine action=\"route\" consults and action=\"outcome\" reports (arguments are not persisted), so coverage is an UPPER bound on consult coverage — the live per-action split exists only in the session window. Spawns = %d hook_invocations rows with tool_name='Task' (ts-windowed) — the closest recorded proxy for Make-stage task units (loop-ledger stage tags are free text and not session-joinable). advise_route advisories counted; the advisory→consult take-rate join is offline-only.",
+			routeCalls, taskSpawns)
+	}
+	if taskSpawns > 0 {
+		section["route_consult_coverage"] = math.Round(float64(consults)/float64(taskSpawns)*100) / 100
+	}
+	section["basis"] = basis
+	return section, taskSpawns, consults, scope
+}
+
+// coachVerseSkips flags pattern 7 (router-loop item B11): the router
+// is present yet hook-observed subagent spawns outnumber route
+// consults — Make-stage task units are spawning without the dispatch
+// verse's consult. Counts-only by design: pincher's telemetry records
+// no per-unit token or dollar delta for routing (cost rows live
+// router-side in outcomes.jsonl), so est is 0 rather than an invented
+// number. In the 7d window `consults` is the combined route-call count
+// (an upper bound), which makes the skip count an under-estimate —
+// the conservative direction for a finding.
+func coachVerseSkips(taskSpawns int, consults int64, scope string) map[string]any {
+	if taskSpawns == 0 {
+		return nil
+	}
+	skipped := taskSpawns - int(consults)
+	if skipped <= 0 {
+		return nil
+	}
+	return map[string]any{
+		"pattern":                  "unrouted_task_spawns",
+		"occurrences":              skipped,
+		"est_tokens_left_on_table": int64(0),
+		"recommendation":           "A live pincher-router is detected but subagent spawns are outrunning route consults. Follow the dispatch verse: every Make-stage task unit gets a `route` consult before the spawn (mode=execute → gate the artifact; mode=advise → spawn at the advised tier; unreachable → proceed at the originating model and log the miss), then report the gated outcome via route action=\"outcome\" so the router's learner trains.",
+		"basis": fmt.Sprintf(
+			"%d subagent spawn(s) (hook_invocations tool_name='Task', %s) vs %d route consult(s) — %d spawn(s) had no consult. Spawn rows are the closest recorded proxy for Make-stage task units (loop-ledger stage tags are free text and not session-joinable). est = 0: routing's savings are recorded router-side (outcomes.jsonl cost rows), not in pincher's token telemetry — counts-only, not an invented number.",
+			taskSpawns, scope, consults, skipped),
 	}
 }

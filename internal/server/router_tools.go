@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -330,6 +331,13 @@ func (s *Server) handleRoute(ctx context.Context, req *mcp.CallToolRequest) (*mc
 						"why": "the envelope carries the features the router's model decides on — an empty consult is feature-starved by construction"},
 				}), nil
 		}
+		// Router-loop item B11: count the consult at attempt time —
+		// coach's route-consult coverage measures verse adherence (did
+		// the loop ask before spawning?), and a consult against a
+		// router that turns out to be unreachable is still adherence
+		// (the verse's miss path). Malformed calls (no envelope) were
+		// rejected above and never count.
+		atomic.AddInt64(&s.statsRouteConsults, 1)
 		body, errRes := s.routerDo(ctx, http.MethodPost, "/v1/route", envelope)
 		if errRes != nil {
 			return errRes, nil
@@ -370,6 +378,10 @@ func (s *Server) handleRoute(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		// caller fields always win; a cache miss (fresh session,
 		// evicted, foreign request_id) passes the card through
 		// unchanged so a router 422 surfaces honestly.
+		// Router-loop item B11: outcome reports counted at attempt
+		// time, symmetrically with consults (coach's outcomes-reported
+		// ÷ consults adherence ratio).
+		atomic.AddInt64(&s.statsRouteOutcomes, 1)
 		filled := s.autofillOutcomeEcho(card)
 		body, errRes := s.routerDo(ctx, http.MethodPost, "/v1/outcomes", card)
 		if errRes != nil {

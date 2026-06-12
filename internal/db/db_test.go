@@ -740,9 +740,13 @@ var readerRoutedStoreMethods = map[string]bool{
 	"HookRouteAdvisedInSession": true,
 	// coach telemetry readers — pure SELECT / PRAGMA over recorded
 	// telemetry; coach never mutates what it mines.
-	"ToolCallsSince":                true,
-	"QueryMetricsSince":             true,
-	"HookRedirectOutcomes":          true,
+	"ToolCallsSince":       true,
+	"QueryMetricsSince":    true,
+	"HookRedirectOutcomes": true,
+	// router-loop §A4 (item B11) routing adoption readers — pure
+	// SELECTs over hook_invocations; coach never mutates telemetry.
+	"HookTaskSpawns":                true,
+	"HookRouteAdvisories":           true,
 	"HookTokenColumnsPresent":       true,
 	"HookRedirectTokensLeftOnTable": true,
 	// LES (ADR LOOP_EFFICIENCY_METRIC) telemetry readers — pure

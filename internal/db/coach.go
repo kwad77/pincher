@@ -108,6 +108,49 @@ func (s *Store) HookRedirectOutcomes(sessionID string, since time.Time) (redirec
 	return redirects, resolved, ignored, err
 }
 
+// HookTaskSpawns counts the Task-tool hook_invocations rows in scope —
+// the PreToolUse hook's record of subagent spawns. This is coach's
+// closest recorded proxy for Make-stage task units (router-loop plan
+// §A4): the A1 metric's true denominator is Make-stage task units in
+// the loop ledger, but checkpoint stage tags are free text inside
+// `claim` and not session-joinable, while every hook-observed Task
+// spawn already wrote a queryable row. Counts ALL Task rows regardless
+// of decision (pass_through and advise_route rows are both spawns).
+// Scope semantics match HookRedirectOutcomes: non-empty sessionID ⇒
+// per-session, else windowed by ts >= since. Reader-routed.
+func (s *Store) HookTaskSpawns(sessionID string, since time.Time) (int, error) {
+	q := `SELECT COUNT(1) FROM hook_invocations WHERE tool_name = 'Task'`
+	var row *sql.Row
+	if sessionID != "" {
+		row = s.ro.QueryRow(q+` AND session_id = ?`, sessionID)
+	} else {
+		row = s.ro.QueryRow(q+` AND ts >= ?`, since.UnixNano())
+	}
+	var n int
+	err := row.Scan(&n)
+	return n, err
+}
+
+// HookRouteAdvisories counts advise_route recruitment-advisory rows in
+// scope (the router-loop §A2 / #2025 one-time advisory; decision =
+// 'advise_route'). Backs coach's routing adoption section — the
+// advisory count is the recruitment half of the take-rate signal; the
+// full advisory→consult join is an offline analysis (hook rows carry
+// the host session key, tool calls the pincher one). Scope semantics
+// match HookRedirectOutcomes. Reader-routed.
+func (s *Store) HookRouteAdvisories(sessionID string, since time.Time) (int, error) {
+	q := `SELECT COUNT(1) FROM hook_invocations WHERE decision = 'advise_route'`
+	var row *sql.Row
+	if sessionID != "" {
+		row = s.ro.QueryRow(q+` AND session_id = ?`, sessionID)
+	} else {
+		row = s.ro.QueryRow(q+` AND ts >= ?`, since.UnixNano())
+	}
+	var n int
+	err := row.Scan(&n)
+	return n, err
+}
+
 // HookTokenColumnsPresent reports whether the per-row token-estimate
 // columns (est_tokens_served + baseline_tokens, the v41 hook-redirect-v2
 // shape; the branch originally anticipated these as a v40-on-#1983

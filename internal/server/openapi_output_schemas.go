@@ -299,6 +299,15 @@ var outputSchemas = map[string]string{
 				"basis":{"type":"string"}
 			}}},
 			"note":{"type":"string"},
+			"routing":{"type":"object","description":"Routing adoption section (router-loop plan §A4). Present ONLY when a live pincher-router was detected at startup — absent-router responses are byte-identical to the pre-routing shape. Carries route_tool_calls, task_spawns_observed, advise_route_advisories, route_consult_coverage (and, session window only, the route_consults/outcome_reports live-counter split) plus a basis string naming every approximation.","properties":{
+				"route_tool_calls":{"type":"integer"},
+				"route_consults":{"type":"integer"},
+				"outcome_reports":{"type":"integer"},
+				"task_spawns_observed":{"type":"integer"},
+				"advise_route_advisories":{"type":"integer"},
+				"route_consult_coverage":{"type":"number"},
+				"basis":{"type":"string"}
+			}},
 			"_meta":` + metaRef + `
 		}
 	}`,
