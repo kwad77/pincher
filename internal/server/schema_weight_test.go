@@ -94,11 +94,16 @@ func schemaWeights(t *testing.T, srv *Server) (map[string]int, int) {
 }
 
 // newSchemaWeightServer builds a server under the given toolset/style
-// env. Not parallel-safe (t.Setenv); callers run sequentially.
-func newSchemaWeightServer(t *testing.T, toolset, style string) *Server {
+// env and the given router-detection state (router-loop B5: "off"
+// pins the absent state the historical totals were measured in; "on"
+// forces detection without a live router, adding the conditional
+// models/route advertisement). Not parallel-safe (t.Setenv); callers
+// run sequentially.
+func newSchemaWeightServer(t *testing.T, toolset, style, router string) *Server {
 	t.Helper()
 	t.Setenv("PINCHER_TOOLSET", toolset)
 	t.Setenv("PINCHER_SCHEMA_STYLE", style)
+	t.Setenv("PINCHER_ROUTER", router)
 	srv, _, _ := newTestServer(t)
 	return srv
 }
@@ -113,12 +118,26 @@ func TestSchemaWeight_Report(t *testing.T) {
 	totals := make(map[string]int, len(combos))
 	var fullRich map[string]int
 	for _, c := range combos {
-		srv := newSchemaWeightServer(t, c.toolset, c.style)
+		srv := newSchemaWeightServer(t, c.toolset, c.style, "off")
 		perTool, total := schemaWeights(t, srv)
 		totals[c.toolset+"/"+c.style] = total
 		if c.toolset == "full" && c.style == "rich" {
 			fullRich = perTool
 		}
+	}
+
+	// Router-present surface (router-loop B5): the conditional
+	// models/route tools join the advertisement, so the totals shift —
+	// pinned here so the cost of the detected state is a committed,
+	// reviewable number, while the table above stays the absent state
+	// (zero delta against the pre-router goldens, plan §A6).
+	routerTotals := make(map[string]int, len(combos))
+	routerPerTool := make(map[string]map[string]int, len(combos))
+	for _, c := range combos {
+		srv := newSchemaWeightServer(t, c.toolset, c.style, "on")
+		perTool, total := schemaWeights(t, srv)
+		routerTotals[c.toolset+"/"+c.style] = total
+		routerPerTool[c.toolset+"/"+c.style] = perTool
 	}
 
 	// Per-tool table, heaviest first (full/rich — the complete surface;
@@ -157,6 +176,27 @@ func TestSchemaWeight_Report(t *testing.T) {
 		fmt.Fprintf(&b, "| %s | %d | %s |\n", name, fullRich[name], core)
 	}
 
+	b.WriteString("\n## Router-present surface (router-loop B5)\n\n")
+	b.WriteString("`models` + `route` join the advertisement only when a live pincher-router\nis detected (in BOTH toolset modes — they ride with the core set). The\ntables above ARE the absent state: zero delta against the pre-router\nsurface (plan §A6). The detected-state core+lean total is held to the\nsame budget gate (TestSchemaWeight_CoreLean_RouterPresent_UnderBudget).\n\n")
+	b.WriteString("| toolset | style | tools | total tokens |\n|---|---|--:|--:|\n")
+	for _, c := range combos {
+		nTools := len(fullRich) + len(routerConditionalTools)
+		if c.toolset == "core" {
+			nTools = len(coreToolset) + len(routerConditionalTools)
+		}
+		fmt.Fprintf(&b, "| %s | %s | %d | %d |\n", c.toolset, c.style, nTools, routerTotals[c.toolset+"/"+c.style])
+	}
+	b.WriteString("\n| router tool | rich | lean |\n|---|--:|--:|\n")
+	routerNames := make([]string, 0, len(routerConditionalTools))
+	for name := range routerConditionalTools {
+		routerNames = append(routerNames, name)
+	}
+	sort.Strings(routerNames)
+	for _, name := range routerNames {
+		fmt.Fprintf(&b, "| %s | %d | %d |\n", name,
+			routerPerTool["full/rich"][name], routerPerTool["full/lean"][name])
+	}
+
 	got := []byte(b.String())
 	goldenPath := filepath.Join("testdata", "schema-weight.md")
 	if *updateSchemaWeight {
@@ -189,7 +229,7 @@ func TestSchemaWeight_Report(t *testing.T) {
 // schema/description grew — either shrink it or consciously raise the
 // budget in review.
 func TestSchemaWeight_CoreLean_UnderBudget(t *testing.T) {
-	srv := newSchemaWeightServer(t, "core", "lean")
+	srv := newSchemaWeightServer(t, "core", "lean", "off")
 	perTool, total := schemaWeights(t, srv)
 	if len(perTool) != len(coreToolset) {
 		t.Errorf("core toolset advertises %d tools, want %d", len(perTool), len(coreToolset))
@@ -208,4 +248,30 @@ func TestSchemaWeight_CoreLean_UnderBudget(t *testing.T) {
 			total, coreLeanTokenBudget, strings.Join(lines, "\n"))
 	}
 	t.Logf("core+lean total: %d tokens (budget %d)", total, coreLeanTokenBudget)
+}
+
+// TestSchemaWeight_CoreLean_RouterPresent_UnderBudget holds the
+// DETECTED-state default surface (core+lean plus the conditional
+// models/route advertisement, router-loop B5) to the same
+// coreLeanTokenBudget ceiling. Decision: the budget is not raised for
+// the router — the two lean proxy schemas must fit inside the existing
+// headroom, so a machine that installs pincher-router still gets a
+// sub-4k tools/list. If this fails, shrink the router tool schemas;
+// raising the shared budget is a deliberate, reviewed decision.
+func TestSchemaWeight_CoreLean_RouterPresent_UnderBudget(t *testing.T) {
+	srv := newSchemaWeightServer(t, "core", "lean", "on")
+	perTool, total := schemaWeights(t, srv)
+	if want := len(coreToolset) + len(routerConditionalTools); len(perTool) != want {
+		t.Errorf("router-present core toolset advertises %d tools, want %d (coreToolset + models/route)", len(perTool), want)
+	}
+	for name := range routerConditionalTools {
+		if perTool[name] == 0 {
+			t.Errorf("router-present core surface is missing %q from the advertisement", name)
+		}
+	}
+	if total >= coreLeanTokenBudget {
+		t.Errorf("router-present core+lean schema weight %d tokens >= budget %d — shrink the models/route schemas (the budget is shared, not raised, for the router surface)",
+			total, coreLeanTokenBudget)
+	}
+	t.Logf("router-present core+lean total: %d tokens (budget %d)", total, coreLeanTokenBudget)
 }

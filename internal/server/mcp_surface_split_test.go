@@ -63,6 +63,15 @@ var expectedMCPTools = map[string]bool{
 	"rebuild_fts":    true,
 	"init":           true,
 	"self_test":      true,
+
+	// Router-loop B5 — the conditional pincher-router proxy surface.
+	// Registered (s.tools/s.handlers + HTTP /v1/<tool>) in BOTH
+	// detection states; MCP-ADVERTISED only when a live router was
+	// detected at startup (routerConditionalTools gating in addTool).
+	// The dual-state advertisement contract lives in
+	// tool_contract_test.go (TestToolContract_DefaultSurface*).
+	"models": true,
+	"route":  true,
 }
 
 func TestMCPSurface_AllRegisteredToolsAgentCallable(t *testing.T) {

@@ -82,6 +82,7 @@ type routerProbeConfig struct {
 	mode       string // off|auto|on — output of parseRouterEnv
 	configPath string // rung 1: workers.yaml path
 	binary     string // rung 2: PATH probe target
+	baseURL    string // router service base ("http://<addr>") — item B5 proxy target
 	healthzURL string // rung 3: identity-validated liveness endpoint
 	timeout    time.Duration
 	lookPath   func(string) (string, error)
@@ -97,6 +98,7 @@ func defaultRouterProbeConfig() routerProbeConfig {
 	cfg := routerProbeConfig{
 		mode:       parseRouterEnv(os.Getenv("PINCHER_ROUTER")),
 		binary:     routerServeBinary,
+		baseURL:    "http://" + addr,
 		healthzURL: "http://" + addr + "/healthz",
 		timeout:    routerProbeTimeout,
 		lookPath:   exec.LookPath,

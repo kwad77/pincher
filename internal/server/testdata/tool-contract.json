@@ -642,6 +642,29 @@
     }
   },
   {
+    "name": "models",
+    "description": "**Render the pincher-router worker registry** (thin proxy over the router's GET /v1/models — read-only, no registry writes ever happen from pincher). Returns the contract-v2 handshake `{contract_version, weights_version, registry_version, capabilities}` — the single version-skew mechanism between pincher and the router — plus every provider/model entry exactly as the router serves it (tier, kind, ctx_window, cost, source, enabled, enabled_by, last_seen, capabilities). A router answering with `contract_version` below 2 still gets rendered, with a `hint` field saying the router is installed but too old — installed-but-old is a state, not an error, and the surface never vanishes mid-session. `enable`/`disable`/`test` actions are declared for shape-stability but answer with a structured error until the router contract exposes registry-mutation endpoints (the discovery train): the router owns all registry state. Only advertised over MCP when a live router was detected at startup (`router` ∈ _meta.capabilities); always reachable over HTTP /v1/models.",
+    "input_schema": {
+      "properties": {
+        "action": {
+          "description": "'list' (default) renders GET /v1/models: handshake + registry. 'enable'/'disable'/'test' are reserved by the routing plan and answer with a structured error until the router contract exposes registry mutation — pincher never writes workers.yaml itself.",
+          "enum": [
+            "list",
+            "enable",
+            "disable",
+            "test"
+          ],
+          "type": "string"
+        },
+        "model": {
+          "description": "Target for enable/disable/test as 'provider/model_id'. Ignored by list.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
     "name": "neighborhood",
     "description": "**Returns same-file symbols, NOT graph adjacency.** Despite the name (#498), this tool answers \"what other symbols live in the same file as the seed?\" — useful for in-file refactor planning. For graph adjacency (callers / callees / readers / writers), use `trace direction=both` instead. Given a seed symbol ID, returns every symbol in the same file (signatures + line ranges) ordered by source position. One round-trip vs N `symbol` calls or one whole-file `Read`. Paginated: defaults to 50 neighbors per call (limit/offset), with the next page surfaced in `_meta.next_steps` when the file has more. Default response excludes `source`; pass `include_source=true` to also fetch each neighbor's body.",
     "input_schema": {
@@ -778,6 +801,31 @@
         "confirm": {
           "description": "If true, perform the rebuild. Default false (dry-run — returns symbol counts only).",
           "type": "boolean"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "route",
+    "description": "**Consult the pincher-router before spawning a Make-stage task unit, and report the gated outcome back afterwards** (thin proxy: action=\"route\" → POST /v1/route, action=\"outcome\" → POST /v1/outcomes). The route response is mode-tagged: `mode: \"execute\"` means the router ran (or will run) the worker — treat the result as an untrusted maker artifact and send it to the gate; `mode: \"advise\"` means spawn a host subagent at the advised tier, passing the returned envelope verbatim. Every route response carries a `request_id`; after the gate verdict, report `{request_id, outcome_class: clean|errored|shallow, gate}` via action=\"outcome\" — the loop trains the router as a side effect of working, and skipping the report starves its model. Routing NEVER blocks the loop: an unreachable or slow router returns a structured error within the call budget (~250ms) — proceed at the originating model and log the miss in the loop checkpoint. Stage policy is binding (pincher-loop dispatch verse): Make routes, Probe may route a bounded question, Frame/Decide/Capture never route, and the gate never routes below the originating tier.",
+    "input_schema": {
+      "properties": {
+        "action": {
+          "description": "'route' (default) POSTs the envelope to /v1/route and returns the mode-tagged ExecutionPlan + request_id. 'outcome' reports a gated result to POST /v1/outcomes.",
+          "enum": [
+            "route",
+            "outcome"
+          ],
+          "type": "string"
+        },
+        "envelope": {
+          "description": "TaskEnvelope for action='route', POSTed to the router verbatim — the envelope composer's output (intent + pointers + pre-cut slices + probe _meta features such as tool_name, complexity_tier, role, session_id), never raw files.",
+          "type": "object"
+        },
+        "outcome": {
+          "description": "OutcomeCard for action='outcome': {request_id, outcome_class: clean|errored|shallow, gate, quality_score, ...}. request_id comes from the prior route response — it is the join key the router's learner trains on.",
+          "type": "object"
         }
       },
       "type": "object"

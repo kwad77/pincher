@@ -1,4 +1,4 @@
-# The 34 MCP tools
+# The 36 MCP tools
 
 [Back to reference index](README.md)
 
@@ -6,7 +6,7 @@ All latencies measured on this codebase. Token counts use cl100k_base BPE — th
 
 Tool sections use stable explicit anchors: `#tool-<name>`, where `<name>` is the lowercase MCP tool name. These anchors are the pre-staged target for future `pincher://tools/<name>/runbook` Resource URIs.
 
-> **Schema diet (#2003; default since v1.6, #2005):** by default only the 10 loop-essential tools are advertised over MCP `tools/list` (`PINCHER_TOOLSET=core`: `search`, `symbol`, `symbols`, `context`, `trace`, `changes`, `batch`, `loop`, `verify_change`, `guide`) with lean descriptions (`PINCHER_SCHEMA_STYLE=lean`: descriptions deterministically cut to their first sentence, arg descriptions capped at ~120 chars). All 34 tools stay registered and reachable over HTTP `POST /v1/<tool>` and as `batch` sub-queries in every mode. Set `PINCHER_TOOLSET=full` and/or `PINCHER_SCHEMA_STYLE=rich` at server start to restore the pre-v1.6 advertisement. The flip is measured: at 10x corpus scale, full/rich burned 1.44M tokens vs 475k for core+lean at identical accuracy (PR #2005). When a description has been leaned, the full pedagogy for each tool is this document. See [`http-api.md`](http-api.md) → "Server-side env knobs" for the measured token weights.
+> **Schema diet (#2003; default since v1.6, #2005):** by default only the 10 loop-essential tools are advertised over MCP `tools/list` (`PINCHER_TOOLSET=core`: `search`, `symbol`, `symbols`, `context`, `trace`, `changes`, `batch`, `loop`, `verify_change`, `guide`) with lean descriptions (`PINCHER_SCHEMA_STYLE=lean`: descriptions deterministically cut to their first sentence, arg descriptions capped at ~120 chars). All 36 tools stay registered and reachable over HTTP `POST /v1/<tool>` (and the read-only ones as `batch` sub-queries) in every mode. Set `PINCHER_TOOLSET=full` and/or `PINCHER_SCHEMA_STYLE=rich` at server start to restore the pre-v1.6 advertisement. The flip is measured: at 10x corpus scale, full/rich burned 1.44M tokens vs 475k for core+lean at identical accuracy (PR #2005). When a description has been leaned, the full pedagogy for each tool is this document. See [`http-api.md`](http-api.md) → "Server-side env knobs" for the measured token weights.
 
 ## Starter
 
@@ -171,6 +171,24 @@ Tested latency: 8 ms.
 Fetch a URL, extract its text, store as a searchable `Document` symbol in the project knowledge base. Body cap: 512 KB fetched, 32 KB stored. Retrieve via `search kind:Document` or `symbol`.
 
 Tested latency: ~200 ms (network).
+
+## Routing (conditional — pincher-router)
+
+These two tools are thin HTTP proxies to a co-installed [pincher-router](https://github.com/kwad77/pincher-router) (contract v2: `GET /v1/models` handshake, mode-tagged `POST /v1/route`, plural `POST /v1/outcomes`). They follow the **conditional-surface discipline**: registered always (HTTP `/v1/models`, `/v1/route` work in every state), but advertised over MCP `tools/list` ONLY when a live router was detected at startup (the same ladder behind the `router` capability tag — config-dir stat → `pincher-router-serve` on `$PATH` → identity-validated `/healthz`). No router ⇒ zero added schema weight, in both toolset modes. Override: `PINCHER_ROUTER=off|auto|on`; `off` disables all routing activity including these proxies.
+
+Every proxy call is bounded (~250ms): an unreachable or slow router returns a structured error telling the loop to proceed at the originating model — routing never blocks.
+
+### `models` {#tool-models}
+
+Render the router's worker registry (`GET /v1/models` proxy): the contract-v2 handshake (`contract_version`, `weights_version`, `registry_version`, `capabilities`) plus every provider/model entry (tier, kind, ctx_window, cost, source, enabled, last_seen). Read-only by construction — the router owns all registry state and pincher never writes `workers.yaml`. A pre-v2 router renders with an installed-but-old `hint` instead of erroring. `action=enable|disable|test` are reserved (structured error) until the router contract exposes registry mutation.
+
+Call budget: 250 ms (proxy timeout; a local router answers in single-digit ms).
+
+### `route` {#tool-route}
+
+Consult the router before spawning a Make-stage task unit (`action="route"`, default: POSTs your task `envelope` to `/v1/route`) and report the gated outcome back (`action="outcome"` → `POST /v1/outcomes`). Route responses are mode-tagged — `execute` (router owns the work; gate the result as an untrusted maker artifact) or `advise` (spawn a host subagent at the advised tier) — and carry a `request_id` for the outcomes join. Reporting outcomes trains the router as a side effect of working. Stage policy lives in the pincher-loop skill's dispatch verse; the S5 gate never routes below the originating tier.
+
+Call budget: 250 ms (proxy timeout; the router's own bar is p99 < 100 ms for a local `/v1/route`).
 
 ## Code audit & admin
 

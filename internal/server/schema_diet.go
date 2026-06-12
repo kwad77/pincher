@@ -127,10 +127,17 @@ const leanArgDescMax = 120
 // halved turns at equal 48/48 accuracy). Kept to one tight sentence per
 // tool so the core+lean surface stays under the schema-weight budget
 // (TestSchemaWeight_CoreLean_UnderBudget).
+// The router tools (router-loop B5) carry a usage note of the same
+// class: lean drops the never-block/ownership clauses from the rich
+// text, but those are load-bearing for correct loop behavior (consult
+// timing; pincher never writes the registry), so each keeps one tight
+// sentence within the schema-weight budget.
 var leanAuthorityNote = map[string]string{
 	"trace":         "Graph-derived; authoritative for caller/callee/count — no text-search re-verification needed absent warnings.",
 	"changes":       "Graph-derived; authoritative for blast-radius — no text-search re-verification needed absent warnings.",
 	"verify_change": "Graph-derived; authoritative for blast-radius/orphan checks — no re-verification needed absent warnings.",
+	"models":        "Read-only render of router state; the router owns the registry — pincher never writes workers.yaml.",
+	"route":         "Consult before spawning Make-stage work; never blocks — on router error proceed at the originating model and report the miss.",
 }
 
 // leanToolDescription returns the first sentence of a tool description,

@@ -123,10 +123,20 @@ func TestToolset_CoreSurface(t *testing.T) {
 // TestToolset_FullOptOut pins the opt-out: PINCHER_TOOLSET=full
 // restores the pre-v1.6 behavior — every registered tool MCP-visible.
 // (The core default itself is pinned by TestToolContract_DefaultSurface.)
+//
+// Exception (router-loop B5, plan §A6): the routerConditionalTools key
+// their advertisement off router DETECTION, not the toolset knob —
+// absent ⇒ zero MCP surface even under full. Their dual-state
+// advertisement is pinned by TestRouterTools_AdvertisementMatrix and
+// TestToolContract_RouterAbsent_FullToolset_ZeroSurface.
 func TestToolset_FullOptOut(t *testing.T) {
 	t.Setenv("PINCHER_TOOLSET", "full")
+	t.Setenv("PINCHER_ROUTER", "off")
 	srv, _, _ := newTestServer(t)
 	for name := range expectedMCPTools {
+		if routerConditionalTools[name] {
+			continue // detection-gated, not toolset-gated (plan §A6)
+		}
 		if !srv.mcpVisible[name] {
 			t.Errorf("full mode does not advertise %q over MCP", name)
 		}

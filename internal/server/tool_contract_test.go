@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -43,6 +44,12 @@ var updateGolden = flag.Bool("update-tool-contract", false,
 func TestToolContract_GoldenFile(t *testing.T) {
 	t.Setenv("PINCHER_TOOLSET", "full")
 	t.Setenv("PINCHER_SCHEMA_STYLE", "rich")
+	// Router-loop B5: s.tools is detection-independent — models/route
+	// are REGISTERED in both router states (only the advertisement is
+	// conditional), so the contract golden documents them like every
+	// other tool. Pinned to the absent state anyway so the golden can
+	// never depend on the machine running the test.
+	t.Setenv("PINCHER_ROUTER", "off")
 	srv, _, _ := newTestServer(t)
 
 	// Build a stable, parsed-and-re-encoded snapshot. We intentionally
@@ -136,6 +143,11 @@ func TestToolContract_GoldenFile(t *testing.T) {
 func TestToolContract_DefaultSurface(t *testing.T) {
 	t.Setenv("PINCHER_TOOLSET", "")
 	t.Setenv("PINCHER_SCHEMA_STYLE", "")
+	// Router-absent state (router-loop B5, plan §A6): the shipped
+	// default advertisement must be byte-identical to the pre-router
+	// surface — exactly coreToolset, no models/route, zero delta. The
+	// detected-state twin is TestToolContract_DefaultSurface_RouterPresent.
+	t.Setenv("PINCHER_ROUTER", "off")
 	srv, _, _ := newTestServer(t)
 
 	// Advertisement == coreToolset, both directions.
@@ -173,6 +185,92 @@ func TestToolContract_DefaultSurface(t *testing.T) {
 		if want := leanToolDescription(name, richTool.Description); tool.Description != want {
 			t.Errorf("default description for %q is not the lean transform:\n got %q\nwant %q",
 				name, tool.Description, want)
+		}
+	}
+}
+
+// TestToolContract_DefaultSurface_RouterPresent is the detected-state
+// twin of TestToolContract_DefaultSurface (router-loop B5 dual-state
+// goldens, plan §A6). PINCHER_ROUTER=on forces detection without a
+// live router (the item-B4 override: `on` short-circuits the ladder,
+// zero network). The advertisement must be EXACTLY coreToolset plus
+// the two router tools — they join the core advertisement when
+// detected (a routed loop is the core use-case) — with lean
+// descriptions like every other advertised tool, and the full
+// registration underneath unchanged.
+func TestToolContract_DefaultSurface_RouterPresent(t *testing.T) {
+	t.Setenv("PINCHER_TOOLSET", "")
+	t.Setenv("PINCHER_SCHEMA_STYLE", "")
+	t.Setenv("PINCHER_ROUTER", "on")
+	srv, _, _ := newTestServer(t)
+
+	// Advertisement == coreToolset ∪ routerConditionalTools, both directions.
+	for name := range srv.mcpVisible {
+		if !coreToolset[name] && !routerConditionalTools[name] {
+			t.Errorf("router-present default surface advertises %q over MCP — not in coreToolset or routerConditionalTools", name)
+		}
+	}
+	for name := range coreToolset {
+		if !srv.mcpVisible[name] {
+			t.Errorf("router-present default surface does not advertise core tool %q over MCP", name)
+		}
+	}
+	for name := range routerConditionalTools {
+		if !srv.mcpVisible[name] {
+			t.Errorf("router detected but %q is not advertised over MCP — the conditional surface must join the core advertisement when present", name)
+		}
+	}
+
+	// Full registration preserved underneath, exactly as in the absent state.
+	for name := range expectedMCPTools {
+		if _, ok := srv.handlers[name]; !ok {
+			t.Errorf("router-present surface dropped %q from s.handlers — HTTP /v1/%s would 404", name, name)
+		}
+	}
+
+	// The router tools ship lean descriptions under the default style,
+	// including their usage note (leanAuthorityNote) — one sentence +
+	// the load-bearing never-block/ownership clause.
+	t.Setenv("PINCHER_TOOLSET", "full")
+	t.Setenv("PINCHER_SCHEMA_STYLE", "rich")
+	rich, _, _ := newTestServer(t)
+	for name := range routerConditionalTools {
+		got := srv.tools[name]
+		richTool := rich.tools[name]
+		if got == nil || richTool == nil {
+			t.Fatalf("tool %q missing from one of the servers (lean=%v rich=%v)", name, got != nil, richTool != nil)
+		}
+		if want := leanToolDescription(name, richTool.Description); got.Description != want {
+			t.Errorf("default description for %q is not the lean transform:\n got %q\nwant %q", name, got.Description, want)
+		}
+		if note := leanAuthorityNote[name]; note == "" || !strings.Contains(got.Description, note) {
+			t.Errorf("lean description for %q must carry its usage note; note=%q desc=%q", name, note, got.Description)
+		}
+	}
+}
+
+// TestToolContract_RouterAbsent_FullToolset_ZeroSurface pins the
+// anti-leverage guarantee from the other side: even under
+// PINCHER_TOOLSET=full (which advertises every other registered tool),
+// the router tools stay off tools/list when no router was detected —
+// absent means ZERO advertised surface in both toolset modes, while
+// the HTTP /v1/<tool> registration stays (surface decided at startup,
+// liveness per call).
+func TestToolContract_RouterAbsent_FullToolset_ZeroSurface(t *testing.T) {
+	t.Setenv("PINCHER_TOOLSET", "full")
+	t.Setenv("PINCHER_SCHEMA_STYLE", "")
+	t.Setenv("PINCHER_ROUTER", "off")
+	srv, _, _ := newTestServer(t)
+
+	for name := range routerConditionalTools {
+		if srv.mcpVisible[name] {
+			t.Errorf("router absent but %q advertised over MCP under PINCHER_TOOLSET=full — zero-surface-when-absent must hold in both toolset modes", name)
+		}
+		if _, ok := srv.handlers[name]; !ok {
+			t.Errorf("router absent and %q missing from s.handlers — registration must be unconditional (HTTP /v1/%s, batch, contract golden)", name, name)
+		}
+		if _, ok := srv.tools[name]; !ok {
+			t.Errorf("router absent and %q missing from s.tools — OpenAPI/contract surface must keep the full registration", name)
 		}
 	}
 }
