@@ -526,8 +526,22 @@ func TestContext_ModeSkeleton_WorksAfterFileDeleted(t *testing.T) {
 	if !strings.Contains(src, "func Charge(acct *Account, amount int64) (int64, error)") {
 		t.Errorf("context skeleton lost signature after deletion:\n%s", src)
 	}
-	if meta, _ := body["_meta"].(map[string]any); meta == nil || meta["mode"] != modeSkeletonValue {
+	meta, _ := body["_meta"].(map[string]any)
+	if meta == nil || meta["mode"] != modeSkeletonValue {
 		t.Errorf("context _meta.mode=skeleton missing; _meta=%v", body["_meta"])
+	}
+	// #2047: context renders the primary symbol from the index with no file
+	// read, so it carries the same silent-stale risk as the single-symbol
+	// path — it must ALSO stamp the honesty marker, and (the file is gone,
+	// so the os.Stat fails) surface the skeleton_index_stale advisory.
+	if meta == nil || meta["disk_verified"] != false {
+		t.Errorf("expected context _meta.disk_verified=false honesty marker; _meta=%v", meta)
+	}
+	if meta == nil || meta["rendered_from"] != "index" {
+		t.Errorf("expected context _meta.rendered_from=\"index\"; _meta=%v", meta)
+	}
+	if !slices.Contains(warningsV2Codes(body), "skeleton_index_stale") {
+		t.Errorf("expected context warnings_v2 code=skeleton_index_stale after deletion; body=%v", body)
 	}
 }
 
@@ -560,7 +574,92 @@ func TestSymbols_ModeSkeleton_BatchAfterFileDeleted(t *testing.T) {
 	if !strings.Contains(src, "func Charge(acct *Account, amount int64) (int64, error)") {
 		t.Errorf("batch skeleton lost signature after deletion:\n%s", src)
 	}
-	if meta, _ := body["_meta"].(map[string]any); meta == nil || meta["mode"] != modeSkeletonValue {
+	meta, _ := body["_meta"].(map[string]any)
+	if meta == nil || meta["mode"] != modeSkeletonValue {
 		t.Errorf("batch _meta.mode=skeleton missing; _meta=%v", body["_meta"])
+	}
+	// #2047: every entry in a skeleton batch is index-rendered with no file
+	// read, so the whole batch is structure-derived and not byte-verified.
+	// The call-wide honesty marker guarantees no entry is presented as
+	// disk-current. (Per-entry stat gating is deliberately not done on the
+	// batch path — see handleSymbols — so no skeleton_index_stale warning is
+	// asserted here; the marker is the contract.)
+	if meta == nil || meta["disk_verified"] != false {
+		t.Errorf("expected batch _meta.disk_verified=false honesty marker; _meta=%v", meta)
+	}
+	if meta == nil || meta["rendered_from"] != "index" {
+		t.Errorf("expected batch _meta.rendered_from=\"index\"; _meta=%v", meta)
+	}
+}
+
+// contextSkelMeta calls handleContext with mode=skeleton (optionally lite) and
+// returns the decoded _meta plus the full body.
+func contextSkelMeta(t *testing.T, srv *Server, id string, lite bool) (map[string]any, map[string]any) {
+	t.Helper()
+	args := map[string]any{"id": id, "project": "dbskel", "mode": "skeleton"}
+	if lite {
+		args["lite"] = true
+	}
+	res, err := srv.handleContext(context.Background(), makeReq(args))
+	if err != nil {
+		t.Fatalf("handleContext(lite=%v): %v", lite, err)
+	}
+	body := decode(t, res)
+	meta, _ := body["_meta"].(map[string]any)
+	return meta, body
+}
+
+// #2047: handleContext (both the full and lite paths) renders the primary
+// symbol's signature from indexed db.Symbol fields with NO file read — the
+// exact silent-stale hole the single-symbol path closes. This proves the gate
+// is wired on BOTH context paths: clean → honesty marker, no warning;
+// shrink → stat proves drift → skeleton_index_stale.
+func TestContext_ModeSkeleton_StalenessGate(t *testing.T) {
+	t.Parallel()
+
+	for _, lite := range []bool{false, true} {
+		lite := lite
+		name := "full_path"
+		if lite {
+			name = "lite_path"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			// Clean: honesty marker present, no stale warning.
+			t.Run("clean_marker_no_warning", func(t *testing.T) {
+				t.Parallel()
+				srv, _, _ := newTestServer(t)
+				sym, _ := seedDBSkelFunc(t, srv)
+				meta, body := contextSkelMeta(t, srv, sym.ID, lite)
+				if meta == nil || meta["disk_verified"] != false {
+					t.Errorf("expected context _meta.disk_verified=false; _meta=%v", meta)
+				}
+				if meta == nil || meta["rendered_from"] != "index" {
+					t.Errorf("expected context _meta.rendered_from=\"index\"; _meta=%v", meta)
+				}
+				if slices.Contains(warningsV2Codes(body), "skeleton_index_stale") {
+					t.Errorf("clean context skeleton must NOT carry a stale warning; body=%v", body)
+				}
+			})
+
+			// Shrink: rewrite far shorter so EndByte exceeds file size → the
+			// size-stat catches it.
+			t.Run("shrink_emits_stale_warning", func(t *testing.T) {
+				t.Parallel()
+				srv, _, _ := newTestServer(t)
+				sym, dir := seedDBSkelFunc(t, srv)
+				if err := os.WriteFile(filepath.Join(dir, "bank.go"), []byte("// gone\n"), 0o600); err != nil {
+					t.Fatalf("shrink fixture: %v", err)
+				}
+				meta, body := contextSkelMeta(t, srv, sym.ID, lite)
+				if meta == nil || meta["disk_verified"] != false {
+					t.Errorf("expected context _meta.disk_verified=false after shrink; _meta=%v", meta)
+				}
+				if !slices.Contains(warningsV2Codes(body), "skeleton_index_stale") {
+					t.Errorf("expected context warnings_v2 code=skeleton_index_stale after shrink; body=%v", body)
+				}
+			})
+		})
 	}
 }

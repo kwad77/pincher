@@ -6242,6 +6242,17 @@ func (s *Server) handleSymbols(ctx context.Context, req *mcp.CallToolRequest) (*
 			data["_meta"] = meta
 		}
 		meta["mode"] = modeSkeletonValue
+		// #2047: every entry in a skeleton batch is rendered from the index
+		// with NO file read, so the whole batch is structure-derived and not
+		// byte-verified. A single call-wide honesty marker (matching the
+		// "one top-level marker" design above) guarantees no batch entry is
+		// ever presented as disk-current. Per-entry stat gating is
+		// deliberately not done here — it would stat N files on a path
+		// designed to touch zero; the call-wide marker is the honest signal,
+		// and a caller who needs byte-current bytes for a specific id
+		// re-fetches it with mode=full (which runs the per-symbol gate).
+		meta["rendered_from"] = "index"
+		meta["disk_verified"] = false
 	}
 	if detailWarning != "" {
 		attachWarning(data, detailWarning)
@@ -6543,6 +6554,10 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 		}
 		if modeSkeleton && sym.Kind != "Document" {
 			attachModeSkeletonMeta(liteData, sym.EndByte-sym.StartByte, liteSource)
+			// #2047: the lite path renders the same index-derived skeleton
+			// with no file read, so it carries the same silent-stale risk —
+			// gate it identically (honesty marker + cheap os.Stat).
+			s.attachSkeletonStalenessGate(liteData, sym, root)
 		}
 		if detailWarning != "" {
 			attachWarning(liteData, detailWarning)
@@ -6915,6 +6930,12 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// projection, so this is attached after it.
 	if modeSkeleton && sym.Kind != "Document" {
 		attachModeSkeletonMeta(data, sym.EndByte-sym.StartByte, source)
+		// #2047: the same silent-stale hole the single-symbol path closes
+		// applies here — handleContext also renders the primary symbol's
+		// signature from the index with NO file read. Stamp the honesty
+		// marker (disk_verified=false) and the cheap os.Stat stale-gate so a
+		// drifted source isn't served as byte-current via `context` either.
+		s.attachSkeletonStalenessGate(data, sym, root)
 	}
 	if detailWarning != "" {
 		attachWarning(data, detailWarning)
