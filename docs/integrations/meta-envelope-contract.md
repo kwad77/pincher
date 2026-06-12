@@ -210,6 +210,7 @@ Conditional tags (appear only when the corresponding mode is on):
 | `streamable_http` | Streamable-HTTP MCP transport bound |
 | `traces_otlp` | OTLP tracer wired up |
 | `http_auth` | `--http-key` / `PINCHER_HTTP_KEY` set |
+| `router` | A live [pincher-router](https://github.com/kwad77/pincher-router) was detected at server start: config-dir stat (`~/.config/pincher-router/workers.yaml`) or `pincher-router-serve` on `$PATH`, **and** an identity-validated `GET /healthz` (200 + JSON body containing `weights_version`) on the configured/default router address (`PINCHER_ROUTER_ADDR`, default `127.0.0.1:7878`). Override: `PINCHER_ROUTER=off\|auto\|on` (default `auto`; unrecognized values mean `off` — a typo never produces a phantom routing surface). Absent ⇒ zero routing surface; hosts and the pincher-loop skill MUST NOT probe router ports when this tag is missing. |
 
 The agent loop reads capabilities to know which advertised paths
 are real on this specific server. Hosts SHOULD NOT hardcode an
