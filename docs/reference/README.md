@@ -2,7 +2,7 @@
 
 The long-form reference. The [README](../../README.md) is the pitch + quickstart; this folder is the manual. For 10-minute end-to-end walkthroughs, see [`tutorials/`](../tutorials/) — [Claude Code](../tutorials/claude-code.md), [Cursor](../tutorials/cursor.md), [HTTP dashboard](../tutorials/http-dashboard.md).
 
-**Schema version:** v41 · **MCP tools:** 36 registered (11 advertised over `tools/list` by default since v1.6 — schema diet; +2 conditional router proxies, `models`/`route`, advertised only when a live pincher-router is detected; `PINCHER_TOOLSET=full` restores the full surface, every tool always reachable over HTTP `/v1/<tool>`) · **MCP prompts:** 1 (`guide`) · **Languages detected:** ~25 (AST/parser-tier + regex-tier, plus 1 stub-tier — Haskell; see [Language support](languages.md) for the per-tier breakdown)
+**Schema version:** v41 · **MCP tools:** 36 registered (all advertised over `tools/list` by default since #2054 with lean schemas — the v1.6 `core`-only default was reverted because it omitted bootstrap/diagnose-essential tools; +2 conditional router proxies, `models`/`route`, advertised only when a live pincher-router is detected; `PINCHER_TOOLSET=core` narrows to the 11 loop-essential tools for token-tight setups, every tool always reachable over HTTP `/v1/<tool>`) · **MCP prompts:** 1 (`guide`) · **Languages detected:** ~25 (AST/parser-tier + regex-tier, plus 1 stub-tier — Haskell; see [Language support](languages.md) for the per-tier breakdown)
 
 ## Contents
 

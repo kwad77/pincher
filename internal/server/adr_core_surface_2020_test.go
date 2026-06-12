@@ -21,7 +21,7 @@ import (
 // initialize handshake): the default advertisement carries `adr`, and a
 // set → get → list round-trip works without env opt-outs or HTTP.
 func TestADR_CoreMode_MCPRoundTrip(t *testing.T) {
-	t.Setenv("PINCHER_TOOLSET", "") // shipped default = core
+	t.Setenv("PINCHER_TOOLSET", "core") // opt-in core surface (#2054 made full the default)
 	t.Setenv("PINCHER_SCHEMA_STYLE", "")
 	t.Setenv("PINCHER_ROUTER", "off")
 	srv, store, _ := newTestServer(t)

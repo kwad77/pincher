@@ -88,11 +88,11 @@ type Server struct {
 	// of a tool surfaces as a deliberate, reviewable diff.
 	tools map[string]*mcp.Tool
 	// Schema diet (#2003). toolset gates which tools are advertised over
-	// MCP tools/list: "full" (default — every registered tool) or "core"
-	// (coreToolset only; everything else stays reachable via HTTP
-	// /v1/<tool> and as `batch` sub-queries). schemaStyle gates the
-	// registration-time description transform: "rich" (default) or
-	// "lean" (first-sentence descriptions + capped arg descriptions).
+	// MCP tools/list: "full" (default since #2054 — every registered
+	// tool) or "core" (coreToolset only; everything else stays reachable
+	// via HTTP /v1/<tool> and as `batch` sub-queries). schemaStyle gates
+	// the registration-time description transform: "rich" or "lean"
+	// (default — first-sentence descriptions + capped arg descriptions).
 	// mcpVisible records which tools were actually handed to the MCP
 	// SDK — the tools/list surface — for the surface gates and the
 	// schema-weight measurement.
@@ -4215,11 +4215,12 @@ func (s *Server) addTool(tool *mcp.Tool, handler mcp.ToolHandler) {
 			tool.InputSchema = leanInputSchema(raw)
 		}
 	}
-	// Schema diet (#2003), toolset mode: under core (the default since
-	// v1.6, #2005) only the loop-essential coreToolset is advertised
-	// over MCP tools/list. s.handlers and s.tools are ALWAYS populated
-	// regardless — the HTTP /v1/<tool> routes, the OpenAPI spec and
-	// `batch` sub-query dispatch keep the full surface in both modes.
+	// Schema diet (#2003), toolset mode: under the opt-in core toolset
+	// (#2054 made `full` the default) only the loop-essential coreToolset
+	// is advertised over MCP tools/list. s.handlers and s.tools are
+	// ALWAYS populated regardless — the HTTP /v1/<tool> routes, the
+	// OpenAPI spec and `batch` sub-query dispatch keep the full surface
+	// in both modes.
 	advertised := s.toolset != toolsetCore || coreToolset[tool.Name]
 	// Router-loop item B5 (plan §A6, conditional surface discipline):
 	// the models/route tools key the advertisement off the detection
