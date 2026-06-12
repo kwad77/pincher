@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -127,6 +128,34 @@ var routeEchoEnvelopeKeys = []string{
 	"session_id", "tool_name", "complexity_tier", "role", "tokens_used",
 }
 
+// routeEchoRequiredKeys are the OutcomeBody echo keys a validating
+// router demands (see the comment at the head of this file: the
+// dogfood 422 listed session_id, tool_name, complexity_tier, role,
+// routed_model, lane). tokens_used is carried but not gate-required, so
+// it is NOT in this set. A card carrying all of these is a body the
+// router accepts on its own — only then may echo_source claim "caller"
+// without a cache hit (#2036 MED-2).
+var routeEchoRequiredKeys = []string{
+	"session_id", "tool_name", "complexity_tier", "role", "routed_model", "lane",
+}
+
+// routeEchoCardComplete reports whether the OutcomeCard already carries
+// every required echo key with a non-empty value — i.e. the caller
+// echoed the full envelope itself and the router will not 422 it. Used
+// to decide echo_source="caller" on a cache miss honestly.
+func routeEchoCardComplete(card map[string]any) bool {
+	for _, k := range routeEchoRequiredKeys {
+		v, ok := card[k]
+		if !ok || v == nil {
+			return false
+		}
+		if s, isStr := v.(string); isStr && s == "" {
+			return false
+		}
+	}
+	return true
+}
+
 // routeEchoCache is a mutex-guarded bounded LRU of request_id → echo
 // fields. Zero value is ready to use (lazy map init); safe for
 // concurrent handlers. When persistPath is set (server start, see
@@ -189,9 +218,19 @@ func (c *routeEchoCache) loadLocked() {
 	c.order = c.order[:0]
 	// Rebuild order from the persisted slice, keeping only ids that have
 	// a matching entry (defends against a hand-edited or truncated file)
-	// and dropping anything beyond the cap (oldest-first).
+	// and dropping anything beyond the cap (oldest-first). A `seen` set
+	// dedups (#2036 LOW-4): a hand-edited or buggy sidecar with the same
+	// id twice in Order must not append it twice — that would make
+	// len(order) > len(entries), so the cap loop below evicts a LIVE
+	// entry while a phantom duplicate slot survives. order must stay a
+	// true permutation of entries.
+	seen := make(map[string]struct{}, len(snap.Order))
 	for _, id := range snap.Order {
+		if _, dup := seen[id]; dup {
+			continue
+		}
 		if fields, ok := snap.Entries[id]; ok {
+			seen[id] = struct{}{}
 			c.entries[id] = fields
 			c.order = append(c.order, id)
 		}
@@ -217,11 +256,43 @@ func (c *routeEchoCache) saveLocked() {
 	if err != nil {
 		return // map[string]any of scalars — should never fail
 	}
-	tmp := c.persistPath + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	// Unique temp per write (#2036 MED-1): two processes share one
+	// data-dir sidecar (server.go enablePersistence), so a FIXED
+	// c.persistPath+".tmp" would have both writing the same file and
+	// racing renames — the loser's os.Remove deletes the winner's temp,
+	// leaving a torn or absent target. os.CreateTemp mints a distinct
+	// name per write (route_echo_cache.<rand>.tmp), so each writer owns
+	// its temp; only the rename (atomic) competes, and rename is a clean
+	// last-writer-wins with no shared-temp deletion.
+	dir := filepath.Dir(c.persistPath)
+	f, err := os.CreateTemp(dir, "route_echo_cache.*.tmp")
+	if err != nil {
 		slog.Warn("pincher.route_echo.persist_write_failed",
 			"path", c.persistPath, "err", err,
 			"hint", "the echo cache will not survive a respawn this session; a post-restart minimal outcome card may 422 (echo_source:none)")
+		return
+	}
+	tmp := f.Name()
+	if _, err := f.Write(raw); err != nil {
+		f.Close()
+		_ = os.Remove(tmp)
+		slog.Warn("pincher.route_echo.persist_write_failed",
+			"path", c.persistPath, "err", err,
+			"hint", "the echo cache will not survive a respawn this session; a post-restart minimal outcome card may 422 (echo_source:none)")
+		return
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		_ = os.Remove(tmp)
+		slog.Warn("pincher.route_echo.persist_write_failed",
+			"path", c.persistPath, "err", err,
+			"hint", "fsync failed; the echo cache may not survive a respawn this session")
+		return
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		slog.Warn("pincher.route_echo.persist_write_failed",
+			"path", c.persistPath, "err", err)
 		return
 	}
 	if err := os.Rename(tmp, c.persistPath); err != nil {
@@ -532,17 +603,25 @@ func (s *Server) handleRoute(ctx context.Context, req *mcp.CallToolRequest) (*mc
 		//            respawn (auto-restart-on-drift, crash, client
 		//            reconnect), which the caller cannot see. Logged
 		//            loudly for that reason.
+		// #2036 MED-2: echo_source must not LIE. "caller" may only be
+		// claimed when the card the router will actually receive is
+		// COMPLETE — every required echo key present — or on a genuine
+		// cache hit. The prior `callerSession != ""` test let a partial
+		// card (caller supplied session_id but none of the other
+		// required keys) claim "caller" AND suppress the echo_miss warn,
+		// so a real un-echoed 422 was indistinguishable from the happy
+		// path. A partial caller echo is a miss: echo_source "none" and
+		// the warning fires, because the router will 422 it.
 		echoSource := "none"
-		callerSession, _ := card["session_id"].(string)
 		switch {
 		case len(filled) > 0:
 			echoSource = "cache"
-		case cacheHit || callerSession != "":
+		case cacheHit || routeEchoCardComplete(card):
 			echoSource = "caller"
 		default:
 			slog.Warn("pincher.route_outcome.echo_miss",
 				"request_id", routerRequestID(card["request_id"]),
-				"hint", "no cached route call for this request_id (process restart? LRU eviction? foreign id) and the card carries no session_id — a validating router will 422 this body; echo the envelope fields explicitly or re-route")
+				"hint", "no cached route call for this request_id (process restart? LRU eviction? foreign id) and the card lacks the required echo keys (session_id, tool_name, complexity_tier, role, routed_model, lane) — a validating router will 422 this body; echo the envelope fields explicitly or re-route")
 		}
 		body, errRes := s.routerDo(ctx, http.MethodPost, "/v1/outcomes", card)
 		if errRes != nil {

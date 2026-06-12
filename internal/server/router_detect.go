@@ -194,10 +194,31 @@ func RouterHealthzIdentity(url string, timeout time.Duration) (string, bool) {
 		return "", false
 	}
 	wv, ok := parsed["weights_version"]
-	if !ok {
+	if !ok || wv == nil {
+		// #2036 LOW-3: presence alone is not identity. A 200 carrying
+		// {"weights_version": null} (or an absent key) is NOT a
+		// pincher-router — accepting it yielded wv="<nil>" and a false
+		// positive. The handshake field must be a real, non-empty value.
 		return "", false
 	}
-	return fmt.Sprint(wv), true
+	switch v := wv.(type) {
+	case string:
+		if v == "" {
+			return "", false
+		}
+		return v, true
+	case json.Number:
+		if v.String() == "" {
+			return "", false
+		}
+		return v.String(), true
+	case float64, bool:
+		return fmt.Sprint(v), true
+	default:
+		// A non-scalar (object/array) weights_version is not a valid
+		// contract value — reject rather than stringify a map.
+		return "", false
+	}
 }
 
 // RouterInstalledNoProbe runs rungs 1–2 of the detection ladder ONLY
