@@ -778,9 +778,10 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 		// here (not in the per-file goroutine) so no mutex needed.
 		seenFiles[relPath] = true
 
+		priorHash := ""
 		if !force && !binaryDriftForce && !crashRecoveryForce {
-			stored := idx.store.GetFileHash(projectID, relPath)
-			if stored == hash {
+			priorHash = idx.store.GetFileHash(projectID, relPath)
+			if priorHash == hash {
 				totalSkipped++
 				continue
 			}
@@ -798,9 +799,41 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 		// race-free: relPath's incoming edges are only ever cascaded by
 		// relPath's OWN goroutine, which hasn't started yet. Earlier
 		// files' goroutines cascade THEIR incoming edges, not relPath's.
-		if refs, refErr := idx.store.FilesWithEdgesToFile(projectID, relPath); refErr == nil {
-			for _, r := range refs {
-				referrerFiles[r] = true
+		//
+		// #2012: skip the snapshot when its result is statically known
+		// to be empty or unused. With planner stats present the query is
+		// three index seeks (~100µs); on a stats-less DB the planner
+		// degrades it to a full edges-index scan PER FILE — O(files ×
+		// edges), measured at ~85-90% of a 36-minute fresh k8s index.
+		// Two cases are provably skippable:
+		//   - fullReindexCleared: ClearProjectIndexData wiped every
+		//     project row before the walk, so any edge the query could
+		//     see was written THIS run by a file already in
+		//     extractedFiles (referrerFiles ⊆ extractedFiles); and the
+		//     force/crash-recovery paths skip the scoped resolve
+		//     entirely (resolve runs project-wide).
+		//   - a file with zero symbol rows (brand-new file; every file
+		//     on a first-ever index into a fresh DB): the query joins on
+		//     s_to.file_path = relPath, so no symbol rows for relPath
+		//     means an empty result by construction. NOTE: "no files-
+		//     table hash row" is NOT a valid proxy for this — #1543
+		//     language-scoped invalidation and the watcher's
+		//     invalidateReferencers (#427) both clear hash rows while
+		//     leaving symbols (and their inbound edges) in place — hence
+		//     the CountSymbolsInFile probe, a single-table point seek
+		//     the planner cannot degrade.
+		if !fullReindexCleared {
+			mayHaveReferrers := priorHash != ""
+			if !mayHaveReferrers {
+				n, cntErr := idx.store.CountSymbolsInFile(projectID, relPath)
+				mayHaveReferrers = cntErr != nil || n > 0 // on probe error, fall through to the full query
+			}
+			if mayHaveReferrers {
+				if refs, refErr := idx.store.FilesWithEdgesToFile(projectID, relPath); refErr == nil {
+					for _, r := range refs {
+						referrerFiles[r] = true
+					}
+				}
 			}
 		}
 		prog.FilesTotal.Add(1)
@@ -1722,6 +1755,22 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 	// nothing's changed, so it's safe to call even on incremental indexes
 	// where most files were skipped via content-hash.
 	_ = idx.store.Optimize()
+
+	// #2012: guarantee sqlite_stat1 holds real rows for the graph tables
+	// before the next run (PRAGMA optimize is heuristic about which tables
+	// it analyzes; this probe+ANALYZE is the hard backstop). Open()'s
+	// ANALYZE only fires on an EMPTY fresh DB — empty tables yield no stat
+	// rows — and a stats-less planner degrades FilesWithEdgesToFile from
+	// three index seeks to a full edges-index scan per call (measured
+	// 2,580×). Placed at the tail, NOT mid-extraction, deliberately: stats
+	// appearing mid-run change candidate-row scan order inside the resolve
+	// block's unordered ambiguous-binding queries, making a fresh index's
+	// edge set differ from an identical stats-present run. Here it only
+	// affects subsequent (watcher/incremental) runs, which already see
+	// post-optimize stats. One-shot per Store: cached after first success.
+	if err := idx.store.EnsurePlannerStats(); err != nil {
+		slog.Debug("pincher.index.planner_stats.err", "err", err)
+	}
 
 	// Force the WAL back toward zero before queries resume. Index() is the
 	// natural quiet point — no readers should be waiting on the pre-index

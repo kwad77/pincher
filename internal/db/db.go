@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tkz "github.com/tiktoken-go/tokenizer"
@@ -88,6 +89,12 @@ type Store struct {
 	lastStartupMigrationInvalidates  MigrationInvalidates
 	lastStartupMigrationsAppliedFrom int // schema version at Open()
 	lastStartupMigrationsAppliedTo   int // schema version after migrate()
+
+	// plannerStatsSeeded caches "sqlite_stat1 has real rows for the graph
+	// tables" so EnsurePlannerStats (#2012) is one atomic load after its
+	// first success. Process-local: a fresh Open() re-probes, which is
+	// correct (the stats live in the DB file).
+	plannerStatsSeeded atomic.Bool
 }
 
 // LastStartupMigrationInvalidates returns the union of invalidates
@@ -557,6 +564,45 @@ func (s *Store) Close() error {
 func (s *Store) Optimize() error {
 	_, err := s.db.Exec("PRAGMA optimize")
 	return err
+}
+
+// EnsurePlannerStats makes sure sqlite_stat1 holds real rows for the core
+// graph tables, running one ANALYZE if it doesn't (#2012).
+//
+// Open() seeds ANALYZE only on a brand-new EMPTY database, and empty tables
+// produce no sqlite_stat1 rows — so the entire first index run into a fresh
+// data-dir otherwise executes every query on a stats-less planner. For
+// FilesWithEdgesToFile that flips a three-seek plan into a full edges-index
+// scan per call (measured 101µs → 261ms on a 78k-edge table; O(files×edges)
+// across an index run). The indexer calls this after its first batch flush,
+// i.e. as soon as real rows exist to sample.
+//
+// Cheap by construction: after the first success this is a single atomic
+// load. The one-time ANALYZE runs on the writer pool (it queues behind the
+// single writer like any other write — no nested transaction, no lock-order
+// hazard) and at first-flush table sizes (~500 symbols) completes in
+// milliseconds. Reader-pool prepared statements re-plan automatically
+// because ANALYZE bumps the schema cookie.
+func (s *Store) EnsurePlannerStats() error {
+	if s.plannerStatsSeeded.Load() {
+		return nil
+	}
+	var n int
+	err := s.ro.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_stat1 WHERE tbl IN ('symbols', 'edges')`,
+	).Scan(&n)
+	if err == nil && n > 0 {
+		s.plannerStatsSeeded.Store(true)
+		return nil
+	}
+	// sqlite_stat1 missing, unreadable, or empty for the graph tables —
+	// (re)build it. Errors surface to the caller for logging but are
+	// non-fatal by contract: a stats-less planner is slow, not wrong.
+	if _, err := s.db.Exec(`ANALYZE`); err != nil {
+		return err
+	}
+	s.plannerStatsSeeded.Store(true)
+	return nil
 }
 
 // CheckpointTruncate runs PRAGMA wal_checkpoint(TRUNCATE), folding the WAL
@@ -4094,7 +4140,26 @@ func (s *Store) GetSymbolsByIDs(projectID string, ids []string) (map[string]*Sym
 
 // GetSymbolsByName finds symbols by short name across a project.
 func (s *Store) GetSymbolsByName(projectID, name string, limit int) ([]Symbol, error) {
-	return s.querySymbols(symSelectFrom+` WHERE project_id=? AND name=? LIMIT ?`, projectID, name, limit)
+	syms, err := s.querySymbols(symSelectFrom+` WHERE project_id=? AND name=? LIMIT ?`, projectID, name, limit)
+	if err != nil {
+		return nil, err
+	}
+	// Sort by id (#2012 follow-on to #428): without an order, SQLite
+	// returns equal-key idx_sym_name entries in rowid — i.e. INSERTION —
+	// order, which for the indexer means worker-flush-completion order: a
+	// timing artifact. The resolve passes pick the FIRST Method candidate
+	// of a bare name from this result, so an unordered scan made ambiguous
+	// binding_pass edges (e.g. which extractor's `Confidence` a bare read
+	// binds to) flip with flush batching, dispatch-loop speed, or planner
+	// stats. Sorting the fetched rows in Go keeps the query's streaming
+	// early-stop LIMIT plan (an SQL ORDER BY forces materializing EVERY
+	// same-name row before LIMIT — measured 120× slower on the resolve
+	// block) while making the pick deterministic and #428-canonical
+	// (lexicographically smallest ID) for every name with ≤limit matches.
+	// Names with >limit matches keep the pre-existing arbitrary-subset
+	// behaviour.
+	sort.Slice(syms, func(i, j int) bool { return syms[i].ID < syms[j].ID })
+	return syms, nil
 }
 
 // GetSymbolsByQN finds symbols by qualified name in a project.
