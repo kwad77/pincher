@@ -19,7 +19,7 @@ import (
 func TestDashboardJS_SearchDebounce(t *testing.T) {
 	t.Parallel()
 	js := renderDashboardJS("")
-	html := renderDashboard("")
+	html := renderDashboard("", false)
 
 	for _, needle := range []string{
 		"function debounce",

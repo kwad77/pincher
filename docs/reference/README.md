@@ -11,5 +11,6 @@ The long-form reference. The [README](../../README.md) is the pitch + quickstart
 - [pinchQL query reference](pinchql.md) — the graph-query language grammar and supported operators/clauses/kinds.
 - [Language support](languages.md) — per-language extraction table, capability matrix, v1.0 fitness declaration, skip rules, bloat traps, cross-process safety.
 - [HTTP REST API](http-api.md) — `POST /v1/{tool}`, additional endpoints, server-side env knobs, observability.
+- [Routing with pincher-router](routing.md) — detection ladder, `PINCHER_ROUTER`/`PINCHER_ROUTER_ADDR`, the conditional `models`/`route` surface, the dispatch verse, `init --router`, the dashboard Models tab, governance/cost-consent, the `local_only` privacy gate.
 - [CLI subcommands & flags](cli.md) — every `pincher` subcommand, CLI flags, environment variables, data directory.
 - For release themes, roadmap, and known limitations, see the [repo README](../../README.md).

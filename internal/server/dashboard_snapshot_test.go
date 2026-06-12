@@ -30,26 +30,42 @@ var updateDashboardSnapshot = flag.Bool("update-dashboard-snapshot", false,
 	"overwrite testdata/dashboard/*.html with the current renderer output")
 
 func TestDashboardHTMLSnapshot(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel: the per-case router-state pin below uses t.Setenv.
 	cases := []struct {
 		name    string
 		path    string
 		fixture string
+		router  string // PINCHER_ROUTER pin — dual-state goldens (router-loop B12, plan §A6)
 	}{
 		{
 			name:    "no-basepath",
 			path:    "/v1/dashboard",
 			fixture: "testdata/dashboard/no_basepath.html",
+			router:  "off",
 		},
 		{
 			name:    "with-basepath",
 			path:    "/pincher/v1/dashboard",
 			fixture: "testdata/dashboard/with_basepath.html",
+			router:  "off",
+		},
+		{
+			// Router-present golden (router-loop B12): PINCHER_ROUTER=on
+			// forces detection without any network probe (the item-B4
+			// override), so the Models tab renders. The two fixtures
+			// above are pinned with router=off and were NOT regenerated
+			// for B12 — their byte-identity to the pre-B12 dashboard IS
+			// the zero-surface-when-absent assertion for the HTML.
+			name:    "router-present",
+			path:    "/v1/dashboard",
+			fixture: "testdata/dashboard/router_present.html",
+			router:  "on",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("PINCHER_ROUTER", tc.router)
 			srv, _, _ := newTestServer(t)
 			// trustProxy is required for the with-basepath case since
 			// X-Forwarded-Prefix is the only signal a reverse-proxied

@@ -107,7 +107,7 @@ func TestADR_Set_AcceptsExactlyAtLimit(t *testing.T) {
 // the form silently accepts then errors on submit.
 func TestDashboard_ADRFormMaxlengthMatchesBackend(t *testing.T) {
 	t.Parallel()
-	html := renderDashboard("")
+	html := renderDashboard("", false)
 	if !strings.Contains(html, `id="adr-key" type="text" maxlength="256"`) {
 		t.Errorf("dashboard ADR key input missing maxlength=256 (#534)")
 	}

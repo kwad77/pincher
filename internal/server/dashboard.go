@@ -12,9 +12,56 @@ import "strings"
 // CSP drop 'unsafe-inline' from script-src and style-src — XSS that injects
 // inline <script> content is now blocked by the browser even if it bypasses
 // our esc() escape pipeline.
-func renderDashboard(prefix string) string {
-	return strings.ReplaceAll(dashboardTemplate, "__PINCHER_BASEPATH__", normalizeBasePath(prefix))
+//
+// routerDetected gates the Models tab (router-loop item B12): the tab
+// button and pane are substituted in ONLY when the startup detection
+// ladder found a live pincher-router (s.routerDetected — the same
+// conditional-surface discipline as the models/route MCP tools, plan
+// §A6). Absent ⇒ the rendered HTML is byte-identical to the
+// router-less dashboard: no tab, no pane, and therefore no /v1/models
+// fetch is ever issued by the JS (loadModels only runs from a tab
+// that doesn't exist). The substitution tokens sit flush against
+// their neighbours in dashboardTemplate so the empty replacement
+// leaves zero whitespace residue — the absent-state snapshot fixtures
+// pin this byte-for-byte.
+func renderDashboard(prefix string, routerDetected bool) string {
+	html := strings.ReplaceAll(dashboardTemplate, "__PINCHER_BASEPATH__", normalizeBasePath(prefix))
+	tab, pane := "", ""
+	if routerDetected {
+		tab = dashboardModelsTabButton
+		pane = dashboardModelsTabPane
+	}
+	html = strings.Replace(html, "__PINCHER_ROUTER_TAB__", tab, 1)
+	html = strings.Replace(html, "__PINCHER_ROUTER_PANE__", pane, 1)
+	return html
 }
+
+// dashboardModelsTabButton / dashboardModelsTabPane are the
+// router-gated Models tab fragments (router-loop item B12). Kept as
+// separate constants (not inline in dashboardTemplate) so the
+// absent-state substitution is a clean empty string — zero surface
+// when no router is detected, exactly like the models/route MCP
+// advertisement. The pane is READ-ONLY by design: the router owns all
+// registry state, pincher never writes workers.yaml, and the reserved
+// enable/disable/test mutations answer with a structured error at the
+// tool layer — so the dashboard renders no mutation controls at all
+// (the governance line: paid workers are listed, never enabled, from
+// here).
+const dashboardModelsTabButton = `
+  <button class="tab-btn" data-action="showTab" data-args='["models"]'>Models</button>`
+
+const dashboardModelsTabPane = `
+
+<!-- MODELS (router-gated: this pane only renders when a live
+     pincher-router was detected at startup) -->
+<div id="tab-models" class="tab-pane">
+<main>
+  <p class="tab-intro">The pincher-router worker registry, proxied read-only from <code>GET /v1/models</code>. The router owns all registry state — enable/disable workers with <code>pincher models</code> against a router that exposes mutation, or edit <code>~/.config/pincher-router/workers.yaml</code> (declared entries) directly. Paid workers stay listed-but-disabled until you explicitly enable them.</p>
+  <div class="backend-status" id="models-handshake"><div class="loading">Loading…</div></div>
+  <p class="section-title">Workers</p>
+  <div id="models-table-wrap"><div class="loading">Loading…</div></div>
+</main>
+</div>`
 
 // renderDashboardJS returns the dashboard JavaScript with the reverse-proxy
 // basepath substituted into the BP constant. Served from /v1/dashboard.js.
@@ -93,7 +140,7 @@ const dashboardTemplate = `<!DOCTYPE html>
   <button class="tab-btn" data-action="showTab" data-args='["graph"]'>Graph</button>
   <button class="tab-btn" data-action="showTab" data-args='["search"]'>Search</button>
   <button class="tab-btn" data-action="showTab" data-args='["adrs"]'>ADRs</button>
-  <button class="tab-btn" data-action="showTab" data-args='["sessions"]'>Sessions</button>
+  <button class="tab-btn" data-action="showTab" data-args='["sessions"]'>Sessions</button>__PINCHER_ROUTER_TAB__
 </nav>
 
 <!-- OVERVIEW -->
@@ -270,7 +317,7 @@ const dashboardTemplate = `<!DOCTYPE html>
   </div>
   <div id="sessions-table-wrap"><div class="loading">Loading…</div></div>
 </main>
-</div>
+</div>__PINCHER_ROUTER_PANE__
 
 <div class="footer">pincherMCP · <a href="__PINCHER_BASEPATH__/v1/openapi.json" target="_blank">OpenAPI</a> · <a href="__PINCHER_BASEPATH__/v1/health" target="_blank">Health</a></div>
 <div class="toast" id="toast"></div>
@@ -1012,6 +1059,13 @@ async function extractErrMsg(r) {
 }
 
 function showTab(name) {
+  // Router-gated tabs (Models, router-loop B12) only exist when the
+  // server detected a live pincher-router at startup. A stale #models
+  // hash (or bookmark) against a router-less server must neither
+  // crash tab nav nor trigger a /v1/models fetch — fall back to the
+  // overview. Zero-surface-when-absent applies to the JS too.
+  if (!document.getElementById('tab-'+name)) name = 'overview';
+
   // #539: abort every other tab's in-flight fetches before switching.
   // The tab we're switching TO will get a fresh controller from its
   // load*() call below.
@@ -1029,6 +1083,7 @@ function showTab(name) {
   if (name === 'insights') load();
   if (name === 'doctor') loadDoctor();
   if (name === 'graph') loadGraph();
+  if (name === 'models') loadModels();
   if (name === 'search') document.getElementById('search-q').focus();
 }
 
@@ -2256,6 +2311,104 @@ async function loadSessions() {
   }
 }
 
+// ── Models tab (router-gated, router-loop item B12) ────────────────────────
+// Renders the pincher-router worker registry, proxied through pincher's
+// read-only models tool (POST /v1/models — tool endpoints are POST-only;
+// the proxy GETs the router's /v1/models underneath and passes the body
+// through verbatim, handshake included). Only reachable when the server
+// rendered the Models tab, i.e. a live router was detected at startup —
+// on a router-less server the pane does not exist and no fetch is ever
+// issued (zero-surface-when-absent, plan §A6). Read-only BY DESIGN: the
+// router owns all registry state, pincher never writes workers.yaml,
+// and registry mutations answer with a structured error at the tool
+// layer — so this pane ships no enable/disable controls at all. Paid
+// workers therefore stay listed-but-disabled from here, always (the
+// governance / cost-consent line).
+const MODELS_STALE_HOURS = 24; // ghost-worker bar — same 24h the heartbeat scan uses (plan §A7)
+
+function _modelStatus(m) {
+  if (!m.enabled) return ['disabled', 'badge badge-muted'];
+  if (!m.last_seen) return ['enabled · never probed', 'badge badge-blue'];
+  const ageH = (Date.now() - new Date(m.last_seen)) / 36e5;
+  if (isNaN(ageH)) return ['enabled', 'badge badge-blue'];
+  if (ageH <= MODELS_STALE_HOURS) return ['live', 'badge badge-green'];
+  // enabled but unseen past the ghost bar — the disable-not-delete
+  // contract keeps the row; surface the staleness instead of hiding it.
+  return ['stale ' + Math.floor(ageH) + 'h', 'badge badge-muted'];
+}
+
+// null/absent cost is free-by-construction in registry v2 (local +
+// host-subagent workers carry no price). Render the raw spec verbatim
+// otherwise — no model-price guesses (#476 SAVINGS_HONESTY applies
+// here too: the registry's own numbers or nothing).
+const _fmtCost = v => (v == null || v === '') ? 'free' : String(v);
+
+async function loadModels() {
+  const wrap = document.getElementById('models-table-wrap');
+  const hsEl = document.getElementById('models-handshake');
+  if (!wrap || !hsEl) return; // router absent: pane never rendered, never fetch
+  wrap.innerHTML = skeletonRows(6, 'line'); // #541
+  try {
+    const r = await tabFetch('models', '/v1/models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"action":"list"}' });
+    if (!r.ok) { hsEl.innerHTML = ''; setTabError('models-table-wrap', 'Failed to load worker registry: ' + (await extractErrMsg(r)), 'loadModels'); return; }
+    const data = await r.json();
+
+    // Handshake chips — contract v2's single version-skew mechanism.
+    const hs = data.handshake || {};
+    const chip = (label, value) => '<span class="backend-chip backend-chip-on"><span class="backend-chip-label">' + esc(label) + '</span><span class="backend-chip-value">' + esc(String(value)) + '</span></span>';
+    const chips = [];
+    if (hs.contract_version != null) chips.push(chip('contract', 'v' + hs.contract_version));
+    if (hs.weights_version != null) chips.push(chip('weights', hs.weights_version));
+    if (hs.registry_version != null) chips.push(chip('registry', 'v' + hs.registry_version));
+    (hs.capabilities || []).forEach(c => chips.push(chip('cap', c)));
+    hsEl.innerHTML = chips.length ? chips.join('') :
+      '<span class="backend-chip backend-chip-off"><span class="backend-chip-value">no handshake (pre-v2 router)</span></span>';
+
+    // Version-skew hint / registry errors render in-pane, not as a
+    // failure: installed-but-old is a state, not an error.
+    let notice = '';
+    if (data.hint) notice += '<div class="error">' + esc(data.hint) + '</div>';
+    if (data.registry_error) notice += '<div class="error">' + esc(data.registry_error) + '</div>';
+
+    // Flatten providers → models into one worker row each.
+    const rows = [];
+    const providers = data.providers || {};
+    Object.keys(providers).sort().forEach(pname => {
+      const models = (providers[pname] || {}).models || {};
+      Object.keys(models).sort().forEach(mid => {
+        rows.push(Object.assign({ provider: pname, model_id: mid }, models[mid]));
+      });
+    });
+    if (!rows.length) {
+      wrap.innerHTML = notice + '<div class="empty">Registry is empty — run pincher-router-discover. Found local backends register enabled; env-key catalogs register disabled until explicitly enabled (listed, never auto-enabled).</div>';
+      return;
+    }
+    wrap.innerHTML = notice + '<table class="tool-breakdown-table"><thead><tr>' +
+      '<th>Worker</th><th>Kind</th><th>Tier</th><th>Status</th>' +
+      '<th class="num">Cost in / out</th><th>Last seen</th><th>Source</th>' +
+      '<th class="num" title="Per-worker win-rate from gated outcomes — placeholder until the router exposes outcome stats over the contract. Every route action=outcome report feeds it.">Win-rate</th>' +
+      '</tr></thead><tbody>' +
+      rows.map(m => {
+        const st = _modelStatus(m);
+        return '<tr>' +
+          '<td><code>' + esc(m.provider) + '/' + esc(m.model_id) + '</code></td>' +
+          '<td>' + esc(m.kind || '—') + '</td>' +
+          '<td>' + esc(Array.isArray(m.tier) ? m.tier.join(', ') : (m.tier || '—')) + '</td>' +
+          '<td><span class="' + st[1] + '">' + esc(st[0]) + (m.enabled_by ? ' · ' + esc(m.enabled_by) : '') + '</span></td>' +
+          '<td class="num">' + esc(_fmtCost(m.cost_in)) + ' / ' + esc(_fmtCost(m.cost_out)) + '</td>' +
+          '<td>' + (m.last_seen ? timeAgo(m.last_seen) : '—') + '</td>' +
+          '<td>' + esc(m.source || '—') + '</td>' +
+          '<td class="num" title="Arrives with the router outcome-stats surface">—</td>' +
+          '</tr>';
+      }).join('') +
+      '</tbody></table>';
+  } catch (e) {
+    if (e.name === 'AbortError') return; // #539: superseded by newer call
+    hsEl.innerHTML = '';
+    setTabError('models-table-wrap', 'Failed to load worker registry: ' + e.message, 'loadModels');
+  }
+}
+
 // ── Doctor tab ─────────────────────────────────────────────────────────────
 // Mirrors the CLI 'pincher doctor' report over /v1/doctor: environment,
 // advisories, per-project health with drift flagging, extraction
@@ -2665,7 +2818,10 @@ function _parseHash() {
 }
 function _restoreFromHash() {
   const { tab, project } = _parseHash();
-  if (['overview','projects','graph','search','adrs','sessions','insights','doctor'].includes(tab)) {
+  if (['overview','projects','graph','search','adrs','sessions','insights','doctor','models'].includes(tab)) {
+    // 'models' is router-gated (B12): showTab itself falls back to
+    // overview when the pane wasn't rendered, so a stale #models hash
+    // on a router-less server is harmless (and fetch-free).
     showTab(tab);
   }
   // #554: if hash includes a project ID, open the detail panel for it

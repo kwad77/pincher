@@ -114,7 +114,7 @@ func TestDashboardJS_ConfigurableRefresh(t *testing.T) {
 			t.Errorf("dashboard JS missing %q — #552 configurable refresh incomplete", needle)
 		}
 	}
-	html := renderDashboard("")
+	html := renderDashboard("", false)
 	if !strings.Contains(html, `id="refresh-select"`) {
 		t.Errorf("header missing #refresh-select — #552 control not present")
 	}
