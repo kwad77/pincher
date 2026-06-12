@@ -733,6 +733,11 @@ var readerRoutedStoreMethods = map[string]bool{
 	// hook_invocations - reader-routed.
 	"HookReadPathsUnderRoot":  true,
 	"HookIndexAdvisedForRoot": true,
+	// router-loop §A2 advise-route: per-session Task threshold counter
+	// + once-per-session suppression check. Both pure SELECTs over
+	// hook_invocations — reader-routed.
+	"HookTaskEventsInSession":   true,
+	"HookRouteAdvisedInSession": true,
 	// coach telemetry readers — pure SELECT / PRAGMA over recorded
 	// telemetry; coach never mutates what it mines.
 	"ToolCallsSince":                true,

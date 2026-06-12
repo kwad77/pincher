@@ -351,3 +351,66 @@ func TestCapability_RouterServedOverHTTP(t *testing.T) {
 		t.Errorf("router missing from GET /v1/capabilities in detected state; got %v", caps)
 	}
 }
+
+// ── RouterInstalledNoProbe (rungs 1–2 only — the hook advisory seam,
+//    router-loop §A2 / item B8) ───────────────────────────────────────────
+
+// TestRouterInstalledRungs12_NeverDialsAndAnswersByInstallIntent pins
+// the no-network contract: the hook-side detection MUST answer from
+// rungs 1–2 alone (config stat + LookPath) inside the <50ms hook
+// budget. A configured healthz hit-counter proves no rung-3 dial ever
+// happens, in any mode.
+func TestRouterInstalledRungs12_NeverDialsAndAnswersByInstallIntent(t *testing.T) {
+	srv, hits := fakeRouter(t, http.StatusOK, `{"ok": true, "weights_version": "vX"}`)
+	cases := []struct {
+		name       string
+		mode       string
+		configPath string
+		lookPath   func(string) (string, error)
+		want       bool
+	}{
+		{"off forces absent even when installed", routerModeOff, tempWorkersYAML(t), lookPathHit, false},
+		{"on forces installed", routerModeOn, "", lookPathMiss, true},
+		{"auto + config file (rung 1)", routerModeAuto, tempWorkersYAML(t), lookPathMiss, true},
+		{"auto + binary on PATH (rung 2)", routerModeAuto, filepath.Join(t.TempDir(), "missing.yaml"), lookPathHit, true},
+		{"auto + neither rung", routerModeAuto, filepath.Join(t.TempDir(), "missing.yaml"), lookPathMiss, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := routerProbeConfig{
+				mode:       tc.mode,
+				configPath: tc.configPath,
+				binary:     routerServeBinary,
+				healthzURL: srv.URL + "/healthz",
+				timeout:    routerProbeTimeout,
+				lookPath:   tc.lookPath,
+			}
+			if got := routerInstalledRungs12(cfg); got != tc.want {
+				t.Errorf("routerInstalledRungs12 = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if n := atomic.LoadInt64(hits); n != 0 {
+		t.Errorf("rungs-1–2 detection dialed the network %d time(s) — the hook seam must never probe", n)
+	}
+}
+
+// TestRouterInstalledNoProbe_EnvContract drives the exported wrapper
+// through PINCHER_ROUTER: off (and the typo fail-direction) answers
+// absent without touching the machine state; on forces installed.
+// The auto rungs are covered above with injected paths — auto against
+// the real machine would make the test depend on what's installed.
+func TestRouterInstalledNoProbe_EnvContract(t *testing.T) {
+	t.Setenv("PINCHER_ROUTER", "off")
+	if RouterInstalledNoProbe() {
+		t.Error("PINCHER_ROUTER=off must answer absent")
+	}
+	t.Setenv("PINCHER_ROUTER", "offf") // typo: fail direction is absent
+	if RouterInstalledNoProbe() {
+		t.Error("typo'd PINCHER_ROUTER must answer absent")
+	}
+	t.Setenv("PINCHER_ROUTER", "on")
+	if !RouterInstalledNoProbe() {
+		t.Error("PINCHER_ROUTER=on must answer installed")
+	}
+}

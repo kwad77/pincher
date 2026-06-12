@@ -7387,6 +7387,54 @@ func (s *Store) HookIndexAdvisedForRoot(sessionID, root string) bool {
 	return n > 0
 }
 
+// HookTaskEventsInSession counts the prior `Task`-tool hook_invocations
+// rows for the session — the free per-session subagent-spawn counter
+// behind the advise_route recruitment advisory (router-loop plan §A2 /
+// item B8, the #2016 mechanism on a new trigger tool). The hook
+// subprocess keeps no state of its own, but every prior Task
+// invocation already wrote a row carrying (session_id, tool_name);
+// counting those rows IS the "≥2 prior Task events this session"
+// threshold check, with no new table or migration. Cheap point query
+// on idx_hook_session. Reader-routed; best-effort (0 on error — the
+// advisory is supplementary, never load-bearing, and an undercount
+// at worst delays it one event).
+func (s *Store) HookTaskEventsInSession(sessionID string) int {
+	if sessionID == "" {
+		return 0
+	}
+	var n int
+	if err := s.ro.QueryRow(
+		`SELECT COUNT(1) FROM hook_invocations
+		  WHERE session_id = ? AND tool_name = 'Task'`,
+		sessionID,
+	).Scan(&n); err != nil {
+		return 0
+	}
+	return n
+}
+
+// HookRouteAdvisedInSession reports whether the advise_route advisory
+// already fired for the session — the once-per-SESSION suppression
+// check (plan §A2: unlike advise_index's per-(session, root) key, the
+// route advisory's scope is the whole session; its file_path column
+// carries the session key, which keeps the take-rate join measurable).
+// Reader-routed; best-effort (false on error, which at worst repeats
+// an advisory).
+func (s *Store) HookRouteAdvisedInSession(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	var n int
+	if err := s.ro.QueryRow(
+		`SELECT COUNT(1) FROM hook_invocations
+		  WHERE session_id = ? AND decision = 'advise_route'`,
+		sessionID,
+	).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
+}
+
 // HookSavings7d sums the v41 per-redirect savings telemetry over the
 // trailing 7 days: estServed = estimated tokens of the suggested
 // `context lite=true` responses, baseline = estimated tokens the

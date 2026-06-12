@@ -110,6 +110,12 @@ func matchIndexedFile(store *db.Store, absPath string) (relPath string, fileByte
 //     search (advertised in both modes) under the core default
 //   - pass through when path is absent, outside every indexed
 //     project, or the pattern isn't code-shaped
+//
+// Decision logic for Task (router-loop §A2, advise_route):
+//   - one-time recruitment advisory when a pincher-router install is
+//     detected (ladder rungs 1–2, no network) and this is at least
+//     the third Task event this session; once per session
+//   - pass through (silently) everywhere else — always advisory
 func runHookCheckCLI(args []string) {
 	fs := flag.NewFlagSet("hook-check", flag.ExitOnError)
 	dataDir := fs.String("data-dir", "", "Override data directory (default: platform-appropriate)")
@@ -269,6 +275,8 @@ func decideHook(store *db.Store, in hookCheckInput, debug bool) hookDecision {
 		return decideGrepHook(store, in, debug)
 	case "Glob":
 		return decideGlobHook(store, in, debug)
+	case "Task":
+		return decideTaskSpawn(store, in, debug)
 	default:
 		return hookDecision{Continue: true, Decision: "pass_through"}
 	}
