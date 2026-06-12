@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -70,13 +71,27 @@ const (
 	// into a structured tool error.
 	routerErrBodyMax = 300
 
-	// routeEchoCacheCap bounds the per-process request_id → echo-fields
-	// cache (item B10 pincher half). 64 in-flight routed task units is
-	// far beyond any real loop's concurrency; the cache exists for the
-	// route → gate → outcome window of a single session, not as a
-	// durable store — older entries evict LRU-first and a miss just
-	// passes the card through unchanged.
+	// routeEchoCacheCap bounds the request_id → echo-fields cache (item
+	// B10 pincher half). 64 in-flight routed task units is far beyond any
+	// real loop's concurrency; the cache exists for the route → gate →
+	// outcome window of a session — older entries evict LRU-first and a
+	// miss just passes the card through unchanged.
 	routeEchoCacheCap = 64
+
+	// routeEchoPersistFile is the data-dir-keyed JSON sidecar that makes
+	// the cache survive a process respawn (#2036, the durability half of
+	// #2032). The #2033 root cause: the LRU is in-process, so an
+	// auto-restart-on-drift respawn (auto_restart.go) — or a crash, or an
+	// MCP client reconnect — between a same-session route and its outcome
+	// wipes the cache and the minimal card 422s, invisibly to the caller.
+	// Persisting the bounded (≤routeEchoCacheCap) map to one small JSON
+	// file beside the SQLite store closes that gap with no new dependency
+	// and no schema migration: the next process loads it on New() and the
+	// post-respawn outcome card auto-fills as if no restart happened. The
+	// file is best-effort throughout — any read/write error degrades to
+	// the pre-#2036 in-process-only behaviour (echo_source:none + the
+	// honest 422), never an error or a stall.
+	routeEchoPersistFile = "route_echo_cache.json"
 )
 
 // Outcome auto-echo (router-loop item B10, pincher half). Measured
@@ -114,15 +129,110 @@ var routeEchoEnvelopeKeys = []string{
 
 // routeEchoCache is a mutex-guarded bounded LRU of request_id → echo
 // fields. Zero value is ready to use (lazy map init); safe for
-// concurrent handlers.
+// concurrent handlers. When persistPath is set (server start, see
+// New) the LRU is mirrored to a JSON sidecar so it survives a process
+// respawn (#2036) — load() seeds it on startup, put() flushes it after
+// each write. persistPath == "" keeps the pure in-process behaviour
+// (every test that does not opt into persistence, and PINCHER_ROUTER=off
+// where there is no routing activity to remember).
 type routeEchoCache struct {
-	mu      sync.Mutex
-	entries map[string]map[string]any
-	order   []string // front = least recently used
+	mu          sync.Mutex
+	entries     map[string]map[string]any
+	order       []string // front = least recently used
+	persistPath string   // "" ⇒ in-process only (no sidecar)
+}
+
+// routeEchoSnapshot is the on-disk shape: the LRU order plus the
+// fields, so recency survives the respawn too (a reload that lost order
+// would evict the wrong entry on the next put). One file, rewritten
+// whole on each put — the map is bounded at routeEchoCacheCap so the
+// write is a few KB at most.
+type routeEchoSnapshot struct {
+	Order   []string                  `json:"order"`
+	Entries map[string]map[string]any `json:"entries"`
+}
+
+// enablePersistence points the cache at a data-dir-keyed sidecar and
+// seeds it from any prior process's file. Best-effort: a missing or
+// corrupt file just starts the cache empty (the pre-#2036 cold-start
+// shape). Called once from New() before any handler can run, so no lock
+// is contended; it still takes c.mu to satisfy the race detector.
+func (c *routeEchoCache) enablePersistence(path string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.persistPath = path
+	c.loadLocked()
+}
+
+// loadLocked reads the sidecar into the in-memory LRU. Caller holds
+// c.mu. Any error (absent file, bad JSON, partial write) leaves the
+// cache empty — persistence is never allowed to fail startup.
+func (c *routeEchoCache) loadLocked() {
+	if c.persistPath == "" {
+		return
+	}
+	raw, err := os.ReadFile(c.persistPath)
+	if err != nil {
+		return // absent on first run, or unreadable — start empty
+	}
+	var snap routeEchoSnapshot
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		slog.Warn("pincher.route_echo.persist_load_corrupt",
+			"path", c.persistPath, "err", err,
+			"hint", "ignoring the sidecar and starting the echo cache empty; it will be rewritten on the next route consult")
+		return
+	}
+	if snap.Entries == nil {
+		return
+	}
+	c.entries = make(map[string]map[string]any, routeEchoCacheCap)
+	c.order = c.order[:0]
+	// Rebuild order from the persisted slice, keeping only ids that have
+	// a matching entry (defends against a hand-edited or truncated file)
+	// and dropping anything beyond the cap (oldest-first).
+	for _, id := range snap.Order {
+		if fields, ok := snap.Entries[id]; ok {
+			c.entries[id] = fields
+			c.order = append(c.order, id)
+		}
+	}
+	for len(c.order) > routeEchoCacheCap {
+		delete(c.entries, c.order[0])
+		c.order = c.order[1:]
+	}
+}
+
+// saveLocked rewrites the sidecar from the current LRU. Caller holds
+// c.mu. Atomic via temp-file + rename so a crash mid-write never leaves
+// a half-written file the next process would choke on. Best-effort: a
+// write failure logs once and leaves the in-memory cache authoritative
+// for this process (the durability guarantee is lost, the correctness
+// of this process's own session is not).
+func (c *routeEchoCache) saveLocked() {
+	if c.persistPath == "" {
+		return
+	}
+	snap := routeEchoSnapshot{Order: c.order, Entries: c.entries}
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		return // map[string]any of scalars — should never fail
+	}
+	tmp := c.persistPath + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		slog.Warn("pincher.route_echo.persist_write_failed",
+			"path", c.persistPath, "err", err,
+			"hint", "the echo cache will not survive a respawn this session; a post-restart minimal outcome card may 422 (echo_source:none)")
+		return
+	}
+	if err := os.Rename(tmp, c.persistPath); err != nil {
+		slog.Warn("pincher.route_echo.persist_rename_failed",
+			"path", c.persistPath, "err", err)
+		_ = os.Remove(tmp)
+	}
 }
 
 // put inserts (or refreshes) an entry, evicting the least recently
-// used one beyond routeEchoCacheCap.
+// used one beyond routeEchoCacheCap, then flushes the sidecar.
 func (c *routeEchoCache) put(requestID string, fields map[string]any) {
 	if requestID == "" || len(fields) == 0 {
 		return
@@ -143,6 +253,7 @@ func (c *routeEchoCache) put(requestID string, fields map[string]any) {
 		c.order = c.order[1:]
 		delete(c.entries, evict)
 	}
+	c.saveLocked()
 }
 
 // get returns the cached echo fields and marks the entry recently
