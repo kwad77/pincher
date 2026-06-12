@@ -7,6 +7,46 @@ minors.
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-06-11 — The routing GA-candidate: the loop closes around the v1.7 surface
+
+v1.7 shipped the routing-*ready* surface; v1.8 closes the loop around
+it — recruitment (the once-per-session `advise_route` advisory on the
+third Task spawn), honest outcome reporting (the route proxy
+auto-completes the dispatch verse's minimal card from its own cache of
+the consult), visibility (the router-gated dashboard Models tab plus
+`docs/reference/routing.md`), and adoption measurement (`guide`
+recommends `route` on Make-shaped tasks; `coach` grows a
+routing-adoption section). Every piece keeps the §A6
+zero-surface-when-absent discipline — router absent means
+byte-identical advertisement, byte-identical dashboard HTML,
+byte-identical guide/coach responses; `PINCHER_ROUTER=off` remains the
+zero-probe, zero-dial rollback — and the tool-contract golden plus the
+4,000-token core+lean schema budget are untouched. The program's §C
+ship gate (≥30 routed Make-stage task units) is **still measuring**:
+the published what's-new holds every GA claim in explicit
+"measurement in progress" slots rather than asserting them early.
+
+### Added
+- **`advise_route` hook advisory (router-loop §A2 / item B8, #2025).** PreToolUse on `Task` now emits a once-per-session recruitment advisory when a pincher-router install is detected (detection-ladder rungs 1–2 only — no network in the hook path) and the session has spawned ≥3 subagents: it names the `route` tool and the pincher-loop dispatch verse, then stays silent. Advisory-only on every branch; distinct telemetry decision value `advise_route` with the session key in `file_path` so the take-rate is measurable by join. The managed PreToolUse matcher gains `Task` (`Read|Grep|Glob|Task`); re-running `pincher init --target=claude` migrates untweaked managed matchers in place.
+- **Dashboard Models tab + the routing reference docs ([#2027](https://github.com/kwad77/pincher/pull/2027), router-loop item B12).** `pincher web` gains a **Models** tab rendered ONLY when a live pincher-router was detected at startup — the same conditional-surface discipline as the `models`/`route` MCP advertisement (plan §A6): no router ⇒ no tab button, no pane, no `/v1/models` fetch (a stale `#models` hash falls back to Overview, fetch-free), and the dashboard HTML stays byte-identical to a router-less build — the absent-state snapshot fixtures were deliberately NOT regenerated; a new `router_present.html` golden pins the detected state. The tab renders the worker registry proxied read-only through pincher's `models` tool: per worker — kind, tier(s), enabled state + `enabled_by` provenance, raw cost spec (null = free-by-construction, no model-price guesses), `last_seen` freshness against the 24h ghost-worker bar, source (declared/discovered), and a win-rate placeholder ("—" until the router exposes per-worker outcome stats over the contract); above it, the contract-v2 handshake as chips. Read-only BY DESIGN: zero mutation controls render — the router owns all registry state and nothing in pincher can enable a paid worker (the governance line).
+Docs: new [docs/reference/routing.md](https://github.com/kwad77/pincher/blob/master/docs/reference/routing.md) — the user-facing routing guide (detection ladder, `PINCHER_ROUTER`/`PINCHER_ROUTER_ADDR`, conditional tools, the dispatch verse, `init --router` bootstrap order, governance/cost-consent, the `local_only` privacy gate) — plus the v1.8.0 what's-new at `docs/launch/v1.8.0-whats-new.md` (drafted in-window as `v1.8.0-whats-new-draft.md`; finalized at release-prep) with explicit `[GATE]` slots so no ship-gate claim can publish unmeasured.
+- **guide/coach routing integration (router-loop §A4 / item B11, #2028).** With a live pincher-router detected, `guide` appends a `route` consult to Make-shaped recommendations (shapeAdd/shapeRefactor — the dispatch verse's primary routed surface; stage policy keeps every other shape unrouted) resolved against the active toolset per the #2013 discipline, and `coach` grows a routing-adoption section — route-consult coverage (the §A1 adoption metric), the session-window consult/outcome split from new attempt-time live counters, hook-observed Task spawns as the documented proxy for Make-stage task units, advise_route advisory counts — plus a counts-only `unrouted_task_spawns` verse-skip finding (est 0: routing savings are recorded router-side, never invented). Router absent ⇒ both responses stay byte-identical to the pre-routing surface (§A6 zero-surface applies to response text), pinned by dual-state tests. Tool descriptions and InputSchemas unchanged: tool-contract golden and schema-weight budget untouched.
+
+### Changed
+- **v1.7.0 release prep (#2024).** Changelog assembly (seven stubs), frozen-surface review (four-arm live tools/list diff vs the installed v1.6.0 binary — absent arms byte-identical, present arms additive-only), adversarial review (0 sev-1 / 0 sev-2: edge-invariance re-verified on a real corpus, router proxy error paths exercised live, CLAUDE.md managed-block round-trip, hook interplay under v1.7 defaults), live + real-MCP smoke including the fixture contract-v2 router round-trip, README/docs version currency, bench-baseline refresh per the RELEASING.md item-9 refresh case. Recorded in docs/release-signoff-v1.7.0.md.
+
+### Fixed
+- **Route outcome auto-echo (router-loop item B10 pincher half, #2026).** The dispatch verse's minimal outcome card `{request_id, outcome_class, gate}` 422'd against the router's full OutcomeBody echo requirement (measured: five 422s on request_id 1d41c9e4 — a starved GBT). The route proxy now caches each consult's `request_id → {session_id, tool_name, complexity_tier, role, tokens_used, routed_model, lane}` (bounded LRU, 64 entries) and auto-fills missing echo fields on `route action="outcome"` before POSTing `/v1/outcomes`. Explicit caller fields always win; a cache miss passes the card through unchanged so router rejections surface honestly. Lean schema surface unchanged (budget untouched); route's rich description grew one sentence.
+
+### DOGFOOD
+
+Friction found in this release window, and what happened to it:
+
+- **Dogfood-found and fixed in-window:** the route outcome auto-echo (#2026) exists because the dispatch verse's promised minimal card was measured failing live — five 422s on request_id 1d41c9e4 starved a GBT of its outcome signal. The proxy half fixed it in-window; the verse's minimal-card contract was validated end-to-end against the live router during this release prep (see docs/release-signoff-v1.8.0.md §3).
+- **Honest-deviation, documented instead of faked:** #2025's plan framing ("spawning subagents *without consulting* the router") is unobservable from the hook — MCP tool traffic isn't on the PreToolUse matcher and the two session-id namespaces don't join at decision time. The shipped approximation (once-per-session, third spawn) is documented in code; the adoption join runs offline against the router's outcomes.jsonl.
+- **Plan-metric vs telemetry reality:** #2028's route-consult coverage metric, as specified, needs telemetry that doesn't exist (ledger stage tags aren't session-joinable; `session_tool_calls` rows carry no arguments). The shipped metric names every approximation in its `basis` strings and biases conservative (coverage is an upper bound, the verse-skip finding an under-estimate) — a real count beats an invented token figure.
+- **Process note:** `CHANGELOG.d/2024.changed.md` — the v1.7.0 release PR's own stub-gate entry — folds into this entry by design (each release PR's stub rides the next release).
+
 ## [1.7.0] — 2026-06-11 — The routing-ready release: 5× fresh indexing + the conditional pincher-router surface
 
 v1.7 makes pincher **routing-ready without costing anything to anyone
@@ -4367,7 +4407,8 @@ Highlights:
 - `docs/index.html`: single-file GitHub Pages landing page.
 - CI coverage gate lowered to 83% to match reality.
 
-[Unreleased]: https://github.com/kwad77/pincher/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/kwad77/pincher/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/kwad77/pincher/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/kwad77/pincher/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/kwad77/pincher/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/kwad77/pincher/compare/v1.4.0...v1.5.0
