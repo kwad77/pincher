@@ -7,6 +7,24 @@ minors.
 
 ## [Unreleased]
 
+## [1.9.1] — 2026-06-12 — Echo-durability: the route-outcome cache survives a respawn
+
+A single-fix patch carrying the *fix* for the gap v1.9.0 made
+*diagnosable*. v1.9.0's #2032 work surfaced that the route-outcome
+auto-echo 422'd un-echoed after a transparent stdio respawn because the
+`request_id → echo` LRU was in-process only; it shipped the
+`echo_source` observability but not the durability fix. v1.9.1 mirrors
+the LRU to a bounded, best-effort data-dir sidecar so the post-respawn
+outcome card auto-fills as if no restart happened. Docs-only changelog
+delta over a single merged code change (#2036); no schema migration, no
+new dependency, no tool-contract change. PATCH bump.
+
+### Fixed
+- **Route-outcome echo cache now survives a process respawn — a same-session minimal outcome card no longer 422s after an auto-restart, crash, or MCP client reconnect ([#2036](https://github.com/kwad77/pincher/issues/2036)).** #2032's root cause was environmental, not logical: the `request_id → echo` LRU that auto-fills the OutcomeBody (`session_id`, `tool_name`, `complexity_tier`, `role`, `tokens_used`, `routed_model`, `lane`) was in-process, so an auto-restart-on-drift respawn (`auto_restart.go`), a crash, or a client reconnect between a route consult and its outcome wiped the cache and the verse's minimal card 422'd — invisibly to the caller, who sees one continuous session. #2033 shipped the *observability* (`echo_source: cache|caller|none` + a loud `echo_miss` log) but not the *fix*. The LRU is now mirrored to a small data-dir-keyed JSON sidecar (`<data-dir>/route_echo_cache.json`, beside the SQLite store) that the next process loads on startup, so the post-respawn outcome card auto-fills as if no restart happened (`echo_source: cache`). No new dependency and no schema migration — the file is a bounded (≤64-entry) atomic temp-file+rename write, best-effort throughout: a missing/corrupt/unwritable sidecar degrades to the pre-#2036 in-process-only behaviour (`echo_source: none` + the honest 422), never an error or a startup failure. `PINCHER_ROUTER=off` writes no sidecar (zero routing activity — the whole-surface rollback story holds). Proven by `TestEchoDurability_*` (a second server bound to the same data-dir is the faithful respawn analogue: minimal-card-survives-respawn, LRU-order-survives, corrupt-sidecar-cold-starts, router-off-writes-no-sidecar). Routing-coverage fill alongside it: `TestRoute_NonJSONRouterBody_StructuredError` (a 200/HTML impostor on the router address yields the never-block structured error, not a hang) and `TestRoute_AdviseModePlan_PassesThroughVerbatim` (the ADVISE-host half of the route contract — an advise-tagged plan survives the proxy verbatim and its `request_id` joins the outcome the same way execute does).
+
+### Notes
+- **Changelog reconciliation — the #2022 SQLITE_BUSY retry fix already shipped in v1.9.0.** #2022's code fix (#2034, "bounded retry on SQLITE_BUSY for short writes under a concurrent index") merged before the v1.9.0 tag and is live in v1.9.0; only its `CHANGELOG.d/2022.fixed.md` fragment was never folded into the v1.9.0 notes. It is recorded here so the delta is not lost — no v1.9.1 code carries it. For reference: short writes (loop-checkpoint append, ADR set/delete) that hard-failed with persistent `database is locked (5) (SQLITE_BUSY)` while another process held the cross-process WAL writer (a force-reindex) are now wrapped in a `retryBusy` helper — context-bounded (30s hard cap) exponential backoff (25ms → 2s) with full jitter, retrying only on SQLITE_BUSY and surfacing any other error immediately; the long index transaction stays unwrapped. Pinned by `TestRetryBusy_*`.
+
 ## [1.9.0] — 2026-06-12 — Default-surface reach + route-outcome observability: the v1.8 routing loop made diagnosable
 
 A focused follow-on to the v1.8 routing GA-candidate, hardening the two
@@ -4442,7 +4460,8 @@ Highlights:
 - `docs/index.html`: single-file GitHub Pages landing page.
 - CI coverage gate lowered to 83% to match reality.
 
-[Unreleased]: https://github.com/kwad77/pincher/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/kwad77/pincher/compare/v1.9.1...HEAD
+[1.9.1]: https://github.com/kwad77/pincher/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/kwad77/pincher/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/kwad77/pincher/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/kwad77/pincher/compare/v1.6.0...v1.7.0
