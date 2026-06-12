@@ -65,12 +65,12 @@ same budget gate (TestSchemaWeight_CoreLean_RouterPresent_UnderBudget).
 
 | toolset | style | tools | total tokens |
 |---|---|--:|--:|
-| full | rich | 36 | 19509 |
+| full | rich | 36 | 19606 |
 | full | lean | 36 | 7399 |
-| core | rich | 12 | 9852 |
+| core | rich | 12 | 9949 |
 | core | lean | 12 | 3515 |
 
 | router tool | rich | lean |
 |---|--:|--:|
 | models | 425 | 169 |
-| route | 520 | 252 |
+| route | 617 | 252 |
