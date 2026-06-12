@@ -562,6 +562,41 @@ func walBloatAdvisory(dbSizeBytes, walSizeBytes int64) string {
 	return msg
 }
 
+// Thresholds for the db_maintenance health/doctor section (#2055).
+const (
+	// freelistBloatThreshold: a freelist holding more than this fraction
+	// of the DB's pages means VACUUM / incremental_vacuum would reclaim
+	// meaningful dead space. 0.25 matches the issue's "high bloat" line
+	// (live hermes store measured 0.72).
+	freelistBloatThreshold = 0.25
+	// walSoftCapBytes mirrors the journal_size_limit set in db.Open (256
+	// MiB). A WAL at/near this cap signals checkpoints aren't truncating —
+	// the #2055 long-lived-reader WAL high-water symptom. walNearCapBytes
+	// is the 90%-of-cap trip point (precomputed to stay an integer const).
+	walSoftCapBytes = int64(268435456)
+	walNearCapBytes = int64(268435456) * 9 / 10
+)
+
+// dbMaintenanceSection builds the db_maintenance map surfaced by health and
+// doctor (#2055): cheap PRAGMA-derived physical-state signals (page_count,
+// page_size, freelist_count, freelist_pct, auto_vacuum mode) plus the WAL
+// file size and boolean advisories that fire when freelist bloat is high or
+// the WAL is near its soft cap. Pure + side-effect-free so it's unit-testable
+// without a live DB.
+func dbMaintenanceSection(stats db.DBMaintenanceStats, walSizeBytes int64) map[string]any {
+	pct := stats.FreelistPct()
+	return map[string]any{
+		"page_count":     stats.PageCount,
+		"page_size":      stats.PageSize,
+		"freelist_count": stats.FreelistCount,
+		"freelist_pct":   pct,
+		"auto_vacuum":    stats.AutoVacuum,
+		"wal_size_bytes": walSizeBytes,
+		"high_bloat":     pct > freelistBloatThreshold,
+		"wal_near_cap":   walSizeBytes >= walNearCapBytes,
+	}
+}
+
 // largeDBAdvisory returns a human-readable health advisory when the
 // pincher DB is pathologically large, or "" when it's fine. #732:
 // failure-as-pedagogy for the diagnostic itself — `doctor` used to
@@ -1032,6 +1067,13 @@ func (s *Server) handleDoctor(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 	data["db_size_bytes"] = dbSizeBytes
 	data["wal_size_bytes"] = walSizeBytes
+
+	// #2055: physical DB-maintenance state — freelist bloat + WAL high-water
+	// + auto_vacuum mode — so the maintenance defects in #2055 are visible
+	// before they bite. Cheap O(1) PRAGMAs on the reader pool.
+	if ms, err := s.store.MaintenanceStats(); err == nil {
+		data["db_maintenance"] = dbMaintenanceSection(ms, walSizeBytes)
+	}
 
 	projects := []doctorProjectSummary{}
 	plist, err := s.store.ListProjects()

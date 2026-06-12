@@ -1789,6 +1789,12 @@ func (idx *Indexer) indexImpl(ctx context.Context, repoPath string, force, resol
 	// + manual CLI, etc.).
 	_ = idx.store.CheckpointTruncate()
 
+	// #2055: reclaim freelist pages a large re-index just churned. Cheap
+	// (no exclusive lock) and a silent no-op unless the DB was created with
+	// auto_vacuum=INCREMENTAL — co-located with CheckpointTruncate as the
+	// other freelist/WAL maintenance op run at the indexer's quiet tail.
+	_ = idx.store.IncrementalVacuum()
+
 	result := &IndexResult{
 		ProjectID:            projectID,
 		Project:              projectName,
