@@ -2,7 +2,10 @@
 
 package db
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Loop ledger operations (loop-substrate PR-8/9)
@@ -42,25 +45,33 @@ func (s *Store) AppendLoopCheckpoint(cp LoopCheckpoint) (int, error) {
 	if cp.CreatedAt == "" {
 		cp.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	res, err := s.db.Exec(
-		`INSERT INTO loop_checkpoints
-			(project_id, loop_name, seq, created_at, claim, decision, confidence, reopen_trigger, evidence, watermark)
-		 VALUES (?,?,
-			(SELECT COALESCE(MAX(seq),0)+1 FROM loop_checkpoints WHERE project_id=? AND loop_name=?),
-			?,?,?,?,?,?,?)`,
-		cp.ProjectID, cp.LoopName, cp.ProjectID, cp.LoopName,
-		cp.CreatedAt, cp.Claim, cp.Decision, cp.Confidence, cp.ReopenTrigger, cp.Evidence, cp.Watermark)
-	if err != nil {
-		return 0, err
-	}
-	rowID, err := res.LastInsertId()
-	if err != nil {
+	// The checkpoint INSERT is a SHORT write that shares the cross-process
+	// single writer with long index transactions; retry-wrap it on
+	// SQLITE_BUSY so a checkpoint append degrades to bounded latency
+	// rather than failing/hanging when another process holds the writer
+	// (#2022).
+	var rowID int64
+	if err := retryBusy(context.Background(), func() error {
+		res, err := s.db.Exec(
+			`INSERT INTO loop_checkpoints
+				(project_id, loop_name, seq, created_at, claim, decision, confidence, reopen_trigger, evidence, watermark)
+			 VALUES (?,?,
+				(SELECT COALESCE(MAX(seq),0)+1 FROM loop_checkpoints WHERE project_id=? AND loop_name=?),
+				?,?,?,?,?,?,?)`,
+			cp.ProjectID, cp.LoopName, cp.ProjectID, cp.LoopName,
+			cp.CreatedAt, cp.Claim, cp.Decision, cp.Confidence, cp.ReopenTrigger, cp.Evidence, cp.Watermark)
+		if err != nil {
+			return err
+		}
+		rowID, err = res.LastInsertId()
+		return err
+	}); err != nil {
 		return 0, err
 	}
 	var seq int
 	// Writer handle on purpose: the row was just written through s.db
 	// and a WAL reader may not see it yet.
-	err = s.db.QueryRow(`SELECT seq FROM loop_checkpoints WHERE id=?`, rowID).Scan(&seq)
+	err := s.db.QueryRow(`SELECT seq FROM loop_checkpoints WHERE id=?`, rowID).Scan(&seq)
 	return seq, err
 }
 
