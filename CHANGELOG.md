@@ -7,6 +7,56 @@ minors.
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-06-11 — The routing-ready release: 5× fresh indexing + the conditional pincher-router surface
+
+v1.7 makes pincher **routing-ready without costing anything to anyone
+who doesn't route**. A startup detection ladder (config-dir stat →
+binary on `$PATH` → identity-validated healthz probe, ≤50ms budget,
+every failure mode = "absent") decides whether a live pincher-router
+exists; when it does, a `router` capability tag and two thin proxy
+tools (`models`, `route`) join the advertisement — core+lean grows
+from 3,094 to 3,515 approx tokens, still under the same 4,000 budget
+gate. When it doesn't, the surface is **byte-identical to v1.6.0**
+(verified live against the installed v1.6.0 binary), and
+`PINCHER_ROUTER=off` is a full rollback: zero probes, zero proxy
+dials. Around the routing surface: fresh k8s-scale indexing got 5.0×
+faster (2,177s → 437s — a planner-stats guarantee plus statically
+skippable referrer lookups, with ambiguous binding edges now
+deterministic), the PreToolUse hook recruits the index when a session
+keeps Reading an unindexed repo, the Glob advisory resolves its
+recommendation against the active toolset (closing v1.6.0's recorded
+sev-2), and `pincher init --router` seeds the routing policy verse —
+only when a router is actually detected. Registered tools 34 → 36
+(`models`, `route`; additive only), default advertisement stays 10
+(12 with a router detected), schema stays v41 (zero migrations); no
+tool, field, `_meta` key, HTTP route, CLI subcommand, or symbol-ID
+format was removed or renamed (ADR-0002 frozen-surface review passed;
+see [docs/release-signoff-v1.7.0.md](docs/release-signoff-v1.7.0.md)).
+
+### Added
+- **The PreToolUse hook now recruits the index ([#2014](https://github.com/kwad77/pincher/issues/2014)).** A live telemetry audit found the hook at a 100% pass-through rate: virtually every intercepted event targeted files outside every indexed root, so the redirect mechanism never had an index to redirect to. When a session repeatedly Reads code files inside a git repo that pincher has never indexed (3+ events per session per repo root), the hook now emits a one-time advisory recommending `pincher index <root>` — recruiting the index, which is the precondition for every code-graph answer. Guardrails: once per root per session; never for non-repo directories; never for $HOME, the filesystem root, or the OS temp dir (the shared `index.IsBloatTrap` guard, #1991's lesson); advisory-only — the Read always passes through. The advisory lands in `hook_invocations` with the new `decision='advise_index'` and `file_path=<repo root>`, so the take-rate is measurable by joining advised roots against `projects.path`; the existing redirect conversion metrics are unaffected (they filter on the redirect decision values).
+- **Pincher-router detection + conditional `router` capability tag ([#2019](https://github.com/kwad77/pincher/issues/2019)).** Pincher now runs a detection ladder once at server start — config-dir stat (`~/.config/pincher-router/workers.yaml`) → `pincher-router-serve` on `$PATH` → identity-validated `GET /healthz` on the configured/default router address (`PINCHER_ROUTER_ADDR`, default `127.0.0.1:7878`) requiring `weights_version` in the JSON body — and advertises a `router` tag in `_meta.capabilities` and `GET /v1/capabilities` when a live pincher-router is found. Identity validation is mandatory: a status-code-only probe demonstrably misfires (a pincher HTTP instance answering on the router port; a 302-redirecting dashboard), and both real-world false positives are replayed as rejection fixtures. The probe is bounded (50ms timeout; zero network traffic when nothing is installed) and every failure mode is "absent" — detection can never block or fail server start. When absent the surface is byte-identical to before: no tag, no tools, no probing. Override: `PINCHER_ROUTER=off|auto|on` (default `auto`; canonical-value-only — a typo disables rather than enables). The conditional `models`/`route` tool surface builds on this in a follow-up.
+- **Conditional `models`/`route` MCP tools — the pincher-router proxy surface ([#2020](https://github.com/kwad77/pincher/issues/2020)).** Two thin HTTP proxies against pincher-router's contract v2 (pinned to router PR #26): `models` renders `GET /v1/models` — the version-skew handshake `{contract_version, weights_version, registry_version, capabilities}` plus the full worker registry (pincher renders, the router owns state; pincher never writes `workers.yaml`; `enable`/`disable`/`test` are declared for shape-stability and answer with a structured error until the contract exposes registry mutation) — and `route` consults `POST /v1/route` before a Make-stage task unit spawns (mode-tagged response: `execute` ⇒ gate the worker's output as untrusted maker artifact, `advise` ⇒ spawn a host subagent at the advised tier) and reports gated outcomes back via `action="outcome"` → `POST /v1/outcomes` using the `request_id` join.
+Conditional-surface discipline (the §A6 guarantee): both tools are **registered always** — HTTP `/v1/models` / `/v1/route`, OpenAPI, and the tool-contract golden keep the complete 36-tool surface — but they are **MCP-advertised only when the startup detection ladder found a live router**, in which case they join the *core* advertisement (a routed loop is the core use-case). Router absent ⇒ zero added schema weight in both toolset modes (dual-state goldens; absent-state totals byte-identical). Detected-state core+lean ≈ 3,515 approx tokens — held to the same 4,000 budget gate, not a raised one (`models` 169 / `route` 252 lean tokens).
+Never-block semantics: every proxy call is bounded at 250ms (2.5× the router's own p99 < 100ms local bar). Unreachable, hanging, or non-JSON routers return the standard structured error envelope telling the loop to proceed at the originating model and checkpoint the miss. Pre-v2 routers degrade gracefully: an un-tagged `/v1/route` plan is treated as `mode=execute` with a warning; a `contract_version < 2` handshake renders with an installed-but-old upgrade hint. `PINCHER_ROUTER=off` is the full rollback: zero probes, zero proxy dials — even direct HTTP calls short-circuit to a structured "disabled" error.
+- **`pincher init --router` seeding + the dispatch verse in the packaged pincher-loop skill ([#2023](https://github.com/kwad77/pincher/pull/2023)).** The recruitment seeding layer on top of router detection (#2019) and the conditional tool surface (#2021). The packaged `pincher-loop` skill (v0.4.0) now ships the dispatch verse — self-inerting (active only when `router` ∈ `_meta.capabilities`), it binds the stage policy (Make-stage task units consult `route` before spawning; the S5 gate never routes below the originating tier), the routing-never-blocks-the-loop rule, the gated outcome report that trains the router as a side effect of working, and the routed-output-is-untrusted-input rule. New opt-in `pincher init --router` (the `--dco-hook` grammar): runs the same detection ladder the server runs at startup and prints per-rung status (config / binary / serving, with `weights_version` and contract version); refreshes the CLAUDE.md managed block with a short, non-load-bearing `## Routing (pincher-router detected)` subsection inside the existing markers (idempotent replace-in-place; refreshed back out by a plain re-init); runs the claude-skills leg (preview by default, `--write` applies) so the verse-carrying skill is installed; and prints the router's own bootstrap commands (`pincher-router-init` → `pincher-router-serve`) when the registry or service is missing. **No pincher-router installation detected ⇒ the flag errors with install guidance and writes nothing** — the routing block can never lie about an absent router. Zero tool-schema changes: goldens, schema-weight budget, and the MCP surface are untouched, and the default policy block still never mentions routing.
+
+### Changed
+- **v1.6.0 release prep (#2010).** Changelog assembly (ten stubs), release fact-check (the nine-language tree-sitter wave is v1.4.0 content, not v1.6.0 — whats-new corrected), frozen-surface + adversarial review recorded in docs/release-signoff-v1.6.0.md (0 sev-1; 1 sev-2 — the Glob hook advisory suggests `onboard_module`, which a default core-toolset session cannot tools/call), README/docs version currency.
+
+### Fixed
+- **Glob advisory now resolves its recommendation against the active toolset ([#2011](https://github.com/kwad77/pincher/issues/2011)).** Under the v1.6 `PINCHER_TOOLSET=core` default the hook's Glob hint recommended `onboard_module`, which is not on the session's tools/list (a tools/call against it returns -32602). The advisory now recommends `search` — advertised in both toolset modes — and names the two ways to still reach `onboard_module` (a `batch` sub-query, or `PINCHER_TOOLSET=full`). Under `PINCHER_TOOLSET=full` the original `onboard_module` recommendation is unchanged. The hook resolves the toolset from its own environment (best-effort proxy for the server's); the mismatch case is safe by construction because the fallback recommendation is callable in both modes.
+- **Fresh k8s-scale indexing 5.0× faster — 2,177s → 437s ([#2012](https://github.com/kwad77/pincher/issues/2012), [#2018](https://github.com/kwad77/pincher/pull/2018)).** The per-file cross-file-referrer lookup in the indexer's dispatch loop ran against a database with no query-planner statistics on every fresh index (ANALYZE only ever ran at open on an *empty* DB, which yields no stat rows), degrading a three-index-seek query into a full edges-index scan per file — O(files × edges), ~85-90% of a 36-minute 17k-file run. The lookup is now skipped when its result is statically known (force/full reindexes, and files with no previously-indexed symbols — i.e. every file of a first-ever index), and `Index()` now guarantees real `sqlite_stat1` rows at completion so incremental and watcher runs always plan sanely. Also fixed en route: ambiguous bare-name binding edges (`binding_pass`, confidence 0.4) previously bound to whichever same-named Method happened to flush first — a timing artifact; candidates are now ordered deterministically by symbol id (#428-canonical). Persist-path batching, the next bottleneck, is tracked in [#2017](https://github.com/kwad77/pincher/issues/2017).
+
+### DOGFOOD
+
+Friction found in this release window, and what happened to it:
+
+- **v1.6.0's recorded sev-2, fixed in-window:** the Glob hook advisory recommending `onboard_module` to default core-toolset sessions (the #2006 × #2007 cross-PR emergent shape, recorded in the v1.6.0 signoff for manual filing) was filed as [#2011](https://github.com/kwad77/pincher/issues/2011) and fixed by #2013 — the advisory now resolves against the active toolset. Re-verified live in this prep: core default hints `search` + names the `batch`/full-toolset escape hatches; `PINCHER_TOOLSET=full` restores the `onboard_module` recommendation.
+- **Telemetry-driven discovery:** the #2014 advise-index advisory exists because a live audit of 726 hook invocations found a 100% pass-through rate — the redirect machinery had no index to redirect to. The fix recruits the index instead of optimizing the redirect.
+- **Dogfood-found perf cliff:** [#2012](https://github.com/kwad77/pincher/issues/2012) (stats-less planner degrading the per-file referrer lookup to O(files × edges)) was found by dogfooding a fresh k8s-scale index, fixed in #2018 with the 5.0× result, and the determinism follow-on came out of the same investigation. Release-prep re-verified the edge-set invariant live: the only delta vs a v1.6.0-binary index of the same corpus is the documented ambiguous `binding_pass` class (81 of 18,799 edges on the pincher corpus), now deterministic across runs.
+- **Process note:** `CHANGELOG.d/2010.changed.md` — the v1.6.0 release PR's own stub-gate entry — folds into this entry by design (each release PR's stub rides the next release).
+
 ## [1.6.0] — 2026-06-11 — The schema diet: core/lean tools/list by default, measured at scale
 
 v1.6 ships the measured decision the schema-diet work (#2003) deferred:
@@ -4317,7 +4367,8 @@ Highlights:
 - `docs/index.html`: single-file GitHub Pages landing page.
 - CI coverage gate lowered to 83% to match reality.
 
-[Unreleased]: https://github.com/kwad77/pincher/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/kwad77/pincher/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/kwad77/pincher/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/kwad77/pincher/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/kwad77/pincher/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/kwad77/pincher/compare/v1.3.0-rc.1...v1.4.0

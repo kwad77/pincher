@@ -34,7 +34,7 @@ re-prompt the user for things the envelope already told them).
 
 ## Why this framing matters
 
-pincher is not "34 MCP tools + an HTTP API." That undersells the
+pincher is not "36 MCP tools + an HTTP API." That undersells the
 architecture and pushes integrators toward a wiring pattern that
 extracts ~20% of the available leverage.
 

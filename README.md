@@ -247,14 +247,14 @@ The result is an edit loop with fewer blind reads and better handoffs after cont
 
 ---
 
-## Where Pincher is now (v1.6)
+## Where Pincher is now (v1.7)
 
-Pincher v1.0 froze the core tool/schema surface; everything since has been additive. v1.2 shipped Pincher-native graph intelligence (`pincher report`, rationale symbols, hotspot risk scoring). v1.3 landed the substrate (edge provenance tiers, MCP progress + prompts). v1.4 was the **loop release** — the agent-loop substrate (`loop` checkpoint ledger, `batch`, `verify_change`, `coach`, `assert_graph`, `_meta.watermark` on every envelope, diff-encoded `context` default-on) plus the ADR-0008 AST-tier language wave (real tree-sitter via WASM, pure Go: Rust, Java, C#, TS/TSX, Swift, Kotlin, PHP, Ruby, C++ at confidence 1.0) and five shippable Claude Code skills. v1.5 made the loop **measure itself** (LES, pointer handoffs, the PreCompact hook, loopbench). v1.6 is the **schema diet, measured at scale**:
+Pincher v1.0 froze the core tool/schema surface; everything since has been additive. v1.2 shipped Pincher-native graph intelligence (`pincher report`, rationale symbols, hotspot risk scoring). v1.3 landed the substrate (edge provenance tiers, MCP progress + prompts). v1.4 was the **loop release** — the agent-loop substrate plus the ADR-0008 AST-tier language wave (tree-sitter via WASM: Rust, Java, C#, TS/TSX, Swift, Kotlin, PHP, Ruby, C++ at confidence 1.0). v1.5 made the loop **measure itself** (LES, pointer handoffs, the PreCompact hook, loopbench). v1.6 shipped the **schema diet, measured at scale** — core/lean `tools/list` by default (~3.1k approx tokens vs ~18.5k, 1.44M vs 475k total tokens at 10x scale at identical accuracy), graph-answer authority in the tool contracts, and startup DB discipline. v1.7 is the **routing-ready release**:
 
-- **core/lean by default** — `tools/list` now advertises the 10 loop-essential tools with lean first-sentence descriptions (~3.0k approx tokens vs ~18.4k full/rich, re-read every turn). Measured at 10x corpus scale: full/rich burned 1.44M total tokens vs 475k for core+lean at identical 8/8 accuracy. All 34 tools stay registered (HTTP `/v1/<tool>`, OpenAPI, `batch` sub-queries); `PINCHER_TOOLSET=full` + `PINCHER_SCHEMA_STYLE=rich` restores the old surface.
-- **Graph-answer authority in the contract** — `trace`/`changes`/`verify_change` descriptions now state that graph answers are authoritative for caller/callee/count/blast-radius questions; an n=3 benchmark showed agents coached to trust the graph halve their turns at equal accuracy.
-- **Startup DB discipline** — read-only surfaces (`web`, `bench`, health checks) stop contending with the single writer; schema migrations are loud, snapshot-backed, and consent-gated on dev builds.
-- **Quality of life** — hook v2.1 (Glob advisories, `--data-dir` baked into installed hooks), `pincher init --dco-hook` (automatic `Signed-off-by`), and the messy-corpus + scale benchmark harness that produced the diet decision, in-tree.
+- **5.0× faster fresh indexing** — a k8s-scale fresh index dropped 2,177s → 437s: the indexer now guarantees query-planner statistics exist (a stats-less SQLite planner degraded one per-file lookup into a full edges-index scan, O(files × edges)) and skips referrer lookups whose result is statically known. Ambiguous bare-name binding edges are now deterministic (lexicographically smallest symbol ID) instead of a flush-timing artifact.
+- **Conditional pincher-router surface** — a startup detection ladder (config stat → binary on `$PATH` → identity-validated healthz, ≤50ms, every failure = "absent") gates a `router` capability tag plus two thin proxy tools: `models` (registry render + version-skew handshake) and `route` (mode-tagged routing consult + gated-outcome reporting). No router ⇒ the surface is byte-identical to v1.6.0 — zero tools, zero tokens, zero probes after startup. `PINCHER_ROUTER=off` rolls the whole thing back; proxy calls are bounded at 250ms and can never block a loop.
+- **The hook recruits the index** — when a session keeps Reading code in a git repo pincher never indexed (3+ events), the PreToolUse hook emits a one-time `pincher index <root>` advisory instead of a redirect it cannot honor; the Glob advisory now resolves its recommendation against the active toolset (closing v1.6.0's recorded sev-2).
+- **`pincher init --router`** — opt-in seeding of a routing policy verse into the CLAUDE.md managed block plus the dispatch-verse-carrying pincher-loop skill (v0.4.0); errors with install guidance when no router is detected, so the block can never lie.
 
 The boundary is deliberate: no default LLM extraction pipeline, no dashboard-first claims without API/report provenance, and no unsupported savings multipliers. If a report names a symbol or file, it should come with source provenance or say the data is missing.
 
@@ -262,7 +262,7 @@ The boundary is deliberate: no default LLM extraction pipeline, no dashboard-fir
 
 ## Tool surface
 
-Pincher currently exposes 34 MCP tools (10 advertised over `tools/list` by default — see the schema-diet note below; all 34 stay reachable over HTTP and `batch`). The high-frequency set:
+Pincher currently exposes 36 MCP tools (10 advertised over `tools/list` by default — 12 when a live pincher-router is detected, which adds `models` + `route`; see the schema-diet note below. All 36 stay reachable over HTTP, and the read-only query set as `batch` sub-queries). The high-frequency set:
 
 - `guide` — choose the next Pincher call from a task description
 - `search` — BM25 symbol/config/docs search
@@ -276,7 +276,7 @@ Pincher currently exposes 34 MCP tools (10 advertised over `tools/list` by defau
 
 The CLI also includes `pincher report`, a source-grounded architecture report artifact built from the same index.
 
-**Schema diet (#2003, default since v1.6):** the full 34-tool `tools/list` advertisement weighs ~18.4k approx tokens, re-read by the host every turn. By default pincher now advertises the 10 loop-essential tools with lean first-sentence descriptions (combined core+lean ~3.0k, gate-tested) while keeping every tool reachable over HTTP `/v1/<tool>` and as `batch` sub-queries. The flip is measured (PR #2005, 10x-scale loopbench): full/rich burned 1.44M total tokens vs 475k for core+lean at identical accuracy — 3.0x waste. Restore the full advertisement with `PINCHER_TOOLSET=full` (or `--toolset full`) and `PINCHER_SCHEMA_STYLE=rich`. Details in [`docs/reference/http-api.md`](docs/reference/http-api.md).
+**Schema diet (#2003, default since v1.6):** the full `tools/list` advertisement weighs ~18.5k approx tokens, re-read by the host every turn. By default pincher now advertises the 10 loop-essential tools with lean first-sentence descriptions (combined core+lean ~3.1k, gate-tested under 4k — 3.5k with the router pair detected) while keeping every tool reachable over HTTP `/v1/<tool>` and the read-only query set as `batch` sub-queries. The flip is measured (PR #2005, 10x-scale loopbench): full/rich burned 1.44M total tokens vs 475k for core+lean at identical accuracy — 3.0x waste. Restore the full advertisement with `PINCHER_TOOLSET=full` (or `--toolset full`) and `PINCHER_SCHEMA_STYLE=rich`. Details in [`docs/reference/http-api.md`](docs/reference/http-api.md).
 
 Full reference: [`docs/reference/tools.md`](docs/reference/tools.md). HTTP shape: [`docs/reference/http-api.md`](docs/reference/http-api.md).
 
