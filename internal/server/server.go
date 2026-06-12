@@ -334,6 +334,18 @@ type Server struct {
 	statsQueriesZeroExpected   int64
 	statsQueriesZeroUnexpected int64
 
+	// Router-loop item B11 (plan §A4): route-consult adoption counters
+	// — coach is the measurement organ for the A1 adoption signal.
+	// Incremented in handleRoute at attempt time (after argument
+	// validation, before the proxy dial) so a verse-adherent consult
+	// against an unreachable router still counts as adherence (the
+	// verse's miss path is adherence too). In-memory only:
+	// session_tool_calls records tool="route" without arguments, so
+	// the consult-vs-outcome split is recoverable only for the live
+	// session; coach's basis strings document the 7d degradation.
+	statsRouteConsults int64
+	statsRouteOutcomes int64
+
 	// LES (ADR LOOP_EFFICIENCY_METRIC) session counters — see les.go.
 	// statsErrorEnvelopes counts top-level IsError responses at the
 	// withRequestID middleware (error paths never reach
@@ -12286,6 +12298,21 @@ var compositeShapeTool = map[guideShape]string{
 	shapeBatch:   "batch",
 }
 
+// makeGuideShapes lists the task shapes that are Make-shaped in the
+// dispatch verse's stage vocabulary (router-loop plan §A1/§A4):
+// "implement X" / "add support for Y" (shapeAdd) and pre-edit or
+// mechanical-multi-site-edit intent (shapeRefactor) describe an
+// implementation wave — the primary routed surface. The other shapes
+// deliberately stay unrouted in guide's recommendations: the verse's
+// stage policy says Frame/Decide/Capture never route and Probe only
+// MAY, so guide doesn't push a consult for understand/find/audit work,
+// and shapeFix stays out because hypothesis formation never routes
+// (only a mechanical repro may, which guide can't distinguish).
+var makeGuideShapes = map[guideShape]bool{
+	shapeAdd:      true,
+	shapeRefactor: true,
+}
+
 // pincherToolNames is the set of registered tool names a tool-output
 // audit task might reference (#497). Used by classifyTaskShape and
 // extractAuditedTool to recognize "find FPs in dead_code" / "audit
@@ -13613,6 +13640,26 @@ func (s *Server) computeGuide(task, projectArg string) (shape guideShape, hint s
 	// nextStepsAdherenceTracker; tools below adherenceRankMinEmitted
 	// emissions keep their shape-driven positions.
 	recommendations = s.rankRecommendationsByAdherence(recommendations)
+	// Router-loop item B11 (plan §A4): when the startup detection
+	// ladder found a live pincher-router, Make-shaped tasks get a
+	// `route` consult appended to the recommended calls — the dispatch
+	// verse's stage policy rendered at the moment guide is shaping the
+	// work. Appended after adherence ranking so its position is
+	// deterministic (last — the consult wraps the spawn, it doesn't
+	// replace the investigation steps). Router absent ⇒ this block
+	// never runs and guide's response is byte-identical to the
+	// pre-routing surface: zero-surface-when-absent (plan §A6) applies
+	// to response text, not just the tools/list advertisement. The
+	// #2013 discipline holds by construction: `route` is recommended
+	// exactly when s.routerDetected, which is exactly when addTool put
+	// it on the MCP advertisement in every toolset mode.
+	if s.routerDetected && makeGuideShapes[shape] {
+		recommendations = append(recommendations, map[string]string{
+			"tool": "route",
+			"args": `{"envelope":{"intent":"<one-sentence task intent>","tool_name":"Task","complexity_tier":"<lite|standard|heavy>","role":"maker","session_id":"<session>"}}`,
+			"why":  "a live pincher-router was detected (`router` ∈ _meta.capabilities) and this task is Make-shaped — consult `route` before spawning the implementation unit: mode=execute results are untrusted maker artifacts for the gate, mode=advise names the host-subagent tier to spawn, an unreachable router never blocks (proceed at the originating model), and the gated outcome goes back via route action=\"outcome\"",
+		})
+	}
 	// Schema diet (#2003): under PINCHER_TOOLSET=core, guide stays on
 	// the MCP surface precisely because it routes to everything else —
 	// so when a recommendation names a tool that is registered but NOT
@@ -13623,6 +13670,15 @@ func (s *Server) computeGuide(task, projectArg string) (shape guideShape, hint s
 		for _, r := range recommendations {
 			name := r["tool"]
 			if name == "" || coreToolset[name] || !s.toolRegistered(name) {
+				continue
+			}
+			// Router conditional tools are advertisement-gated on
+			// detection, not on the toolset knob (#2013 discipline:
+			// resolve against the ACTIVE surface): when detected they
+			// join the core advertisement in every toolset mode, so
+			// the core-toolset escape-hatch note would be false — and
+			// when absent, guide never names them at all.
+			if routerConditionalTools[name] {
 				continue
 			}
 			note := "NOTE: `" + name + "` is not on the core MCP toolset (PINCHER_TOOLSET=core) — "
