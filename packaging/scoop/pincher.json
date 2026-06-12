@@ -1,5 +1,5 @@
 {
-    "version": "1.0.0",
+    "version": "1.10.1",
     "description": "Codebase intelligence server for LLM agents (MCP stdio + HTTP REST). Local SQLite + tree-sitter / regex extractors across 20+ languages. Closes #1260 §1.",
     "homepage": "https://github.com/kwad77/pincher",
     "license": "MIT",
@@ -13,21 +13,21 @@
     ],
     "architecture": {
         "64bit": {
-            "url": "https://github.com/kwad77/pincher/releases/download/v1.0.0/pincher-v1.0.0-windows-amd64.zip",
-            "hash": "086923ed2b2c33d4fc455a326d85a9fdc1a858f428b78619be89436d1428563b",
+            "url": "https://github.com/kwad77/pincher/releases/download/v1.10.1/pincher-v1.10.1-windows-amd64.zip",
+            "hash": "fedf8d709d1666041fa3d320703cb9c0fdc86ea7be89296254c0df6b8de95136",
             "bin": [
                 [
-                    "pincher-v1.0.0-windows-amd64.exe",
+                    "pincher-v1.10.1-windows-amd64.exe",
                     "pincher"
                 ]
             ]
         },
         "arm64": {
-            "url": "https://github.com/kwad77/pincher/releases/download/v1.0.0/pincher-v1.0.0-windows-arm64.zip",
-            "hash": "9db601b93b5ef88b631a8bd58254f861d9f2d4984b497e59651f5e96c2b38b01",
+            "url": "https://github.com/kwad77/pincher/releases/download/v1.10.1/pincher-v1.10.1-windows-arm64.zip",
+            "hash": "9ac2b437bb5b8dab3923c16318784af025c12f26717206075feaf9ab9222d383",
             "bin": [
                 [
-                    "pincher-v1.0.0-windows-arm64.exe",
+                    "pincher-v1.10.1-windows-arm64.exe",
                     "pincher"
                 ]
             ]
