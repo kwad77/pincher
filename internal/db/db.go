@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -204,6 +205,106 @@ func retryOnDBLock(fn func() error, maxAttempts int, backoff time.Duration) erro
 		}
 	}
 	return err
+}
+
+// retryBusyBudget caps the total wall-clock a short write will spend
+// retrying SQLITE_BUSY before surfacing the failure (#2022).
+const retryBusyBudget = 30 * time.Second
+
+// retryBusy runs fn, retrying with exponential backoff + full jitter
+// whenever fn returns a SQLITE_BUSY-class error (#2022). It exists for
+// the SHORT write operations — loop-checkpoint append, ADR set/delete —
+// that share one data dir with a long index write-transaction.
+//
+// SQLite's WAL mode allows exactly ONE writer across ALL processes. The
+// DSN's busy_timeout(5000) already makes a single Exec wait up to 5s for
+// the cross-process writer, but a force-reindex holds the writer far
+// longer than that, so the short write would otherwise hard-fail
+// (SQLITE_BUSY → 422/error) or hang. Wrapping it here turns that into
+// bounded latency: retry up to retryBusyBudget (30s) total, then give up
+// and return the last busy error for the caller to surface.
+//
+// The long index transaction path is deliberately NOT wrapped — it is
+// the writer everyone else is waiting on; retrying it would deepen
+// contention, not relieve it.
+//
+// Contract: returns nil on success; any non-busy error from fn is
+// returned immediately (no retry); a busy error is retried until the
+// budget (or the caller's ctx deadline, whichever is sooner) is
+// exhausted, then returned wrapped with the deadline cause. A
+// context.Background() caller still gets the 30s cap via the internal
+// WithTimeout.
+func retryBusy(ctx context.Context, fn func() error) error {
+	ctx, cancel := context.WithTimeout(ctx, retryBusyBudget)
+	defer cancel()
+
+	const (
+		baseBackoff = 25 * time.Millisecond
+		maxBackoff  = 2 * time.Second
+	)
+
+	var (
+		lastErr error
+		backoff = baseBackoff
+		retries int
+	)
+	for {
+		err := fn()
+		if err == nil {
+			return nil
+		}
+		if !isDBLockedErr(err) {
+			// Non-contention failure: surface it verbatim, no retry.
+			return err
+		}
+		lastErr = err
+
+		// Full jitter: sleep a random duration in [0, backoff). Spreads
+		// retries from competing processes so they don't re-collide in
+		// lockstep.
+		n := int64(backoff)
+		if n < 1 {
+			n = 1
+		}
+		wait := time.Duration(rand.Int64N(n))
+
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			retries++
+			retryBusyWarn(retries)
+			// Budget (or caller's ctx) exhausted while a writer still
+			// owns the lock. Surface the deadline cause with the busy
+			// error attached so the contention is diagnosable.
+			return fmt.Errorf("%w (gave up after %d SQLITE_BUSY retries: %v)", ctx.Err(), retries, lastErr)
+		case <-timer.C:
+		}
+
+		retries++
+		retryBusyWarn(retries)
+
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+}
+
+// retryBusyWarnAt is the retry count at which retryBusy starts emitting a
+// one-line stderr warning, so sustained cross-process write contention is
+// observable without spamming on the common 1–2 retry case (#2022).
+const retryBusyWarnAt = 4
+
+// retryBusyWarn emits a single stderr line once a short write has retried
+// past retryBusyWarnAt, making contention visible. Stderr (not stdout) so
+// it never corrupts an MCP stdio protocol channel.
+func retryBusyWarn(retries int) {
+	if retries == retryBusyWarnAt {
+		fmt.Fprintf(migrationLog, "pincher: short write retried %d× on SQLITE_BUSY — another process is holding the writer (likely a long index); retrying up to %s (#2022)\n", retries, retryBusyBudget)
+	}
 }
 
 // MigrationConsentEnv is the environment opt-in for upward schema
@@ -6005,12 +6106,18 @@ func (s *Store) SymbolCountsByFile(projectID string) (map[string]int, error) {
 // ADR operations
 // ─────────────────────────────────────────────────────────────────────────────
 
-// SetADR stores an ADR key-value pair.
+// SetADR stores an ADR key-value pair. The single-statement upsert is a
+// SHORT write, so it is retry-wrapped (#2022): when a long index
+// transaction in another process owns the cross-process writer, this
+// retries on SQLITE_BUSY for up to retryBusyBudget instead of hard-
+// failing on the 5s busy_timeout.
 func (s *Store) SetADR(projectID, key, value string) error {
-	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO adrs(project_id, key, value, updated_at) VALUES (?,?,?,?)`,
-		projectID, key, value, time.Now().Unix())
-	return err
+	return retryBusy(context.Background(), func() error {
+		_, err := s.db.Exec(
+			`INSERT OR REPLACE INTO adrs(project_id, key, value, updated_at) VALUES (?,?,?,?)`,
+			projectID, key, value, time.Now().Unix())
+		return err
+	})
 }
 
 // GetADR returns an ADR value by key.
@@ -6060,11 +6167,19 @@ func (s *Store) CountADRs(projectID string) (int, error) {
 // report deleted=true on a no-op DELETE, masking typos and wrong-
 // project-scope mistakes (#1019).
 func (s *Store) DeleteADR(projectID, key string) (int64, error) {
-	res, err := s.db.Exec(`DELETE FROM adrs WHERE project_id=? AND key=?`, projectID, key)
+	var n int64
+	// SHORT write — retry-wrapped on cross-process SQLITE_BUSY (#2022).
+	err := retryBusy(context.Background(), func() error {
+		res, err := s.db.Exec(`DELETE FROM adrs WHERE project_id=? AND key=?`, projectID, key)
+		if err != nil {
+			return err
+		}
+		n, _ = res.RowsAffected()
+		return nil
+	})
 	if err != nil {
 		return 0, err
 	}
-	n, _ := res.RowsAffected()
 	return n, nil
 }
 
