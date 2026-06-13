@@ -385,11 +385,16 @@ func main() {
 		_ = srv.ShutdownTracer(shutdownCtx)
 	}()
 
-	if *noStdio {
+	waitForHTTPOnlyShutdown := func() {
 		<-ctx.Done()
+	}
+
+	if *noStdio {
+		waitForHTTPOnlyShutdown()
 		return
 	}
-	if err := srv.MCPServer().Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil {
+	err = srv.MCPServer().Run(ctx, &mcp.StdioTransport{})
+	if err != nil && ctx.Err() == nil {
 		// #1568 v0.83: distinguish graceful stdin-EOF from a fatal
 		// transport error. Hosts that pipe a finite request stream and
 		// close stdin cleanly (host-conformance harness, replay tests)
@@ -400,10 +405,17 @@ func main() {
 		//
 		// The MCP SDK returns the EOF as either a wrapped error or a
 		// formatted "server is closing: EOF" string; cover both.
-		if isGracefulStdioShutdown(err) {
-			return
+		if !isGracefulStdioShutdown(err) {
+			log.Fatalf("pincherMCP: server error: %v", err)
 		}
-		log.Fatalf("pincherMCP: server error: %v", err)
+	}
+	// #2059: when HTTP was explicitly requested, a clean stdio EOF
+	// should not tear down the HTTP listener. This covers shell and
+	// supervisor launches where stdin is /dev/null but the operator
+	// intended a long-lived REST server. Plain stdio-only MCP sessions
+	// keep the historical graceful-exit behavior.
+	if ctx.Err() == nil && *httpAddr != "" {
+		waitForHTTPOnlyShutdown()
 	}
 }
 
