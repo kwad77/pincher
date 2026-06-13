@@ -1830,6 +1830,13 @@ var httpGetOnlyRoutes = map[string]bool{
 	"metrics":            true, // #1163: Prometheus exposition endpoint
 }
 
+func httpDispatchPath(path string) string {
+	if strings.HasPrefix(path, "/v1/") {
+		return strings.TrimPrefix(path, "/v1/")
+	}
+	return strings.TrimPrefix(path, "/")
+}
+
 // ServeHTTP makes Server implement http.Handler.
 //
 // Route: POST /v1/{tool}  — call any registered tool with a JSON body.
@@ -1910,7 +1917,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// paths are documentation/probe-shaped and do not leak project state.
 	// Skip the bearer check for them so liveness probes work alongside
 	// --http-key. Tool calls such as POST /v1/health still enforce auth.
-	pathTrimmed := strings.TrimPrefix(r.URL.Path, "/v1/")
+	pathTrimmed := httpDispatchPath(r.URL.Path)
 	isPublicProbe := r.Method == http.MethodGet &&
 		(pathTrimmed == "health" || pathTrimmed == "openapi.json" || pathTrimmed == "ready")
 	if s.httpKey != "" && !isPublicProbe {
@@ -2001,7 +2008,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	path := strings.TrimPrefix(r.URL.Path, "/v1/")
+	path := httpDispatchPath(r.URL.Path)
 
 	// #609: GET-only routes must reject non-GET methods up front with
 	// `Allow: GET, HEAD`. Without this gate, openapi.json and health
