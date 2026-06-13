@@ -490,3 +490,50 @@ func TestNoStdio_WithHTTP_StaysAlive(t *testing.T) {
 	}
 	t.Fatalf("--no-stdio child never became ready on %s within 10s (last err: %v)", url, lastErr)
 }
+
+func TestHTTP_WithStdinEOF_StaysAlive_2059(t *testing.T) {
+	bin := buildPincherBinary(t)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	addr := "127.0.0.1:" + itoa(port)
+
+	dataDir := t.TempDir()
+	cmd := exec.Command(bin, "--http", addr, "--data-dir", dataDir)
+	cmd.Env = pincherCoverEnv()
+	cmd.Stdin = nil // /dev/null-like EOF: `pincher --http ... &` from a shell.
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+	})
+
+	url := "http://" + addr + "/v1/health"
+	deadline := time.Now().Add(10 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == 200 {
+				return
+			}
+			lastErr = nil
+		} else {
+			lastErr = err
+		}
+		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+			t.Fatalf("--http process exited after stdin EOF before serving %s", url)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("--http process with stdin EOF never became ready on %s within 10s (last err: %v)", url, lastErr)
+}
