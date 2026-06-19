@@ -21,11 +21,19 @@ func tsASTEnabled() bool {
 	return os.Getenv("PINCHER_DISABLE_TS_AST") != "1"
 }
 
+// TypeScriptASTEnabled reports whether the TS/TSX dispatcher will attempt the
+// tree-sitter path for the next file. Exported for health/parser identity, where
+// the registered adapter confidence remains 0.85 to describe the regex fallback
+// tier but the live default route is AST.
+func TypeScriptASTEnabled() bool {
+	return tsASTEnabled()
+}
+
 var (
-	tsTSOnce   sync.Once
-	tsTSPool   chan *tsTSExtractor // typescript grammar (.ts)
-	tsxTSOnce  sync.Once
-	tsxTSPool  chan *tsTSExtractor // tsx grammar (.tsx)
+	tsTSOnce  sync.Once
+	tsTSPool  chan *tsTSExtractor // typescript grammar (.ts)
+	tsxTSOnce sync.Once
+	tsxTSPool chan *tsTSExtractor // tsx grammar (.tsx)
 )
 
 func initTSPool(tsx bool) chan *tsTSExtractor {

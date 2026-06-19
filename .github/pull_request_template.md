@@ -26,12 +26,6 @@
 - [ ] **This PR changes a frozen surface element** per [ADR-0002](../docs/adr/0002-v1-frozen-surface.md). The change is either (a) additive, or (b) targeted for the 2.x branch. CI contract tests verify.
 - [ ] **This PR does not touch the frozen surface.** No tool / tool I/O / `_meta` / HTTP route / CLI / symbol-ID change.
 
-## DCO sign-off
-
-<!-- Every commit in this PR must carry a Signed-off-by: trailer per the Developer Certificate of Origin (https://developercertificate.org). Sign off with `git commit -s`. The DCO check in CI will fail otherwise. Full procedure in CONTRIBUTING.md. -->
-
-- [ ] All commits in this PR carry a `Signed-off-by:` trailer.
-
 ## Closes / refs
 
 <!-- Closes #N -->

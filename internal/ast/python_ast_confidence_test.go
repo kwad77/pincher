@@ -56,3 +56,27 @@ func TestExtractWithModule_NoOverride_UsesRegisteredConfidence(t *testing.T) {
 		}
 	}
 }
+
+func TestTypeScriptAST_ConfidenceOverride_BoostsSymbols(t *testing.T) {
+	t.Setenv("PINCHER_DISABLE_TS_AST", "")
+
+	src := []byte("export function groundSymbolsForGoal(): number {\n\treturn 1;\n}\n")
+	result := ExtractWithModule(src, "TypeScript", "src/self-improve.ts", "")
+	if len(result.Symbols) == 0 {
+		t.Fatal("expected TypeScript symbols; got none")
+	}
+	found := false
+	for _, s := range result.Symbols {
+		if s.Name != "groundSymbolsForGoal" {
+			continue
+		}
+		found = true
+		if s.ExtractionConfidence < 0.99 {
+			t.Errorf("TypeScript symbol %q confidence = %v, want >=0.99 (tree-sitter AST)",
+				s.Name, s.ExtractionConfidence)
+		}
+	}
+	if !found {
+		t.Fatalf("groundSymbolsForGoal missing from TypeScript AST extraction; symbols=%+v", result.Symbols)
+	}
+}

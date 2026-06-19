@@ -4,7 +4,7 @@ Pincher is a local code-intelligence MCP server. Contributions of all sizes are 
 
 ## Developer Certificate of Origin (DCO)
 
-Every commit in a PR must include a `Signed-off-by:` trailer attesting to the [Developer Certificate of Origin](https://developercertificate.org). Pincher uses DCO instead of a CLA — there's no document to sign, just a one-line attestation per commit that you have the right to submit the work under the project's MIT license.
+Commits may include a `Signed-off-by:` trailer attesting to the [Developer Certificate of Origin](https://developercertificate.org). Pincher accepts signed-off commits, but the trailer is not required and is not enforced by CI.
 
 ```bash
 git commit -s -m "your message"            # sign the trailer at commit time
@@ -14,7 +14,7 @@ git config --global format.signoff true    # sign every commit globally
 
 > **Note:** `format.signoff` only covers commands that honour it — plain `git commit` is NOT one of them. The reliable, set-and-forget option is the repo-local hook: `pincher init --dco-hook` installs a `prepare-commit-msg` hook that appends your `Signed-off-by:` trailer automatically whenever it's missing (skips merge/squash messages, never duplicates, never touches existing trailers, and refuses to overwrite a hand-written hook). See [`docs/reference/cli.md`](docs/reference/cli.md#pincher-init---dco-hook).
 
-The `DCO sign-off` GitHub Actions check runs on every PR and fails if any commit in the diff lacks the trailer. Bulk-fix an unsigned series with:
+The project still accepts signed-off commits, but the DCO trailer is no longer enforced by a GitHub Actions check. If you want to bulk-add sign-offs to a local series:
 
 ```bash
 git rebase -i <base> --exec 'git commit --amend --no-edit -s'
@@ -131,7 +131,6 @@ Required checks on every PR (skipped on doc-only PRs where noted):
 | `Benchmark smoke` | Bench targets compile + run a short pass. |
 | `Release channel rule` | Release-PR titles follow the convention. |
 | `Workflow isolation lint` | GitHub workflows don't duplicate inline logic that has a canonical script. |
-| `CHANGELOG stub check` | A `CHANGELOG.d/<num>.<type>.md` stub is present (skipped on doc-only PRs). |
 
 ## Test conventions
 

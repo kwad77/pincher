@@ -20,7 +20,7 @@ import (
 // language, so the bug surface narrowed but didn't disappear.
 //
 // Table-from-the-start (#1152):
-//   - Positive: AST-tier (Go), Regex-tier (TypeScript), Stub-tier
+//   - Positive: AST-tier (Go), runtime-upgraded AST (TypeScript), Stub-tier
 //     (Haskell) each get their correctly-labeled bucket.
 //   - Negative: description string must NOT make the stale "AST vs
 //     Regex" two-tier claim.
@@ -69,8 +69,9 @@ func TestHandleHealth_PerLanguageParserLabel(t *testing.T) {
 		{ID: pid + "::go.Foo#Function", ProjectID: pid, FilePath: "a.go",
 			Name: "Foo", QualifiedName: "go.Foo", Kind: "Function", Language: "Go",
 			ExtractionConfidence: 1.0},
-		// TypeScript = stable-regex (0.85). Post v0.61 (#1158) ships
-		// Method extraction; still registered as regex tier overall.
+		// TypeScript registers at the regex fallback floor (0.85), but #1958
+		// routes clean files through the default-on tree-sitter dispatcher.
+		// Health must report the live parser route, not just the fallback tier.
 		{ID: pid + "::ts.bar#Function", ProjectID: pid, FilePath: "a.ts",
 			Name: "bar", QualifiedName: "ts.bar", Kind: "Function", Language: "TypeScript",
 			ExtractionConfidence: 0.85},
@@ -103,7 +104,7 @@ func TestHandleHealth_PerLanguageParserLabel(t *testing.T) {
 
 	want := map[string]string{
 		"Go":         "AST",
-		"TypeScript": "Regex",
+		"TypeScript": "AST",
 		"Haskell":    "Stub",
 	}
 	for lang, wantParser := range want {

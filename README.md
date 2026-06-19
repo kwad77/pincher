@@ -316,7 +316,7 @@ pincherMCP source is released under the [MIT License](LICENSE) — © 2025-2026 
 
 - Third-party attribution: see [NOTICE](NOTICE).
 - Trademark: see [TRADEMARK.md](TRADEMARK.md).
-- Contributing: every PR commit needs a `Signed-off-by:` trailer. See [CONTRIBUTING.md](CONTRIBUTING.md#developer-certificate-of-origin-dco).
+- Contributing: signed-off commits are accepted but not required. See [CONTRIBUTING.md](CONTRIBUTING.md#developer-certificate-of-origin-dco).
 
 <div align="center">
   <img src="docs/assets/crab.png" width="32" alt="Pinchy"/>
