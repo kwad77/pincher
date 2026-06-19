@@ -11788,6 +11788,15 @@ func (s *Server) handleHealth(ctx context.Context, req *mcp.CallToolRequest) (*m
 			if ast.JavaScriptASTEnabled() {
 				report.Coverage[i].Parser = "AST"
 			}
+		case "TypeScript", "TSX":
+			// #1958: TypeScript/TSX now shares the regex-fallback dispatcher
+			// shape: registered confidence stays at 0.85 for honest fallback
+			// semantics, but the live default route is tree-sitter. Without
+			// this runtime upgrade, health reports `parser: Regex` on TS-heavy
+			// repos even when successful extraction is AST-tier.
+			if ast.TypeScriptASTEnabled() {
+				report.Coverage[i].Parser = "AST"
+			}
 		}
 	}
 
