@@ -7,6 +7,32 @@ minors.
 
 ## [Unreleased]
 
+## [1.11.0] — 2026-07-13 — Token-efficiency defaults and replay measurement
+
+### Added
+
+- **Token-saving response mode.** `PINCHER_TOKEN_MODE=save` or
+  `token_mode:"save"` enables compact search/trace output, lite metadata,
+  bounded context, and progressive dependency disclosure. Explicit per-call
+  format, metadata, detail, and budget values remain authoritative.
+- **Token replay benchmark.** `cmd/tokenbench` compares identical native and
+  Pincher transcripts, supports input/output exchanges, and can use exact
+  cl100k-style BPE estimates for local measurement.
+- **Usage guidance.** Added a practical best-practices guide covering when
+  Pincher beats disciplined native search and how to measure real savings.
+
+### Changed
+
+- Save-mode context returns dependency IDs and paths before dependency bodies,
+  allowing selective follow-up fetches instead of repeated source transfer.
+- Save-mode search defaults to compact, bounded result pages without snippets.
+
+### DOGFOOD
+
+- Replay real tasks against a disciplined `rg`/bounded-read baseline before
+  claiming provider-level savings. Local payload estimates cannot see hidden
+  system prompts, tool schemas, or provider prompt caching.
+
 ## [1.10.1] — 2026-06-12 — Post-v1.10.0 hardening: skeleton-interaction fixes, full toolset default, DB self-maintenance
 
 A patch on the v1.10 line gathering the fixes and hardening that came out of the post-release adversarial sweep of v1.10.0's `mode=skeleton` feature, plus two ecosystem fixes surfaced in live use. No new tool-contract surface (the new `mode` param shipped in v1.10.0); the toolset change *restores* previously-omitted tools to the default advertisement. No schema migration, no new dependency.
