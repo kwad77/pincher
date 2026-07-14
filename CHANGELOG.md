@@ -7,6 +7,12 @@ minors.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Go toolchain security update.** Raise the minimum Go toolchain from
+  `1.25.11` to `1.25.12`, which contains the standard-library fix for
+  `GO-2026-5856` (Encrypted Client Hello privacy leak in `crypto/tls`).
+
 ## [1.11.0] — 2026-07-13 — Token-efficiency defaults and replay measurement
 
 ### Added
