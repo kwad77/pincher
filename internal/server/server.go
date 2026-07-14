@@ -4449,6 +4449,9 @@ func (s *Server) unknownArgs(tool string, args map[string]any) []unknownArgWarni
 		if k == "meta" {
 			continue
 		}
+		if k == "token_mode" {
+			continue
+		}
 		// batch (loop-substrate): `_nested` is the internal marker the
 		// `batch` envelope tool stamps on every sub-call's args so
 		// jsonResultWithMeta skips session-stats accumulation for it.
@@ -6369,6 +6372,9 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// budget trims exactly the bytes that would ship; callee/import
 	// bodies degrade to metadata-only once the remainder is spent.
 	maxTokens := maxTokensArg(args)
+	if _, present := args["max_tokens"]; !present && tokenSavingMode(args) {
+		maxTokens = 2000
+	}
 	// Skeleton mode: detail="skeleton" replaces each source payload —
 	// the primary symbol's AND its imports'/callees' — with the
 	// structural outline (see skeleton.go).
@@ -6701,6 +6707,10 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	srcBudgetTruncated := false
 	importsSourceOmitted := 0
 	calleesSourceOmitted := 0
+	dependencyBodiesDeferred := tokenSavingMode(args) && !boolArg(args, "lite")
+	if _, explicit := args["detail"]; explicit {
+		dependencyBodiesDeferred = false
+	}
 	if maxTokens > 0 {
 		source, srcBudgetDropped, srcBudgetTruncated = truncateSourceToTokens(source, maxTokens)
 		budgetRemaining = maxTokens - db.ApproxTokens(source)
@@ -6751,6 +6761,11 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	for _, id := range importIDs {
 		imp := dependencySyms[id]
 		if imp == nil {
+			continue
+		}
+		if dependencyBodiesDeferred {
+			imports = append(imports, map[string]any{"id": imp.ID, "name": imp.Name, "kind": imp.Kind, "file_path": imp.FilePath, "source_omitted": true})
+			importsSourceOmitted++
 			continue
 		}
 		// mode=skeleton: render this import from indexed fields, NO file
@@ -6811,6 +6826,11 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	for _, id := range calleeIDs {
 		callee := dependencySyms[id]
 		if callee == nil {
+			continue
+		}
+		if dependencyBodiesDeferred {
+			callees = append(callees, map[string]any{"id": callee.ID, "name": callee.Name, "kind": callee.Kind, "file_path": callee.FilePath, "source_omitted": true})
+			calleesSourceOmitted++
 			continue
 		}
 		// mode=skeleton: render this callee from indexed fields, NO file
@@ -6897,7 +6917,7 @@ func (s *Server) handleContext(ctx context.Context, req *mcp.CallToolRequest) (*
 	// the whole call with a bigger cap. Attached AFTER the next_steps
 	// block above — that block replaces data["_meta"] wholesale and
 	// would clobber anything attached earlier.
-	if srcBudgetTruncated || importsSourceOmitted > 0 || calleesSourceOmitted > 0 {
+	if srcBudgetTruncated || (!dependencyBodiesDeferred && (importsSourceOmitted > 0 || calleesSourceOmitted > 0)) {
 		attachWarningStructured(data, "budget_truncated", WarningSeverityWarning,
 			fmt.Sprintf("response trimmed to max_tokens=%d: primary source -%d lines; %d callee(s) + %d import(s) are metadata-only (source_omitted:true) — fetch the ones you need via symbols",
 				maxTokens, srcBudgetDropped, calleesSourceOmitted, importsSourceOmitted),
@@ -7144,7 +7164,7 @@ func (s *Server) handleSearch(ctx context.Context, req *mcp.CallToolRequest) (*m
 	// #1225's trace compact naming. Also skips the per-hit snippet
 	// disk read entirely when compact, which is the real perf win
 	// on bulk searches.
-	compact := boolArg(args, "compact")
+	compact := boolArgDefault(args, "compact", tokenSavingMode(args))
 	// Conclusion-density: count_only=true returns {query, total, by_kind}
 	// and nothing row-shaped. Counts are computed from the exact same
 	// post-filter result set the row-shaped call would consider, so
@@ -9250,7 +9270,7 @@ func (s *Server) handleTrace(ctx context.Context, req *mcp.CallToolRequest) (*mc
 	// compact=true additionally ditto-compresses consecutive
 	// same-file hops within a depth block (repeated file_path omitted;
 	// decode by scanning up to the nearest node carrying file_path).
-	compact := boolArg(args, "compact")
+	compact := boolArgDefault(args, "compact", tokenSavingMode(args))
 	// format=text/toon: render the hop list as a dense TSV block
 	// (results_text) or TOON tabular block (results_toon) instead of
 	// the JSON hops array. Unknown values fall back to json with a
@@ -14960,7 +14980,13 @@ func marshalMetaJSON(data any) []byte {
 // progress. Per-call cost reduction: ~150-200 tokens off every
 // response.
 func isLiteMeta(args map[string]any) bool {
+	if v, _ := args["meta"].(string); v == "full" {
+		return false
+	}
 	if v, _ := args["meta"].(string); v == "lite" {
+		return true
+	}
+	if tokenSavingMode(args) {
 		return true
 	}
 	if os.Getenv("PINCHER_META") == "lite" {

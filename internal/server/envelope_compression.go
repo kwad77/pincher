@@ -36,6 +36,21 @@ func parseMetaDeltaEnv(v string) bool {
 	}
 }
 
+func tokenSavingMode(args map[string]any) bool {
+	if v, _ := args["token_mode"].(string); strings.EqualFold(strings.TrimSpace(v), "full") {
+		return false
+	}
+	if v, _ := args["token_mode"].(string); strings.EqualFold(strings.TrimSpace(v), "save") {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PINCHER_TOKEN_MODE"))) {
+	case "save", "on", "true", "1":
+		return true
+	default:
+		return false
+	}
+}
+
 // capsFingerprint joins a capabilities slice into a comparable string
 // for the session-delta dedupe. The slice is computed once at New()
 // time and only ever replaced wholesale (SetMCPHTTPPath recomputes
@@ -67,6 +82,9 @@ func parseFormatArg(args map[string]any) (rowFormat, string) {
 	raw, _ := args["format"].(string)
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", "json":
+		if raw == "" && tokenSavingMode(args) {
+			return rowFormatText, ""
+		}
 		return rowFormatJSON, ""
 	case "text":
 		return rowFormatText, ""
