@@ -30,21 +30,13 @@
 name: Install validation
 
 on:
-  # Triggered after the Release workflow completes. Using `workflow_run`
-  # instead of `release: published` ensures every release-artifact path
-  # is fully populated before validation starts — the Release workflow's
-  # `Docker image` job takes ~10 min after the tag push, well past the
-  # window when `release: published` would fire. Also avoids the
-  # release-asset CDN propagation race that bit v0.92.0 (#1871).
-  workflow_run:
-    workflows: ["Release"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
         description: 'Release tag to validate (e.g. v0.90.0)'
         required: true
         type: string
+
 
 permissions:
   contents: read

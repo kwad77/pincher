@@ -1,16 +1,8 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - 'v*'
-  # workflow_dispatch lets us re-run the binary build against an existing
-  # tag from the Actions UI — useful when a transient infrastructure flake
-  # (artifact-download retry exhaustion, ghcr.io hiccup) took down a
-  # release run after the matrix builds succeeded. Trigger via the
-  # Actions UI selecting the tag as the ref; GITHUB_REF_NAME picks up
-  # the tag name automatically when the run starts from a tag ref.
   workflow_dispatch:
+
 
 permissions:
   contents: write

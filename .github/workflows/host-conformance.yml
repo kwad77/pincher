@@ -16,10 +16,8 @@ name: Host conformance
 #                replay transcripts upload as an artifact.
 
 on:
-  pull_request:
-  push:
-    branches: [master]
   workflow_dispatch:
+
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

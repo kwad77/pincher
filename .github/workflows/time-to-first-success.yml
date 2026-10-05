@@ -10,11 +10,8 @@ name: Time to first success
 # conformance matrix that uses this script per host.
 
 on:
-  schedule:
-    # Monday 10:00 UTC — runs after govulncheck so the dep-upgrade
-    # follow-ups don't conflict on the same runner pool.
-    - cron: '0 10 * * 1'
   workflow_dispatch:
+
 
 permissions:
   contents: read

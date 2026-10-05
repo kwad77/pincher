@@ -13,11 +13,6 @@ name: Race detector
 #     ref.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '17 10 * * *'
-  push:
-    tags:
-      - 'v*'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

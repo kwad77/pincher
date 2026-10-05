@@ -9,12 +9,8 @@ name: External comparator
 # scaffolding this PR delivers.
 
 on:
-  schedule:
-    # Saturday 15:00 UTC — last slot in the staggered weekly cycle.
-    # (Mon ttfs/govuln, Tue resource-pressure, Wed migration,
-    # Thu per-tool-latency, Fri multi-project-ceiling).
-    - cron: '0 15 * * 6'
   workflow_dispatch:
+
 
 permissions:
   contents: read

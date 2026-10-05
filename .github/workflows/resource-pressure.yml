@@ -11,13 +11,8 @@ name: Resource pressure
 # for any tier.
 
 on:
-  schedule:
-    # Tuesday 13:00 UTC — staggered with the other weekly benches
-    # (govulncheck Mon 09, time-to-first-success Mon 10, migration-
-    # rehearsal Wed 11, per-tool-latency Thu 12) so a runner-pool
-    # outage doesn't take down all signals at once.
-    - cron: '0 13 * * 2'
   workflow_dispatch:
+
 
 permissions:
   contents: read

@@ -13,12 +13,8 @@ name: Migration rehearsal
 # Not required for per-PR CI. Weekly + workflow_dispatch.
 
 on:
-  schedule:
-    # Wednesday 11:00 UTC — staggered against govulncheck (Mon 09:00)
-    # and time-to-first-success (Mon 10:00) so a CI runner outage
-    # doesn't take down all three signals at once.
-    - cron: '0 11 * * 3'
   workflow_dispatch:
+
 
 permissions:
   contents: read

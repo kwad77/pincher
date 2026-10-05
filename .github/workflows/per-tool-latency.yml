@@ -11,12 +11,8 @@ name: Per-tool latency
 # `make corpus-bench` gate catches in-process per-PR regressions.
 
 on:
-  schedule:
-    # Thursday 12:00 UTC — staggered against bench-baseline, govulncheck,
-    # time-to-first-success, and migration-rehearsal so a runner-pool
-    # outage doesn't take down all weekly signals at once.
-    - cron: '0 12 * * 4'
   workflow_dispatch:
+
 
 permissions:
   contents: read
